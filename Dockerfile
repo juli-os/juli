@@ -8,11 +8,18 @@
 # Build stages:
 #   deps  — full node:22 (native toolchain preinstalled): node-pty has no
 #           linux-arm64 prebuilt and must compile from source. Installing
-#           toolchains in slim requires apt, which is unreliable behind
-#           intercepting proxies (plain-HTTP deb mirrors 502). Full image
-#           avoids apt entirely at this stage.
+#           toolchains in slim requires apt, and apt in slim is what this
+#           image keeps as simple as possible (see below).
 #   build — compile engine (dist/) and web cockpit (web-dist/).
-#   final — node:22-slim + tmux (apt over HTTPS) + Claude Code CLI (npm -g).
+#   final — node:22-slim + tmux/procps (apt) + Claude Code CLI (npm -g).
+#
+# apt note: bookworm sources are plain HTTP on purpose. Debian repositories are
+# GPG-signed (integrity does not depend on TLS), and slim ships NO
+# ca-certificates — HTTPS apt fails cert verification on a stock slim image.
+# Plain HTTP works on clean networks and behind explicit proxy build-args.
+# Behind an intercepting TUN/fake-IP proxy, build with:
+#   docker build --build-arg http_proxy=http://host.docker.internal:<port> \
+#                --build-arg https_proxy=http://host.docker.internal:<port> .
 FROM node:22 AS deps
 WORKDIR /app
 COPY package*.json ./
@@ -30,12 +37,10 @@ COPY test ./test
 RUN npm run build && npm run web
 
 FROM node:22-slim
-# tmux over HTTPS apt sources — plain-HTTP mirrors break behind intercepting
-# proxies; HTTPS deb.debian.org is stable in both clean and proxied environments.
-RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || true \
-  && apt-get update \
-  && apt-get install -y --no-install-recommends tmux procps \
-  && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends tmux procps; \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 ENV NODE_ENV=production

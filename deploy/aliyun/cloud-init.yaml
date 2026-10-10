@@ -1,0 +1,18 @@
+#cloud-config
+# Aliyun ECS bootstrap for juli (one-time user-data).
+# Installs docker + compose plugin, prepares /data, opens nothing else —
+# the engine container is created by deploy.sh (needs JULI_PASSWORD).
+packages: [docker.io]
+runcmd:
+  - systemctl enable --now docker
+  - mkdir -p /data
+  - chmod 700 /data
+  - |
+    cat >/etc/systemd/system/juli-update.path <<'EOF'
+    # (optional helper) redeploy trigger omitted — deploy.sh uses cloud assistant
+    EOF
+write_files:
+  - path: /etc/docker/daemon.json
+    permissions: "0644"
+    content: |
+      { "log-driver": "json-file", "log-opts": { "max-size": "10m", "max-file": "3" } }

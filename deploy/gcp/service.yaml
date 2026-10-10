@@ -1,0 +1,30 @@
+# Declarative form of the gcloud commands in README.md (deploy with:
+#   gcloud run services replace service.yaml --region asia-east1
+# after substituting PROJECT_NUMBER — see README caveat about ephemeral /data).
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: juli
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "1"   # keep timers/tmux alive
+        autoscaling.knative.dev/maxScale: "1"   # SQLite: hard single instance
+        run.googleapis.com/execution-environment: gen1
+    spec:
+      containerConcurrency: 1
+      timeoutSeconds: 3600
+      containers:
+        - image: ghcr.io/juli-os/juli:latest
+          env:
+            - name: JULI_DATA_DIR
+              value: /data
+            - name: JULI_LISTEN_HOST
+              value: 0.0.0.0
+            - name: LANG
+              value: C.UTF-8
+          resources:
+            limits:
+              cpu: "1"
+              memory: 2Gi

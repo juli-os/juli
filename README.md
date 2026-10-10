@@ -120,6 +120,16 @@ One-command cloud deployments (Terraform / Cloud Run / Aliyun SAE) live in
 Single instance only: the ledger is SQLite, so scale-out is intentionally out
 of scope for the MVP.
 
+### Building the image behind an intercepting proxy
+
+The apt step uses plain-HTTP Debian mirrors (GPG-signed; slim has no CA store,
+so HTTPS apt fails on a stock image). Behind a fake-IP/TUN proxy, pass the
+proxy explicitly so apt and npm go through a real CONNECT tunnel:
+
+```bash
+make docker-build DOCKER_BUILD_ARGS="--build-arg http_proxy=http://host.docker.internal:7897 --build-arg https_proxy=http://host.docker.internal:7897"
+```
+
 ## Security notes
 
 - All `/api/*` routes require the Bearer password (constant-time compare)
