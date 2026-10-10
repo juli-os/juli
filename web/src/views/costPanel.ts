@@ -114,7 +114,7 @@ export const mountCostPanel = (el: HTMLElement, opts?: { onOrderClick?: (id: str
     }
     for (const [v, lab] of [[d.overall.medianCny, `中位 ${cny(d.overall.medianCny)}`], [d.overall.p90Cny, `P90 ${cny(d.overall.p90Cny)}`]] as const) {
       if (v <= 0) continue;
-      svg += `<line class="cost-ref" x1="${ML}" y1="${y(v)}" x2="${W - MR}" y2="${y(v)}"/><text class="cost-reflab" x="${W - MR + 5}" y="${y(v) + 4}">${lab}</text>`;
+      svg += `<line class="cost-ref" x1="${ML}" y1="${y(v)}" x2="${W - MR}" y2="${y(v)}"/><text class="cost-reflab" x="${W - MR - 4}" y="${y(v) + 4}" text-anchor="end">${lab}</text>`;
     }
     // 同日横向微散（成本序）防重叠——日期归属不变
     const perDay = new Map<string, number[]>();
