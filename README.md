@@ -2,13 +2,7 @@
 
 **Human-in-the-loop agent workflow engine.** Chat a task in — a Claude Code agent actually does the work inside tmux — you approve the result at the gate.
 
-```
- you ──chat──▶ engine ──dispatch──▶ tmux session ──▶ Claude Code agent
-  ▲                │                                       │
-  │                │   ledger (SQLite: every step, every event)
-  │                ▼                                       ▼
-  └──── gate ◀── draft / artifacts ◀──── Stop-hook transcript report
-```
+![How juli works](docs/flow.svg)
 
 juli is not a chat wrapper. It is a small production engine around autonomous
 agents:

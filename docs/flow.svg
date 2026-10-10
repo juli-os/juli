@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="780" height="320" viewBox="0 0 780 320" role="img" aria-label="How juli works: you chat a task in, the engine dispatches it to a Claude Code agent inside a tmux session, every step lands in the SQLite ledger, the agent reports through a Stop hook, drafts and artifacts stop at a human approval gate, and you approve at the gate.">
+  <title>juli at a glance</title>
+  <style>
+    .box { fill:#ffffff; stroke:#d0d7de; stroke-width:1.25; }
+    .engine { stroke:#d97c26; stroke-width:1.75; }
+    .human { stroke-dasharray:5 4; }
+    .t { font:600 14px -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif; fill:#1f2328; text-anchor:middle; }
+    .s { font:400 11px -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif; fill:#656d76; text-anchor:middle; }
+    .e { font:500 11.5px -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif; fill:#656d76; text-anchor:middle; }
+    .edge { stroke:#57606a; stroke-width:1.5; fill:none; }
+    .ah { fill:#57606a; }
+    @media (prefers-color-scheme: dark) {
+      .box { fill:#161b22; stroke:#3d444d; }
+      .engine { stroke:#f0983f; }
+      .t { fill:#e6edf3; }
+      .s { fill:#8b949e; }
+      .e { fill:#8b949e; }
+      .edge { stroke:#8b949e; }
+      .ah { fill:#8b949e; }
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 Z" class="ah"/>
+    </marker>
+  </defs>
+
+  <!-- top row: you -> engine -> agent -->
+  <rect class="box human" x="28" y="44" width="88" height="52" rx="10"/>
+  <text class="t" x="72" y="75">You</text>
+
+  <rect class="box engine" x="196" y="44" width="128" height="52" rx="10"/>
+  <text class="t" x="260" y="66">Engine</text>
+  <text class="s" x="260" y="82">workflow · gates</text>
+
+  <rect class="box" x="420" y="44" width="252" height="52" rx="10"/>
+  <text class="t" x="546" y="66">Claude Code agent</text>
+  <text class="s" x="546" y="82">tmux session</text>
+
+  <line class="edge" x1="116" y1="70" x2="190" y2="70" marker-end="url(#a)"/>
+  <text class="e" x="154" y="60">chat</text>
+  <line class="edge" x1="324" y1="70" x2="414" y2="70" marker-end="url(#a)"/>
+  <text class="e" x="370" y="60">dispatch</text>
+
+  <!-- ledger hangs below the engine, both ways -->
+  <rect class="box" x="186" y="168" width="148" height="60" rx="10"/>
+  <text class="t" x="260" y="189">Ledger</text>
+  <text class="s" x="260" y="205">SQLite — every step,</text>
+  <text class="s" x="260" y="218">every event</text>
+  <line class="edge" x1="260" y1="96" x2="260" y2="164" marker-start="url(#a)" marker-end="url(#a)"/>
+
+  <!-- bottom row: agent reports -> drafts -> gate, you approve -->
+  <rect class="box" x="430" y="236" width="210" height="52" rx="10"/>
+  <text class="t" x="535" y="257">Draft / artifacts</text>
+  <text class="s" x="535" y="273">content-hashed deliverables</text>
+
+  <rect class="box engine human" x="196" y="236" width="148" height="52" rx="10"/>
+  <text class="t" x="270" y="257">Gate</text>
+  <text class="s" x="270" y="273">human approval</text>
+
+  <line class="edge" x1="546" y1="96" x2="546" y2="232" marker-end="url(#a)"/>
+  <text class="e" x="558" y="158" text-anchor="start">Stop-hook</text>
+  <text class="e" x="558" y="171" text-anchor="start">transcript</text>
+
+  <line class="edge" x1="426" y1="262" x2="350" y2="262" marker-end="url(#a)"/>
+  <text class="e" x="388" y="252">review</text>
+
+  <polyline class="edge" points="72,96 72,262 190,262" marker-end="url(#a)"/>
+  <text class="e" x="131" y="252">approve</text>
+</svg>
