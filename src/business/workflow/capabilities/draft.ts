@@ -1,9 +1,10 @@
 // draft：从已审定的执行产出起草回信（读案卷的累积上下文，非接力种子）。
 
-import { asRecord, asString, truncate, type JsonRecord } from '../../../platform/shared/json.ts';
-import { rfc3339, type Clock } from '../../../platform/shared/clock.ts';
-import type { Step, Workflow } from '../../../contracts/entities.ts';
-import { originalEmail } from '../../../platform/ledger/casefile.ts';
+import { asString, truncate } from '../../../platform/shared/json.ts'
+import { asRecord, type JsonRecord } from '@juli-os/artifacts'
+import { rfc3339, type Clock } from '@juli-os/artifacts';
+import { type Step, type Workflow } from '@juli-os/ledger';
+import { originalEmail } from '@juli-os/ledger';
 import { parseLoose, type StepCtx } from './common.ts';
 
 // 落款/人称/披露规则与 ~/.claude/skills/juli-reply/SKILL.md §0/§3/§4 对齐；改动须两处同步（skill §7）。

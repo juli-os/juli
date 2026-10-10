@@ -19,7 +19,7 @@ import { makeEngine, makeEmail, until } from './helpers.ts';
 import type { EngineDeps } from '../src/business/workflow/engine.ts';
 import type { ArtifactPort, MailerPort, PusherPort } from '../src/contracts/ports.ts';
 import { DEFAULT_REDLINE_WORDS, redlineHit } from '../src/business/send/sendChecks.ts';
-import { ok } from '../src/platform/shared/result.ts';
+import { ok } from '@juli-os/artifacts';
 
 const BODY_TEXT = '契约正文：上月销量表已发出，请查收。';
 const BODY_SHA = 'aa87b223ef100a38803f1c362ad3007562ec247aa90f86fafa8c190c84cb921d';

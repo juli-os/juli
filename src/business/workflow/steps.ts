@@ -2,12 +2,13 @@
 // （tmux 异步 / ACP 同步两条派发路径；发送步=守卫链+信封契约+SMTP 全链）。
 
 import { createHash } from 'node:crypto';
-import { rfc3339 } from '../../platform/shared/clock.ts';
-import { asString, type JsonRecord, type JsonValue } from '../../platform/shared/json.ts';
+import { rfc3339 } from '@juli-os/artifacts';
+import { asString } from '../../platform/shared/json.ts'
+import type { JsonRecord, JsonValue } from '@juli-os/artifacts'
 import type { Logger } from '../../platform/events/bus.ts';
-import type { LifecycleStore } from '../../platform/ledger/store.ts';
-import { appendReference } from '../../platform/ledger/casefile.ts';
-import type { Step, Workflow } from '../../contracts/entities.ts';
+import type { LifecycleStore } from '@juli-os/ledger';
+import { appendReference } from '@juli-os/ledger';
+import { type Step, type Workflow } from '@juli-os/ledger';
 import type { StepCtx, StepHandler } from './capabilities/index.ts';
 import { agentSessionOf, agentLiveSessionOf, flowContext, planPrompt, renderFlowTemplate } from './capabilities/index.ts';
 import {

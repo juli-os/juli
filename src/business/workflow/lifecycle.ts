@@ -2,11 +2,12 @@
 // 与收口族（settle 人工结算/closeWorkflow 尸体收编/forceClose 活单中止/
 // cancelStep 单步取消）。
 
-import { rfc3339 } from '../../platform/shared/clock.ts';
-import { asString, truncate, type JsonRecord, type JsonValue } from '../../platform/shared/json.ts';
+import { rfc3339 } from '@juli-os/artifacts';
+import { asString, truncate } from '../../platform/shared/json.ts'
+import type { JsonRecord, JsonValue } from '@juli-os/artifacts'
 import type { Logger } from '../../platform/events/bus.ts';
-import type { LifecycleStore } from '../../platform/ledger/store.ts';
-import type { Step, StepKind, Workflow } from '../../contracts/entities.ts';
+import type { LifecycleStore } from '@juli-os/ledger';
+import { type Step, type StepKind, type Workflow } from '@juli-os/ledger';
 import { STEP_KINDS } from '../../contracts/entities.ts';
 import { isActiveStepStatus, isActiveWorkflowStatus, isLiveNodeStatus } from '../../contracts/statuses.ts';
 import { carryStepConfig, type Template } from '../templates/template.ts';

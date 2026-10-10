@@ -5,8 +5,8 @@
 // 工具本体是对 runtime 注入的读函数的薄封装：无业务逻辑，只有参数说明
 // 与 JSON 序列化；数据能力来自 party 域 / 账本的现成查询。
 
-import { err, ok } from '../../platform/shared/result.ts';
-import type { Tool } from '../../platform/agents/tools.ts';
+import { err, ok } from '@juli-os/artifacts';
+import type { Tool } from '@juli-os/agents';
 
 /** 客户行（runtime 从 party 域 CustomerSummary 投影注入）。 */
 export interface ChatCustomerRow {

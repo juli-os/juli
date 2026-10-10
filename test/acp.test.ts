@@ -4,8 +4,8 @@
 
 import { describe, expect, it } from 'vitest';
 import { join } from 'node:path';
-import { createAcpExecutor } from '../src/platform/agents/acp.ts';
-import { ok } from '../src/platform/shared/result.ts';
+import { createAcpExecutor } from '@juli-os/agents';
+import { ok } from '@juli-os/artifacts';
 import { ladderEmail, makeEngine, makeEmail, until } from './helpers.ts';
 
 const serverJs = join(import.meta.dirname, 'fixtures', 'fake-app-server.py');

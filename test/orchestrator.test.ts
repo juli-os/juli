@@ -8,17 +8,17 @@ import { join } from 'node:path';
 import {
   createOrchestrator, createHookManager, createCommandRegistry, registerDefaultCommands,
   createSessionAssessor,
-} from '../src/platform/agents/orchestrator.ts';
-import { makeAllTools } from '../src/platform/agents/tools.ts';
-import { createTmuxClient } from '../src/platform/agents/tmux.ts';
-import { err, ok } from '../src/platform/shared/result.ts';
-import type { ChatLlmPort, ChatResult, ToolCallRequest } from '../src/platform/llm/chat.ts';
+} from '@juli-os/agents';
+import { makeAllTools } from '@juli-os/agents';
+import { createTmuxClient } from '@juli-os/agents';
+import { err, ok } from '@juli-os/artifacts';
+import { type ChatLlmPort, type ChatResult, type ToolCallRequest } from '@juli-os/agents';
 
 const collect = (): { events: ReturnType<typeof ev>[], emit: (e: ReturnType<typeof ev>) => void } => {
   const events: ReturnType<typeof ev>[] = [];
   return { events, emit: (e) => events.push(e) };
 };
-const ev = (e: Parameters<Parameters<import('../src/platform/agents/orchestrator.ts').Orchestrator['handle']>[1]>[0]) => e;
+const ev = (e: Parameters<Parameters<import('@juli-os/agents').Orchestrator['handle']>[1]>[0]) => e;
 
 const makeSession = async (): Promise<{ dir: string; cleanup: () => void }> => {
   const dir = mkdtempSync(join(tmpdir(), 'juli-orch-'));

@@ -6,8 +6,8 @@ import type { IncomingMessage, Server } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { safeEqual } from '../shared/secure.ts';
-import { attachTmuxPty, type PtySession } from '../agents/pty.ts';
-import type { TmuxClient } from '../agents/tmux.ts';
+import { attachTmuxPty, type PtySession } from '@juli-os/agents';
+import type { TmuxClient } from '@juli-os/agents';
 
 export interface PtyHubDeps {
   readonly server: Server;

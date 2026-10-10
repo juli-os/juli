@@ -3,11 +3,13 @@
 // 事件续命，全部走 touchSession 同一入口。
 
 import type { Logger } from '../../platform/events/bus.ts';
-import type { LifecycleStore } from '../../platform/ledger/store.ts';
-import type { Step } from '../../contracts/entities.ts';
+import type { LifecycleStore } from '@juli-os/ledger';
+import { type Step } from '@juli-os/ledger';
 import { agentLiveSessionOf } from './capabilities/index.ts';
-import { paneAwaitingInput, parsePaneQuestion } from '../../platform/shared/paneFingerprint.ts';
-import { asString, type JsonValue } from '../../platform/shared/json.ts';
+import { paneAwaitingInput } from '@juli-os/agents';
+import { parsePaneQuestion } from '../../platform/shared/paneFingerprint.ts';
+import { asString } from '../../platform/shared/json.ts'
+import type { JsonValue } from '@juli-os/artifacts'
 import { parseDur, type Template, type ZombiePolicy } from '../templates/template.ts';
 import type { EngineDeps } from './engine.ts';
 import type { Journal } from './journal.ts';

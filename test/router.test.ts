@@ -2,7 +2,7 @@
 // 空名单首刷不误改道；available 返回真实名单。
 
 import { describe, expect, it } from 'vitest';
-import { createSessionRouter } from '../src/platform/agents/router.ts';
+import { createSessionRouter } from '@juli-os/agents';
 
 const fakeList = (names: string[]) => (): readonly string[] => names;
 

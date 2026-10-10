@@ -11,8 +11,9 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { createLedgerStore, type LifecycleStore } from '../src/platform/ledger/store.ts';
-import { TERMINAL_WORKFLOW_STATUSES, type StepKind, type StepStatus, type WorkflowStatus } from '../src/contracts/entities.ts';
+import { createLedgerStore, type LifecycleStore } from '@juli-os/ledger';
+import { TERMINAL_WORKFLOW_STATUSES } from '../src/contracts/entities.ts';
+import { type StepKind, type StepStatus, type WorkflowStatus } from '@juli-os/ledger';
 import {
   ACTIVE_STEP_STATUSES, ACTIVE_WORKFLOW_STATUSES, DEDUP_WINDOW_STATUSES,
   PRUNE_WORKFLOW_STATUSES, SETTLED_STEP_STATUSES, SETTLED_WORKFLOW_STATUSES,
@@ -20,7 +21,7 @@ import {
   isActiveStepStatus, isActiveWorkflowStatus, isLiveNodeStatus, isSettledStepStatus,
   isSettledWorkflowStatus, isTerminalStepStatus, sqlInList, statusLabelOf,
 } from '../src/contracts/statuses.ts';
-import type { JsonRecord } from '../src/platform/shared/json.ts';
+import type { JsonRecord } from '@juli-os/artifacts'
 import {
   KANBAN_ARCHIVE_KEY, KANBAN_COLUMNS, KANBAN_OTHER_KEY, KANBAN_WAITING_KEY,
   LIFECYCLE_FILTERS, ALL_STATUS_LABELS, STEP_STATUSES as WEB_STEP_STATUSES,

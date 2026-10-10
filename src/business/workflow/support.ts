@@ -1,10 +1,10 @@
 // 引擎纯助手（零闭包依赖）：常量 / 任务卡模板 / 附件宣称判据 / feedback 单
 // 判据。可被任意引擎子模块与测试直接引用。
 
-import { asString } from '../../platform/shared/json.ts';
-import type { Step, Workflow } from '../../contracts/entities.ts';
+import { asString } from '../../platform/shared/json.ts'
+import { type Step, type Workflow } from '@juli-os/ledger';
 import { isLiveNodeStatus } from '../../contracts/statuses.ts';
-import type { JsonRecord } from '../../platform/shared/json.ts';
+import type { JsonRecord } from '@juli-os/artifacts'
 
 export const DEFAULT_ZOMBIE_TIMEOUT_MS = 5 * 60_000;
 export const DEFAULT_MAX_ZOMBIE_ATTEMPTS = 3;

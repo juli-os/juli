@@ -3,8 +3,8 @@
 
 import { describe, expect, it } from 'vitest';
 import { warmupPlan } from '../src/runtime.ts';
-import { createProvisioningDispatch } from '../src/platform/agents/dispatch.ts';
-import type { TmuxClient } from '../src/platform/agents/tmux.ts';
+import { createProvisioningDispatch } from '@juli-os/agents';
+import type { TmuxClient } from '@juli-os/agents';
 
 describe('warmupPlan', () => {
   it('声明表 → 去重/空名剔除/保序', () => {

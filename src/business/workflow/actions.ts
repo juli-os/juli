@@ -2,11 +2,12 @@
 // deny（人工否决）、resolve（已在别处处理收口）、rework（驳回回修环）、
 // align（对齐修正升工件）。全部走 gateAction 公共壳（锁内校验+落账+播种）。
 
-import { rfc3339 } from '../../platform/shared/clock.ts';
-import { asString, type JsonValue } from '../../platform/shared/json.ts';
+import { rfc3339 } from '@juli-os/artifacts';
+import { asString } from '../../platform/shared/json.ts'
+import type { JsonValue } from '@juli-os/artifacts'
 import type { Logger } from '../../platform/events/bus.ts';
-import type { LifecycleStore } from '../../platform/ledger/store.ts';
-import type { Step } from '../../contracts/entities.ts';
+import type { LifecycleStore } from '@juli-os/ledger';
+import { type Step } from '@juli-os/ledger';
 import { AGENT_STEP_KINDS, INSTRUCTABLE_STEP_KINDS } from '../../contracts/entities.ts';
 import { deliverablesBody, gateDelivery, isEffectDelivery, isSendGateDecision, seedSendFromGate } from '../send/sendSeed.ts';
 import { feedbackRefsOf } from './support.ts';

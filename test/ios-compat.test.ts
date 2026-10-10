@@ -13,8 +13,8 @@ import { createRuntime } from '../src/runtime.ts';
 import { createHttpApp } from '../src/http/app.ts';
 import { attachChatWireWs, attachSnapshotWireWs, toWireEvent } from '../src/platform/ws/wirehubs.ts';
 import { createChatHub } from '../src/platform/ws/chathub.ts';
-import { ok, err, type Result } from '../src/platform/shared/result.ts';
-import type { TmuxClient } from '../src/platform/agents/tmux.ts';
+import { ok, err, type Result } from '@juli-os/artifacts';
+import type { TmuxClient } from '@juli-os/agents';
 
 const dir = mkdtempSync(join(tmpdir(), 'juli-ios-'));
 const cfg = configSchema.parse({ data_dir: dir, email: { default_session: 'agent-a', default_project: 'demo' } });

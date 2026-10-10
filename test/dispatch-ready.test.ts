@@ -4,9 +4,9 @@
 import { describe, expect, it } from 'vitest';
 import { realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { createProvisioningDispatch } from '../src/platform/agents/dispatch.ts';
-import type { TmuxClient } from '../src/platform/agents/tmux.ts';
-import { ok } from '../src/platform/shared/result.ts';
+import { createProvisioningDispatch } from '@juli-os/agents';
+import type { TmuxClient } from '@juli-os/agents';
+import { ok } from '@juli-os/artifacts';
 
 /** 脚本化假 tmux：pane 快照与前台命令都随【按键】推进（发 boot 后才变
  * node/就绪画面），probe 只读不推进——与真实 pane 语义一致。

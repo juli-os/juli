@@ -1,26 +1,8 @@
-// 安全 JSON 与字符串工具（对应 Go internal/infra/util 的常用面）。
+// JSON 字符串侧的窄口径工具（JsonValue/JsonRecord/safeParse/asRecord 的事实源
+// 已收编 npm 包 @juli-os/artifacts——10-10 影子清除；本文件只留包面没有的
+// asString/truncate 两个私仓惯用件）。
 
-export type JsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | readonly JsonValue[]
-  | { readonly [k: string]: JsonValue };
-
-export type JsonRecord = { readonly [k: string]: JsonValue };
-
-export const safeParse = (raw: string | null | undefined): JsonValue | null => {
-  if (raw === null || raw === undefined || raw === '') return null;
-  try {
-    return JSON.parse(raw) as JsonValue;
-  } catch {
-    return null;
-  }
-};
-
-export const asRecord = (v: JsonValue | null | undefined): JsonRecord =>
-  v && typeof v === 'object' && !Array.isArray(v) ? (v as JsonRecord) : {};
+import type { JsonValue } from '@juli-os/artifacts';
 
 export const asString = (v: JsonValue | undefined): string => (typeof v === 'string' ? v : '');
 

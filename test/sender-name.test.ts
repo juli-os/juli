@@ -10,7 +10,7 @@ import { greetingNameIn, runSendChecks } from '../src/business/send/sendChecks.t
 import type { EngineDeps } from '../src/business/workflow/engine.ts';
 import type { MailerPort, PusherPort } from '../src/contracts/ports.ts';
 import { makeClock, makeEmail, seqIds } from './helpers.ts';
-import { createLedgerStore } from '../src/platform/ledger/store.ts';
+import { createLedgerStore } from '@juli-os/ledger';
 
 const makeWorld = (over: Partial<EngineDeps> = {}) => {
   const { clock } = makeClock();

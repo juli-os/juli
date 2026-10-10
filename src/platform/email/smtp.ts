@@ -3,7 +3,7 @@
 // （收件人只认 meta.from）在引擎层，不在这里。
 
 import nodemailer from 'nodemailer';
-import { ok, toResult, type Result } from '../shared/result.ts';
+import { ok, toResult, type Result } from '@juli-os/artifacts';
 import type { MailSendCommand, MailerPort } from '../../contracts/ports.ts';
 
 export interface SmtpConfig {

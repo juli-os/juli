@@ -3,7 +3,7 @@
 // +LLM 瘦身只写 summary/session；on+低置信/失败=拒绝采纳回退全量抽取。
 
 import { describe, expect, it } from 'vitest';
-import type { JudgmentGateway, JudgmentOutcome } from '../src/contracts/ports.ts';
+import { type JudgmentGateway, type JudgmentOutcome } from '@juli-os/routing';
 import { ladderEmail, makeEmail, makeEngine, until } from './helpers.ts';
 
 const gw = (

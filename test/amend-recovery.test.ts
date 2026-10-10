@@ -10,7 +10,7 @@
 import { describe, expect, it } from 'vitest';
 import { makeEngine, until } from './helpers.ts';
 import { parseTemplate } from '../src/business/templates/template.ts';
-import { createLedgerStore } from '../src/platform/ledger/store.ts';
+import { createLedgerStore } from '@juli-os/ledger';
 
 const REQUIRES_YAML = `key: t-requires
 name: 需要料的模板

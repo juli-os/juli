@@ -5,9 +5,9 @@
 // ④绑定会话豁免复用优先落回（点名不存在绝不流进 juli-reply）。
 
 import { describe, expect, it } from 'vitest';
-import { createLedgerStore } from '../src/platform/ledger/store.ts';
+import { createLedgerStore } from '@juli-os/ledger';
 import { createEngine, type EngineDeps } from '../src/business/workflow/engine.ts';
-import { ok } from '../src/platform/shared/result.ts';
+import { ok } from '@juli-os/artifacts';
 import { makeClock, makeEmail, seqIds } from './helpers.ts';
 import type { MailerPort, PusherPort } from '../src/contracts/ports.ts';
 

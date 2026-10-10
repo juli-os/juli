@@ -1,12 +1,6 @@
-// pane 文本指纹判定的纯函数族（2026-09-28 提问卡单修复）：platform/agents
-// 的探针与 business/workflow 的僵尸看门狗共用同一口径——「什么算等输入」
-// 是跨层共识，住在 shared 零依赖（arch 围栏：workflow 不 import agents）。
-
-/** 「等输入」判定：编号选择菜单（权限/选项）+ CC 权限问句指纹。这是
- * 「等人的健康态」不是僵尸——看门狗豁免 + 通知人，绝不打断。 */
-export const paneAwaitingInput = (pane: string): boolean =>
-  /❯\s*\d|[1-9]\.\s+(yes|no|allow|deny)/i.test(pane)
-  || /\b(do you want|would you like|waiting for your|awaiting your)\b/i.test(pane);
+// pane 文本问询解析的纯函数族（2026-09-28 提问卡单修复）。「等输入」判定
+// paneAwaitingInput 的事实源已收编 npm 包 @juli-os/agents（10-10 影子清除）；
+// 本文件只留包面没有的 parsePaneQuestion 问询解析。
 
 export interface PaneQuestionOption {
   readonly label: string; // 审批卡按钮文案（含编号）

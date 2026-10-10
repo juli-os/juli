@@ -8,10 +8,10 @@ import {
   configFilePath, maskConfig, mergeConfigPatch, resolveAiConfig, resolveSecret, saveConfigFile,
 } from '../../platform/config/schema.ts';
 import { createAnthropicChat, createOpenAiChat } from '../../platform/llm/chat.ts';
-import { parseJudgmentConfig } from '../../business/routing/judgment.ts';
-import { JUDGMENT_SCENARIOS } from '../../contracts/ports.ts';
+import { parseJudgmentConfig } from '@juli-os/routing';
+import { JUDGMENT_SCENARIOS } from '@juli-os/routing';
 import type { Runtime } from '../../runtime.ts';
-import type { JsonRecord } from '../../platform/shared/json.ts';
+import type { JsonRecord } from '@juli-os/artifacts'
 import { readBody, type AppEnv } from '../helpers.ts';
 
 /** judgment.json 读盘（缺文件=null；坏 JSON=null 的口径与引擎 loadJudgmentConfig 一致）。 */

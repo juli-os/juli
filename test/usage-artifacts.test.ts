@@ -4,9 +4,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createUsageStore } from '../src/platform/ledger/usage.ts';
-import { createArtifactLedger, sweepCaseInbox } from '../src/platform/artifacts/ledger.ts';
-import { createDiskBackend, createS3Backend, createDualBackend, assertSigV4PresignShape, type ArtifactBackend } from '../src/platform/artifacts/store.ts';
+import { createUsageStore } from '@juli-os/ledger';
+import { createArtifactLedger, sweepCaseInbox } from '@juli-os/artifacts';
+import { createDiskBackend, createS3Backend, createDualBackend, assertSigV4PresignShape, type ArtifactBackend } from '@juli-os/artifacts';
 import { DatabaseSync } from 'node:sqlite';
 
 /** 恒 miss 后端：验证 dual 的读穿透（主存缺字节 → 远端兜底）。 */

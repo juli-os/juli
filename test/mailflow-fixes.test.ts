@@ -15,8 +15,8 @@ import { describe, expect, it } from 'vitest';
 import { makeEngine, makeEmail, until } from './helpers.ts';
 import type { EngineDeps } from '../src/business/workflow/engine.ts';
 import type { ArtifactPort, MailerPort, PusherPort } from '../src/contracts/ports.ts';
-import { ok } from '../src/platform/shared/result.ts';
-import type { JsonValue } from '../src/platform/shared/json.ts';
+import { ok } from '@juli-os/artifacts';
+import type { JsonValue } from '@juli-os/artifacts'
 
 /** 动态进件（nodes 模式）+ 默认会话派发：agent 步 running 的最短路径。 */
 const startIntake = async (

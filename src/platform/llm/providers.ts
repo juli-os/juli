@@ -2,7 +2,7 @@
 // 注入 fetchImpl 即可全链 mock。两个实现：Anthropic Messages、
 // OpenAI Chat Completions（兼容 BigModel/GLM 的 OpenAI 协议端点）。
 
-import { err, ok, toResult, type Result } from '../shared/result.ts';
+import { err, ok, toResult, type Result } from '@juli-os/artifacts';
 import type { CompletionRequest, CompletionResult, LlmPort } from '../../contracts/ports.ts';
 
 type FetchImpl = (url: string, init: RequestInit) => Promise<Response>;

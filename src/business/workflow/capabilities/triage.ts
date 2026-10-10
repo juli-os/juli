@@ -5,12 +5,14 @@
 // 答案+LLM 瘦身只写 summary/session；判定失败/低置信=原 LLM 全量抽取
 // （fail-open 平凡——jev 挂了不许挂进件）。
 
-import { asRecord, asString, truncate, type JsonRecord } from '../../../platform/shared/json.ts';
-import { rfc3339, type Clock } from '../../../platform/shared/clock.ts';
-import type { Step, Workflow } from '../../../contracts/entities.ts';
-import { originalEmail } from '../../../platform/ledger/casefile.ts';
-import type { LifecycleStore } from '../../../platform/ledger/store.ts';
-import type { JudgmentGateway, LlmPort } from '../../../contracts/ports.ts';
+import { asString, truncate } from '../../../platform/shared/json.ts'
+import { asRecord, type JsonRecord } from '@juli-os/artifacts'
+import { rfc3339, type Clock } from '@juli-os/artifacts';
+import { type Step, type Workflow } from '@juli-os/ledger';
+import { originalEmail } from '@juli-os/ledger';
+import type { LifecycleStore } from '@juli-os/ledger';
+import type { LlmPort } from '../../../contracts/ports.ts';
+import { type JudgmentGateway } from '@juli-os/routing';
 import { parseLoose, type StepCtx } from './common.ts';
 
 const TRIAGE_SYSTEM = `你是邮件信息抽取助手。阅读下面的邮件，输出一个 JSON 对象：

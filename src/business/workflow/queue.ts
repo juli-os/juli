@@ -10,7 +10,7 @@
 // 队列状态（activeIds/waitingIds）按引用共享给需要直查的模块（appendNode
 // 判占位、reconcile 自愈放位）——与拆分前同一份闭包状态等价。
 
-import type { LifecycleStore } from '../../platform/ledger/store.ts';
+import type { LifecycleStore } from '@juli-os/ledger';
 import { isActiveWorkflowStatus } from '../../contracts/statuses.ts';
 
 export interface Queue {

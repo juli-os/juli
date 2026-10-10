@@ -10,10 +10,11 @@
 // Re: 原题 + 无抄送（申报值只作展示+审计，envelope_cc_override_ignored 留痕）；
 // 任务流维持 nodes 才认申报（断点十）。
 
-import { asString, type JsonRecord, type JsonValue } from '../../platform/shared/json.ts';
-import type { LifecycleStore } from '../../platform/ledger/store.ts';
-import type { Step } from '../../contracts/entities.ts';
-import { type DeliverableRef, isDeliverableRef, parseEnvelope } from '../../platform/artifacts/ledger.ts';
+import { asString } from '../../platform/shared/json.ts'
+import type { JsonRecord, JsonValue } from '@juli-os/artifacts'
+import type { LifecycleStore } from '@juli-os/ledger';
+import { type Step } from '@juli-os/ledger';
+import { type DeliverableRef, isDeliverableRef, parseEnvelope } from '@juli-os/artifacts';
 
 export const replySubject = (subject: string): string => {
   if (subject === '') return 'Re: (无主题)';

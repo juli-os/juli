@@ -4,7 +4,7 @@
 // 声明表内才采纳；fail-open（off/挂/低置信=规则腿结果）。
 
 import { describe, expect, it } from 'vitest';
-import type { JudgmentGateway } from '../src/contracts/ports.ts';
+import { type JudgmentGateway } from '@juli-os/routing';
 import { makeEngine, makeEmail, until } from './helpers.ts';
 
 const AGENTS = [

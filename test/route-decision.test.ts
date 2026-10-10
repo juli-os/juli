@@ -3,9 +3,9 @@
 // 视图全是投影。落回（resolveSession 改道）单独留 route_fallback 审计事件。
 
 import { describe, expect, it } from 'vitest';
-import { createLedgerStore } from '../src/platform/ledger/store.ts';
+import { createLedgerStore } from '@juli-os/ledger';
 import { createEngine } from '../src/business/workflow/engine.ts';
-import { decideRoute } from '../src/business/routing/decision.ts';
+import { decideRoute } from '@juli-os/routing';
 import type { EngineDeps } from '../src/business/workflow/engine.ts';
 import type { MailerPort, PusherPort } from '../src/contracts/ports.ts';
 import { makeClock, makeEmail, seqIds } from './helpers.ts';

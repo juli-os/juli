@@ -4,7 +4,7 @@
 import { createHmac } from 'node:crypto';
 import type { Context } from 'hono';
 import { safeEqual } from '../platform/shared/secure.ts';
-import type { JsonRecord } from '../platform/shared/json.ts';
+import type { JsonRecord } from '@juli-os/artifacts'
 
 export type AppEnv = { Variables: { user: string } };
 

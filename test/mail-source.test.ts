@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { createMailSource } from '../src/platform/email/source.ts';
 import type { ImapTransport } from '../src/platform/email/imap.ts';
 import type { InboxMessage } from '../src/platform/email/inbox.ts';
-import { ok } from '../src/platform/shared/result.ts';
+import { ok } from '@juli-os/artifacts';
 
 interface Env {
   readonly uid: number;

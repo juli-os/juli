@@ -8,13 +8,13 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import WebSocket from 'ws';
-import { createPty, ptyAvailable } from '../src/platform/agents/pty.ts';
+import { createPty, ptyAvailable } from '@juli-os/agents';
 import { attachPtyHub } from '../src/platform/ws/ptyhub.ts';
-import { parseSkill, expandPrompt, createSkillRegistry } from '../src/platform/agents/skills.ts';
-import { probePane } from '../src/platform/agents/pane_probe.ts';
+import { parseSkill, expandPrompt, createSkillRegistry } from '@juli-os/agents';
+import { probePane } from '@juli-os/agents';
 import { createDesktopNotifier } from '../src/platform/push/notify.ts';
-import type { TmuxClient } from '../src/platform/agents/tmux.ts';
-import { ok } from '../src/platform/shared/result.ts';
+import type { TmuxClient } from '@juli-os/agents';
+import { ok } from '@juli-os/artifacts';
 
 const hasTmux = (() => {
   try {

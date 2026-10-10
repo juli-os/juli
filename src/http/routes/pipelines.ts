@@ -3,7 +3,7 @@
 
 import type { Hono } from 'hono';
 import type { Runtime } from '../../runtime.ts';
-import type { JsonRecord } from '../../platform/shared/json.ts';
+import type { JsonRecord } from '@juli-os/artifacts'
 import { readBody, type AppEnv } from '../helpers.ts';
 
 export const registerPipelinesRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {

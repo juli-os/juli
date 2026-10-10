@@ -3,12 +3,12 @@
 // ② 节点时序——started_at/completed_at 随状态转变落列，goShape 真数据外送。
 
 import { describe, expect, it } from 'vitest';
-import { createLedgerStore } from '../src/platform/ledger/store.ts';
+import { createLedgerStore } from '@juli-os/ledger';
 import { stepToGo } from '../src/platform/shared/goShape.ts';
 import { fixedClock, makeClock, makeEmail, seqIds } from './helpers.ts';
 import { createEngine, type Engine, type EngineDeps } from '../src/business/workflow/engine.ts';
 import { parseTemplate } from '../src/business/templates/template.ts';
-import { ok, type Result } from '../src/platform/shared/result.ts';
+import { ok, type Result } from '@juli-os/artifacts';
 import type { LlmPort, MailerPort, PusherPort } from '../src/contracts/ports.ts';
 
 const NODES_YAML = `key: adhoc-nodes

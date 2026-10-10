@@ -5,12 +5,12 @@
 // standard/缺省 = 行为零变化。
 
 import { describe, expect, it } from 'vitest';
-import { createProvisioningDispatch } from '../src/platform/agents/dispatch.ts';
-import type { TmuxClient } from '../src/platform/agents/tmux.ts';
-import { createLedgerStore } from '../src/platform/ledger/store.ts';
+import { createProvisioningDispatch } from '@juli-os/agents';
+import type { TmuxClient } from '@juli-os/agents';
+import { createLedgerStore } from '@juli-os/ledger';
 import { configSchema } from '../src/platform/config/schema.ts';
 import { createEngine, type EngineDeps } from '../src/business/workflow/engine.ts';
-import { ok } from '../src/platform/shared/result.ts';
+import { ok } from '@juli-os/artifacts';
 import { makeClock, seqIds } from './helpers.ts';
 import type { MailerPort, PusherPort } from '../src/contracts/ports.ts';
 

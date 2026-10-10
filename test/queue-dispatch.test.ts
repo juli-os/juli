@@ -6,10 +6,10 @@
 // ⑥dedup 在途含 queued（同信第二封不再建单）。
 
 import { describe, expect, it } from 'vitest';
-import { createLedgerStore } from '../src/platform/ledger/store.ts';
+import { createLedgerStore } from '@juli-os/ledger';
 import { createEngine, type EngineDeps } from '../src/business/workflow/engine.ts';
 import { makeClock, seqIds, makeEmail } from './helpers.ts';
-import { ok } from '../src/platform/shared/result.ts';
+import { ok } from '@juli-os/artifacts';
 import type { MailerPort, PusherPort } from '../src/contracts/ports.ts';
 
 const makeWorld = (over: Partial<EngineDeps> = {}, sharedStore?: ReturnType<typeof createLedgerStore>) => {

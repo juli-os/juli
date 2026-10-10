@@ -1,11 +1,12 @@
 // 模板流通用能力：flow 上下文渲染 + 通用 llm 步。
 // 灵活性模型：结构=模板，per-step 逻辑=prompt/system，数据流=步骤 id 键控输出。
 
-import { asRecord, asString, truncate, type JsonRecord } from '../../../platform/shared/json.ts';
-import { rfc3339, type Clock } from '../../../platform/shared/clock.ts';
-import type { Step, Workflow } from '../../../contracts/entities.ts';
-import { originalEmail } from '../../../platform/ledger/casefile.ts';
-import type { LifecycleStore } from '../../../platform/ledger/store.ts';
+import { asString, truncate } from '../../../platform/shared/json.ts'
+import { asRecord, type JsonRecord } from '@juli-os/artifacts'
+import { rfc3339, type Clock } from '@juli-os/artifacts';
+import { type Step, type Workflow } from '@juli-os/ledger';
+import { originalEmail } from '@juli-os/ledger';
+import type { LifecycleStore } from '@juli-os/ledger';
 import type { LlmPort } from '../../../contracts/ports.ts';
 import { parseLoose, type StepCtx } from './common.ts';
 

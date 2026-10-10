@@ -3,7 +3,7 @@
 // handoff 留痕。物理动作=同一案卷追加一枚执行步，案卷不分裂。
 
 import { describe, expect, it } from 'vitest';
-import { createLedgerStore } from '../src/platform/ledger/store.ts';
+import { createLedgerStore } from '@juli-os/ledger';
 import { createEngine } from '../src/business/workflow/engine.ts';
 import type { EngineDeps } from '../src/business/workflow/engine.ts';
 import type { MailerPort, PusherPort } from '../src/contracts/ports.ts';

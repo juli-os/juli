@@ -3,9 +3,9 @@
 // 由 reconcile 持有的其他 sweep）。
 
 import type { Logger } from '../../platform/events/bus.ts';
-import type { LifecycleStore } from '../../platform/ledger/store.ts';
-import type { Step } from '../../contracts/entities.ts';
-import { asString } from '../../platform/shared/json.ts';
+import type { LifecycleStore } from '@juli-os/ledger';
+import { type Step } from '@juli-os/ledger';
+import { asString } from '../../platform/shared/json.ts'
 import type { EngineDeps } from './engine.ts';
 import type { Journal } from './journal.ts';
 

@@ -9,10 +9,10 @@
 // （system prompt + 计划块暂存 + 确认派发），事件形状沿用 voice.ts 的
 // chat:X 线上协议——/ws/chat 的 iOS 客户端零改动吃到。
 
-import { createOrchestrator, type Orchestrator, type OrchestratorEvent } from '../../platform/agents/orchestrator.ts';
-import type { Tool } from '../../platform/agents/tools.ts';
-import type { ChatLlmPort } from '../../platform/llm/chat.ts';
-import type { Result } from '../../platform/shared/result.ts';
+import { createOrchestrator, type Orchestrator, type OrchestratorEvent } from '@juli-os/agents';
+import type { Tool } from '@juli-os/agents';
+import { type ChatLlmPort } from '@juli-os/agents';
+import type { Result } from '@juli-os/artifacts';
 
 export interface IntakeLanding {
   readonly session: string;

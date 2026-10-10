@@ -33,18 +33,20 @@
 // completeAgentStep→settle→queue……）。装配期用一个 late 持有器破环——
 // 各模块拿到的 late 引用最后统一回填真身，装配期调用即抛错（fail loud）。
 
-import { type Clock, type IdGen, systemClock } from '../../platform/shared/clock.ts';
+import { type Clock, type IdGen, systemClock } from '@juli-os/artifacts';
 import { holdVerdict, validHoldWindow, type HoldWindowConfig } from '../../platform/shared/windowHold.ts';
-import { type JsonRecord, type JsonValue } from '../../platform/shared/json.ts';
+import type { JsonRecord, JsonValue } from '@juli-os/artifacts'
 import { consoleLogger, type Logger } from '../../platform/events/bus.ts';
-import type { LifecycleStore } from '../../platform/ledger/store.ts';
-import type { Step, StepKind, Workflow } from '../../contracts/entities.ts';
-import type { DispatcherPort, EmailMessage, LlmPort, MailerPort, PusherPort, SessionDelivery, SyncDispatcherPort, ArtifactPort , JudgmentGateway } from '../../contracts/ports.ts';
+import type { LifecycleStore } from '@juli-os/ledger';
+import { type Step, type StepKind, type Workflow } from '@juli-os/ledger';
+import type { DispatcherPort, EmailMessage, LlmPort, MailerPort, PusherPort, SessionDelivery, ArtifactPort } from '../../contracts/ports.ts';
+import { type SyncDispatcherPort } from '@juli-os/agents';
+import { type JudgmentGateway } from '@juli-os/routing';
 import type { InboundMessage } from '../../contracts/channels.ts';
 import type { PartyDirectory } from '../party/party.ts';
 import { type AuthzPolicy, defaultAuthzPolicy } from '../../contracts/authz.ts';
 import type { Template } from '../templates/template.ts';
-import type { Routing } from '../routing/decision.ts';
+import type { Routing } from '@juli-os/routing';
 import { makeJournal } from './journal.ts';
 import { makeQueue } from './queue.ts';
 import { makeZombie } from './zombie.ts';

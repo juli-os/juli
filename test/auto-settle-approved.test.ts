@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { configSchema } from '../src/platform/config/schema.ts';
 import { createRuntime } from '../src/runtime.ts';
-import type { JsonValue } from '../src/platform/shared/json.ts';
+import type { JsonValue } from '@juli-os/artifacts'
 
 /** 一张「agent 已完成 + 闸门已批」的 nodes 单（时间戳默认 10 分钟前——
  * 静默判据①过线）。gateAt/agentAt 传 'now' 造新鲜事件测静默守卫。 */

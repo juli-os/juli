@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import { makeEmail, makeEngine, until } from './helpers.ts';
 import { parseTemplate } from '../src/business/templates/template.ts';
-import type { StepKind } from '../src/contracts/entities.ts';
+import { type StepKind } from '@juli-os/ledger';
 import type { ArtifactPort } from '../src/contracts/ports.ts';
 
 const V2_YAML = `key: email-intake-v2

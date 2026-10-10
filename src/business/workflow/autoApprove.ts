@@ -14,11 +14,11 @@
 
 import { gateDelivery } from '../send/sendSeed.ts';
 import { WORKFLOW_STATUSES } from '../../contracts/statuses.ts';
-import type { JsonRecord } from '../../platform/shared/json.ts';
-import type { LifecycleStore } from '../../platform/ledger/store.ts';
+import type { JsonRecord } from '@juli-os/artifacts'
+import type { LifecycleStore } from '@juli-os/ledger';
 import type { Logger } from '../../platform/events/bus.ts';
-import type { Workflow } from '../../contracts/entities.ts';
-import type { Step } from '../../contracts/entities.ts';
+import { type Workflow } from '@juli-os/ledger';
+import { type Step } from '@juli-os/ledger';
 
 export interface AutoApproveRule {
   readonly id: string;

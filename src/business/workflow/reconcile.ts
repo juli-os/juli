@@ -3,9 +3,10 @@
 // （autoSettleFeedbackRuns / settleOneFeedbackRun）。
 
 import type { Logger } from '../../platform/events/bus.ts';
-import type { LifecycleStore } from '../../platform/ledger/store.ts';
+import type { LifecycleStore } from '@juli-os/ledger';
 import { isActiveStepStatus, isSettledStepStatus } from '../../contracts/statuses.ts';
-import { asString, type JsonValue } from '../../platform/shared/json.ts';
+import { asString } from '../../platform/shared/json.ts'
+import type { JsonValue } from '@juli-os/artifacts'
 import { gateDelivery } from '../send/sendSeed.ts';
 import { agentLiveSessionOf } from './capabilities/index.ts';
 import { briefDeclaresApply, feedbackRecordIdOf, hasLiveGate } from './support.ts';

@@ -12,7 +12,7 @@
 // 是引擎真实会写的状态——不是发明）。名单外的未知状态：视图显示原文字符串
 // 并归入「其他」分组，绝不隐藏。
 
-import type { StepStatus, WorkflowStatus } from './entities.ts';
+import type { StepStatus, WorkflowStatus } from '@juli-os/ledger';
 
 /** 语义分组：进行中（账上在走）/ 等决定（卡在人）/ 终态（收口）。 */
 export type StatusGroup = '进行中' | '等决定' | '终态';

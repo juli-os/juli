@@ -4,13 +4,13 @@
 
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
-import { createLedgerStore } from '../src/platform/ledger/store.ts';
+import { createLedgerStore } from '@juli-os/ledger';
 import { registerLifecycleRoutes } from '../src/http/routes/lifecycle.ts';
 import { makeClock, seqIds } from './helpers.ts';
 import type { Runtime } from '../src/runtime.ts';
-import type { TaskLanding } from '../src/business/routing/routeTask.ts';
+import type { TaskLanding } from '@juli-os/routing';
 import type { AppEnv } from '../src/http/helpers.ts';
-import type { JsonRecord } from '../src/platform/shared/json.ts';
+import type { JsonRecord } from '@juli-os/artifacts'
 
 const mkApp = (over: Partial<Runtime> = {}): { app: Hono<AppEnv>; store: ReturnType<typeof createLedgerStore>; started: { title: string; input: Record<string, unknown> }[] } => {
   const store = createLedgerStore(':memory:', { clock: makeClock().clock, ids: seqIds() });

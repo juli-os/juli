@@ -1,16 +1,16 @@
-// 生命周期账本的领域类型。全部 readonly：状态转变 = 显式函数写库（store 是
-// 唯一可变边界），内存里的对象从不被就地修改。与 Go internal/ledger/lifecycle
-// 的表结构逐列对齐（迁移 V1），在途数据可双读。
+// 生命周期账本的领域类型补集。核心实体（Workflow/Step 及状态枚举）的事实源
+// 已收编 npm 包 @juli-os/ledger（10-10 影子清除）；本文件只留包根导出面暂缺
+// 的补集——kind 能力集常量与账本伴生实体（LedgerEvent/Run/Prompt/TaskView）。
+// 后续 ledger 版本补齐根导出后本文件整体退役。全部 readonly：状态转变 =
+// 显式函数写库（store 是唯一可变边界），内存里的对象从不被就地修改。
 
-import type { JsonRecord } from '../platform/shared/json.ts';
+import type { JsonRecord } from '@juli-os/artifacts';
+import type { WorkflowStatus, StepKind } from '@juli-os/ledger';
 
-export type WorkflowStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'rejected';
 /** 终态集合：进入即级联收口在飞 run（queued/running 均为非终态，不收口）。 */
 export const TERMINAL_WORKFLOW_STATUSES: readonly WorkflowStatus[] = [
   'completed', 'failed', 'cancelled', 'rejected',
 ];
-export type StepStatus = 'pending' | 'running' | 'waiting_human' | 'completed' | 'failed' | 'cancelled' | 'skipped';
-export type StepKind = 'triage' | 'gate' | 'agent' | 'verify' | 'draft' | 'send' | 'llm' | 'share';
 
 export const STEP_KINDS: readonly StepKind[] = [
   'triage', 'gate', 'agent', 'verify', 'draft', 'send', 'llm', 'share',
@@ -29,41 +29,6 @@ export const AGENT_STEP_KINDS: readonly StepKind[] = ['agent', 'verify'];
 /** 能承载指令补丁的步（plan/prompt/session）：engine rework 回扫与 retry
  * patch 两处同口径（llm/draft 也吃指令，但不可插话干预）。 */
 export const INSTRUCTABLE_STEP_KINDS: readonly StepKind[] = ['agent', 'verify', 'llm', 'draft'];
-
-export interface Workflow {
-  readonly id: string;
-  readonly parentId: string | null;
-  readonly kind: string;
-  readonly title: string;
-  readonly status: WorkflowStatus;
-  readonly session: string;
-  readonly project: string;
-  readonly path: string;
-  /** 对话（Thread）一等建模：同一线邮件往来共享的线程 id。null = 建档前
-   * 的历史行或非邮件单。线程根 = 首封邮件自己的 workflow id。 */
-  readonly threadId: string | null;
-  readonly meta: JsonRecord;
-  readonly createdAt: string;
-  readonly updatedAt: string;
-}
-
-export interface Step {
-  readonly id: string;
-  readonly workflowId: string;
-  readonly seq: number; // 1-based
-  readonly kind: StepKind;
-  readonly title: string;
-  readonly status: StepStatus;
-  readonly input: JsonRecord;
-  readonly output: JsonRecord;
-  readonly summary: string;
-  readonly updatedAt: string;
-  /** 节点时序：离开 pending 的第一次转变（闸门 waiting_human 也算开跑）。
-   * 空串 = 历史行（补列迁移前）或尚未开跑。 */
-  readonly startedAt: string;
-  /** 终态首次到达时刻；null = 未终结或历史行。 */
-  readonly completedAt: string | null;
-}
 
 export interface LedgerEvent {
   readonly id: number;

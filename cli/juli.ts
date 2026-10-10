@@ -10,17 +10,18 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
-import { createTmuxClient } from '../src/platform/agents/tmux.ts';
-import { createProvisioningDispatch } from '../src/platform/agents/dispatch.ts';
-import { createJev, jevTokenFromEnv } from '../src/business/routing/jev.ts';
+import { createTmuxClient } from '@juli-os/agents';
+import { createProvisioningDispatch } from '@juli-os/agents';
+import { createJev, jevTokenFromEnv } from '@juli-os/routing';
 import {
   planRouting, SAMPLE_FACTS, SAMPLE_RECORDS, ticketTitle, topAlternatives,
   type RoutingFacts, type RoutingPlan,
-} from '../src/business/routing/plan.ts';
+} from '@juli-os/routing';
 import {
   configFilePath, configSchema, danglingFeedbackRoutes, resolveAiConfig, saveConfigFile,
 } from '../src/platform/config/schema.ts';
 import { createAnthropicChat, createOpenAiChat } from '../src/platform/llm/chat.ts';
+import type { FbRecord } from '@juli-os/routing';
 
 const BASE = process.env['JULI_SERVICE_URL'] ?? 'http://127.0.0.1:7170';
 const PW = process.env['JULI_PASSWORD'] ??

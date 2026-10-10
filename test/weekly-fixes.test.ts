@@ -16,12 +16,12 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createLedgerStore } from '../src/platform/ledger/store.ts';
+import { createLedgerStore } from '@juli-os/ledger';
 import { createEngine, type EngineDeps } from '../src/business/workflow/engine.ts';
 import { configSchema } from '../src/platform/config/schema.ts';
 import { createRuntime, type RuntimeSeams } from '../src/runtime.ts';
 import { createHttpApp } from '../src/http/app.ts';
-import { ok } from '../src/platform/shared/result.ts';
+import { ok } from '@juli-os/artifacts';
 import { makeClock, makeEmail, seqIds, until } from './helpers.ts';
 import type { ArtifactPort, MailerPort, PusherPort } from '../src/contracts/ports.ts';
 

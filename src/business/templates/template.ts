@@ -6,8 +6,9 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { yamlParse } from '../../platform/shared/yamlparse.ts';
-import { STEP_KINDS, type StepKind } from '../../contracts/entities.ts';
-import type { JsonRecord, JsonValue } from '../../platform/shared/json.ts';
+import { STEP_KINDS } from '../../contracts/entities.ts';
+import { type StepKind } from '@juli-os/ledger';
+import type { JsonRecord, JsonValue } from '@juli-os/artifacts'
 
 // enum 从账本的 StepKind 派生：两处词汇表漂移 = 编译错，不是运行时惊喜。
 export const stepKindSchema = z.enum([...STEP_KINDS] as [StepKind, ...StepKind[]]);

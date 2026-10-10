@@ -4,10 +4,10 @@
 // （忙=名下非终态单：排队/在跑/等批准都算）。
 
 import { describe, expect, it } from 'vitest';
-import { createLedgerStore } from '../src/platform/ledger/store.ts';
+import { createLedgerStore } from '@juli-os/ledger';
 import { makeClock, seqIds } from './helpers.ts';
-import { routeTask, routeTaskMenu, type RouteTaskDeps } from '../src/business/routing/routeTask.ts';
-import type { JudgmentGateway, JudgmentOutcome } from '../src/contracts/ports.ts';
+import { routeTask, routeTaskMenu, type RouteTaskDeps } from '@juli-os/routing';
+import { type JudgmentGateway, type JudgmentOutcome } from '@juli-os/routing';
 
 const ROUTING = {
   defaultSession: 'juli-reply', defaultProject: 'p',

@@ -10,7 +10,7 @@ import { configSchema } from '../src/platform/config/schema.ts';
 import { createRuntime, type RuntimeSeams } from '../src/runtime.ts';
 import type { CompletionResult } from '../src/contracts/ports.ts';
 import { createHttpApp } from '../src/http/app.ts';
-import { ok } from '../src/platform/shared/result.ts';
+import { ok } from '@juli-os/artifacts';
 
 const dataDir = mkdtempSync(join(tmpdir(), 'juli-e2e-'));
 

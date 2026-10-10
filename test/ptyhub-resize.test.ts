@@ -12,8 +12,8 @@ import { join } from 'node:path';
 import { createServer, type Server } from 'node:http';
 import WebSocket from 'ws';
 import { attachPtyHub } from '../src/platform/ws/ptyhub.ts';
-import { createTmuxClient } from '../src/platform/agents/tmux.ts';
-import { ptyAvailable } from '../src/platform/agents/pty.ts';
+import { createTmuxClient } from '@juli-os/agents';
+import { ptyAvailable } from '@juli-os/agents';
 
 // 守卫必须双查：CI（ubuntu runner）预装 tmux 但没有 /usr/bin/expect——pty
 // 桥是 expect 脚本，缺它 createPty spawn 即错、pty 秒退 → 全测试挂

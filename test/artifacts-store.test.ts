@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createDiskBackend } from '../src/platform/artifacts/store.ts';
+import { createDiskBackend } from '@juli-os/artifacts';
 
 describe('disk 后端 containment', () => {
   it('穿越键 get/put/delete 一律失败，盘外文件不被读写删', async () => {

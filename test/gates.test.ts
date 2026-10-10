@@ -12,7 +12,7 @@ import {
 import {
   envelopeToOf, gateDeliveryOf, isSendGate, resolveRecipientOf, type GateStepLike,
 } from '../web/src/gates.ts';
-import type { JsonRecord } from '../src/platform/shared/json.ts';
+import type { JsonRecord } from '@juli-os/artifacts'
 
 describe('gates：判型与引擎对齐', () => {
   const cases: ReadonlyArray<readonly [string, JsonRecord | undefined]> = [

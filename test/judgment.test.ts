@@ -6,8 +6,8 @@ import { describe, expect, it } from 'vitest';
 import {
   createCliJudge, createJudgmentGateway, createJudgeFromConfig,
   createLocalApiJudge, loadJudgmentConfig, parseJudgmentConfig,
-} from '../src/business/routing/judgment.ts';
-import { ok } from '../src/platform/shared/result.ts';
+} from '@juli-os/routing';
+import { ok } from '@juli-os/artifacts';
 
 describe('parseJudgmentConfig / loadJudgmentConfig', () => {
   it('provider 非法/非对象 → null（整体关）', () => {
@@ -301,7 +301,7 @@ describe('提供方（约束②：cloud/local-api/cli 同形可换）', () => {
     expect(createJudgeFromConfig(parseJudgmentConfig({ provider: 'cloud' })!, { TYPESAFE_API_KEY: 'k' })).not.toBeNull();
   });
   it('createJev 契约不变（cloud 形状回归）', async () => {
-    const { createJev } = await import('../src/business/routing/jev.ts');
+    const { createJev } = await import('@juli-os/routing');
     const j = createJev({
       token: 't',
       fetchImpl: (async () => new Response(JSON.stringify({ model: 'jev-latest', answers: { q: { type: 'noul', noul: 1 } }, usage: { input_tokens: 1, output_tokens: 1 } }), { status: 200 })) as typeof fetch,

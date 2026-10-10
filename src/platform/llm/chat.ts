@@ -1,45 +1,10 @@
-// 对话式 LLM 端口（orchestrator 的 tool-calling 用）：完整消息数组 + 工具
-// 定义，返回 content + toolCalls。与引擎的 single-shot complete 分开——
-// 两者对供应商协议的要求不同，不硬塞一个接口。
+// 对话式 LLM 供应商适配器。端口类型（ToolSchema/ChatMessage/ChatLlmPort 等）
+// 的事实源已收编 npm 包 @juli-os/agents（10-10 影子清除）——本文件只留
+// Anthropic/OpenAI 两个协议实现（引擎装配面）。
 
-import { err, ok, toResult, type Result } from '../shared/result.ts';
+import { err, ok, toResult, type Result } from '@juli-os/artifacts';
+import type { ToolSchema, ToolCallRequest, ChatMessage, ChatResult, ChatLlmPort } from '@juli-os/agents';
 
-export interface ToolSchema {
-  readonly name: string;
-  readonly description: string;
-  /** JSON Schema（parameters）。 */
-  readonly parameters: Record<string, unknown>;
-}
-
-export interface ToolCallRequest {
-  /** {role, content, toolCalls?, toolResults?} 的完整消息历史。 */
-  readonly messages: readonly ChatMessage[];
-  readonly tools?: readonly ToolSchema[];
-  readonly model?: string;
-  readonly maxTokens?: number;
-  readonly signal?: AbortSignal;
-}
-
-export interface ChatMessage {
-  readonly role: 'user' | 'assistant' | 'tool' | 'system';
-  readonly content: string;
-  readonly toolCalls?: readonly { readonly id: string; readonly name: string; readonly arguments: string }[];
-  /** role=tool 时：上一轮 assistant toolCalls 的结果。 */
-  readonly toolResults?: readonly { readonly id: string; readonly name: string; readonly content: string; readonly isError?: boolean }[];
-  readonly system?: string;
-}
-
-export interface ChatResult {
-  readonly content: string;
-  readonly thinking?: string;
-  readonly stopReason?: string;
-  readonly toolCalls: readonly { readonly id: string; readonly name: string; readonly arguments: string }[];
-}
-
-export interface ChatLlmPort {
-  readonly name: string;
-  chat(req: ToolCallRequest): Promise<Result<ChatResult, Error>>;
-}
 
 type FetchImpl = (url: string, init: RequestInit) => Promise<Response>;
 const defaultFetch: FetchImpl = (url, init) => fetch(url, init);

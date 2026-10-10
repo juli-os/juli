@@ -3,7 +3,7 @@
 // 不出价（不猜价）、匹配边界（前后缀不吃错价）。
 
 import { describe, expect, it } from 'vitest';
-import { findPrice, priceUsage, type UsageRow } from '../src/platform/ledger/pricing.ts';
+import { findPrice, priceUsage, type UsageRow } from '@juli-os/ledger';
 
 const row = (model: string, inputTokens: number, outputTokens: number, cachedTokens = 0): UsageRow =>
   ({ model, inputTokens, outputTokens, cachedTokens });

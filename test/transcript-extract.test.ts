@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { extractFinalMessage } from '../src/platform/agents/transcript.ts';
+import { extractFinalMessage } from '@juli-os/agents';
 
 /** 一条 assistant 记录的 JSONL 行；blocks 缺省 = 无 text（模拟 tool 洪流）。 */
 const assistantLine = (text: string | null, pad = ''): string =>

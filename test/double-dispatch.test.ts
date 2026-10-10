@@ -9,7 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import { ladderEmail, makeEngine, makeEmail, until } from './helpers.ts';
 import { makeQueue } from '../src/business/workflow/queue.ts';
-import { createLedgerStore } from '../src/platform/ledger/store.ts';
+import { createLedgerStore } from '@juli-os/ledger';
 import { makeClock, seqIds } from './helpers.ts';
 
 describe('①③ 改道彻底化 + 重派跟随落点', () => {

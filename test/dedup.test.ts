@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createLedgerStore } from '../src/platform/ledger/store.ts';
+import { createLedgerStore } from '@juli-os/ledger';
 
 const newStore = (): ReturnType<typeof createLedgerStore> =>
   createLedgerStore(join(mkdtempSync(join(tmpdir(), 'juli-dedup-')), 'lifecycle.db'));

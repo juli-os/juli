@@ -2,7 +2,7 @@
 // 纯函数 decideContextAction 的行为契约。
 
 import { describe, expect, it } from 'vitest';
-import { decideContextAction, DEFAULT_COMPACT_THRESHOLD, DEFAULT_COMPACT_COOLDOWN_MS } from '../src/platform/agents/contextGate.ts';
+import { decideContextAction, DEFAULT_COMPACT_THRESHOLD, DEFAULT_COMPACT_COOLDOWN_MS } from '@juli-os/agents';
 
 describe('context gate 判定', () => {
   it('切换 workflow → clear', () => {

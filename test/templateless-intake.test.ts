@@ -4,11 +4,11 @@
 // 本文件锁定：**注册表为空也照常进件**——manifest 配置错误从根上无米可炊。
 
 import { describe, expect, it } from 'vitest';
-import { createLedgerStore } from '../src/platform/ledger/store.ts';
+import { createLedgerStore } from '@juli-os/ledger';
 import { createEngine, type Engine, type EngineDeps } from '../src/business/workflow/engine.ts';
-import { ok } from '../src/platform/shared/result.ts';
+import { ok } from '@juli-os/artifacts';
 import { makeClock, makeEmail, seqIds, until } from './helpers.ts';
-import type { JsonRecord } from '../src/platform/shared/json.ts';
+import type { JsonRecord } from '@juli-os/artifacts'
 import type { LlmPort, MailerPort, PusherPort } from '../src/contracts/ports.ts';
 
 const makeEngineEmpty = (over: Partial<EngineDeps> = {}) => {

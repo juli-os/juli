@@ -1,12 +1,12 @@
 // 引擎测试的公共脚手架：固定时钟 + 顺序 ID + 内存 SQLite + mock 端口，
 // 全流程确定性断言。
 
-import { createLedgerStore } from '../src/platform/ledger/store.ts';
+import { createLedgerStore } from '@juli-os/ledger';
 import { createEngine, type Engine, type EngineDeps } from '../src/business/workflow/engine.ts';
 import { parseTemplate } from '../src/business/templates/template.ts';
 import { EMAIL_REPLY_YAML } from '../src/business/templates/defaultTemplates.ts';
-import { ok, type Result } from '../src/platform/shared/result.ts';
-import type { Clock, IdGen } from '../src/platform/shared/clock.ts';
+import { ok, type Result } from '@juli-os/artifacts';
+import type { Clock, IdGen } from '@juli-os/artifacts';
 import type { EmailMessage, LlmPort, MailerPort, PusherPort } from '../src/contracts/ports.ts';
 import type { CompletionRequest } from '../src/contracts/ports.ts';
 
@@ -28,7 +28,7 @@ export const seqIds = (prefix = 'id'): IdGen => {
 
 /** 阶梯起流（配方路径）：邮件类测试走 startFlow('email-reply')——与旧
  * manifest 进件等价的阶梯形态。动态进件（无模板）见 templateless 测试。 */
-export const ladderEmail = (engine: Engine, m: EmailMessage): Promise<import('../src/contracts/entities.ts').Workflow> =>
+export const ladderEmail = (engine: Engine, m: EmailMessage): Promise<import('@juli-os/ledger').Workflow> =>
   engine.startFlow('email-reply', m.subject, {
     from: m.from, subject: m.subject, body: m.body, in_reply_to: m.messageId,
   });

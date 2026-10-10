@@ -2,7 +2,7 @@
 // 拒绝 + 已终态幂等。空容器与全 completed 单的正常收口不回归。
 import { describe, expect, it } from 'vitest';
 import { makeEngine } from './helpers.ts';
-import type { StepKind, StepStatus, WorkflowStatus } from '../src/contracts/entities.ts';
+import { type StepKind, type StepStatus, type WorkflowStatus } from '@juli-os/ledger';
 
 type World = ReturnType<typeof makeEngine>;
 

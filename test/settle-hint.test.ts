@@ -3,11 +3,11 @@
 // run_settleable 事件 + PusherPort.settleHint 尽力推送；闸门等待中不算。
 
 import { describe, expect, it } from 'vitest';
-import { createLedgerStore } from '../src/platform/ledger/store.ts';
+import { createLedgerStore } from '@juli-os/ledger';
 import { makeClock, seqIds } from './helpers.ts';
 import { createEngine, type Engine, type EngineDeps } from '../src/business/workflow/engine.ts';
 import { parseTemplate } from '../src/business/templates/template.ts';
-import { ok } from '../src/platform/shared/result.ts';
+import { ok } from '@juli-os/artifacts';
 import type { LlmPort, MailerPort, PusherPort } from '../src/contracts/ports.ts';
 
 const NODES_YAML = `key: adhoc-nodes

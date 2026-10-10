@@ -2,10 +2,11 @@
 // 发送守卫打回（reworkSend）、内容转派（handoff）、会话改派（assignSession）、
 // 重试（retry）。人的修正权全在这层——快照钉死输入，这里开合法窗口。
 
-import { rfc3339 } from '../../platform/shared/clock.ts';
-import { asString, truncate, type JsonRecord, type JsonValue } from '../../platform/shared/json.ts';
+import { rfc3339 } from '@juli-os/artifacts';
+import { asString, truncate } from '../../platform/shared/json.ts'
+import type { JsonRecord, JsonValue } from '@juli-os/artifacts'
 import type { Logger } from '../../platform/events/bus.ts';
-import type { LifecycleStore } from '../../platform/ledger/store.ts';
+import type { LifecycleStore } from '@juli-os/ledger';
 import { AGENT_STEP_KINDS, INSTRUCTABLE_STEP_KINDS } from '../../contracts/entities.ts';
 import { isActiveWorkflowStatus, isSettledWorkflowStatus } from '../../contracts/statuses.ts';
 import { agentLiveSessionOf } from './capabilities/index.ts';

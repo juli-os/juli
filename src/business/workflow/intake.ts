@@ -2,19 +2,19 @@
 // 线程三级建档/Party 指针/工件物证/绑定路由/route_decision 留痕/首节点
 // 任务卡）与泛化渠道（onInbound：按渠道路由模板的动态进件）。
 
-import { rfc3339, type Clock } from '../../platform/shared/clock.ts';
-import { truncate } from '../../platform/shared/json.ts';
+import { rfc3339, type Clock } from '@juli-os/artifacts';
+import { truncate } from '../../platform/shared/json.ts'
 import type { Logger } from '../../platform/events/bus.ts';
-import type { LifecycleStore } from '../../platform/ledger/store.ts';
-import type { Workflow } from '../../contracts/entities.ts';
+import type { LifecycleStore } from '@juli-os/ledger';
+import { type Workflow } from '@juli-os/ledger';
 import {
   parseCaseFile, withOriginal,
-} from '../../platform/ledger/casefile.ts';
+} from '@juli-os/ledger';
 import { DEDUP_META_KEY, dedupKey, type EmailMessage } from '../../contracts/ports.ts';
 import type { InboundMessage } from '../../contracts/channels.ts';
 import { checkAuthz, type AuthzPolicy } from '../../contracts/authz.ts';
 import type { PartyDirectory, PartyMatch } from '../party/party.ts';
-import { decideRoute, isInternalSender } from '../routing/decision.ts';
+import { decideRoute, isInternalSender } from '@juli-os/routing';
 import { INTAKE_PROMPT } from './support.ts';
 import type { EngineDeps } from './engine.ts';
 import type { Queue } from './queue.ts';

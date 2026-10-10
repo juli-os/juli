@@ -3,7 +3,7 @@
 
 import { timingSafeEqual } from 'node:crypto';
 import { safeEqual } from '../shared/secure.ts';
-import { ok, toResult, type Result } from '../shared/result.ts';
+import { ok, toResult, type Result } from '@juli-os/artifacts';
 
 export interface AuthUser {
   readonly id: string;

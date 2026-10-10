@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { createTmuxClient } from '../src/platform/agents/tmux.ts';
+import { createTmuxClient } from '@juli-os/agents';
 
 const hasTmux = (() => {
   try { execFileSync('tmux', ['-V'], { stdio: 'ignore' }); return true; } catch { return false; }

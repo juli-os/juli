@@ -1,7 +1,7 @@
 // cli/juli.ts 路由投影纯函数契约(R1 P2-3:routing plan --sample 声明表与
 // 生产同源)。cli/juli.ts 有直跑守卫,import 零副作用,可安全单测。
 import { describe, expect, it } from 'vitest';
-import { SAMPLE_FACTS } from '../src/business/routing/plan.ts';
+import { SAMPLE_FACTS } from '@juli-os/routing';
 import { factsForPlan, projectRoutingFacts } from '../cli/juli.ts';
 
 describe('projectRoutingFacts:引擎 config → RoutingFacts 投影', () => {

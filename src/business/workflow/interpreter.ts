@@ -3,11 +3,11 @@
 // 里——能力模块只认 ctx，不认引擎内部。
 
 import type { Logger } from '../../platform/events/bus.ts';
-import type { Clock } from '../../platform/shared/clock.ts';
-import type { LifecycleStore } from '../../platform/ledger/store.ts';
-import type { Step, StepKind, Workflow } from '../../contracts/entities.ts';
+import type { Clock } from '@juli-os/artifacts';
+import type { LifecycleStore } from '@juli-os/ledger';
+import { type Step, type StepKind, type Workflow } from '@juli-os/ledger';
 import { isActiveStepStatus } from '../../contracts/statuses.ts';
-import { asString } from '../../platform/shared/json.ts';
+import { asString } from '../../platform/shared/json.ts'
 import {
   runTriage, runDraft, runGenericLlm, runShare, type StepCtx, type StepHandler,
 } from './capabilities/index.ts';

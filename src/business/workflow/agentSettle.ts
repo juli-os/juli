@@ -3,15 +3,16 @@
 // feedback 单链尾自愈补闸（autoAppendFeedbackGate）与发送后自动收口
 // （autoSettleAfterSend）。
 
-import { rfc3339 } from '../../platform/shared/clock.ts';
-import { asString, truncate, type JsonValue } from '../../platform/shared/json.ts';
+import { rfc3339 } from '@juli-os/artifacts';
+import { asString, truncate } from '../../platform/shared/json.ts'
+import type { JsonValue } from '@juli-os/artifacts'
 import type { Logger } from '../../platform/events/bus.ts';
-import type { LifecycleStore } from '../../platform/ledger/store.ts';
-import type { Step, Workflow } from '../../contracts/entities.ts';
+import type { LifecycleStore } from '@juli-os/ledger';
+import { type Step, type Workflow } from '@juli-os/ledger';
 import { isSettledStepStatus } from '../../contracts/statuses.ts';
-import { appendExecution } from '../../platform/ledger/casefile.ts';
-import type { DeliverableRef } from '../../platform/artifacts/ledger.ts';
-import { isDeliverableRef } from '../../platform/artifacts/ledger.ts';
+import { appendExecution } from '@juli-os/ledger';
+import type { DeliverableRef } from '@juli-os/artifacts';
+import { isDeliverableRef } from '@juli-os/artifacts';
 import { briefDeclaresApply, feedbackRecordIdOf, hasLiveGate } from './support.ts';
 import type { EngineDeps } from './engine.ts';
 import type { Journal } from './journal.ts';

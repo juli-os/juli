@@ -12,7 +12,7 @@
 // 从 transcript 提取最后一条 assistant 消息随上报（PORTING#3 结构化输出），
 // 服务端不再需要抓屏幕。读不到 transcript 时退化到无 output 上报。
 
-import { extractFinalMessage, parseHookStdin, parseSkillUsedStdin } from '../platform/agents/transcript.ts';
+import { extractFinalMessage, parseHookStdin, parseSkillUsedStdin } from '@juli-os/agents';
 
 const verb = process.argv[2] ?? '';
 const session = process.argv[3] ?? '';

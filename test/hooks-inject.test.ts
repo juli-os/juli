@@ -7,8 +7,8 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { defaultHookSpecs, installClaudeHooks } from '../src/platform/agents/hooks.ts';
-import { TMUX_BIN } from '../src/platform/agents/tmux.ts';
+import { defaultHookSpecs, installClaudeHooks } from '@juli-os/agents';
+import { TMUX_BIN } from '@juli-os/agents';
 
 const tmp = (): string => mkdtempSync(join(tmpdir(), 'juli-hooks-inject-'));
 

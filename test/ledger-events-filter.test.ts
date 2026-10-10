@@ -2,7 +2,7 @@
 // 过滤后 limit 全部花在该类型上——真实历史可达，不需要模拟。
 
 import { describe, expect, it } from 'vitest';
-import { createLedgerStore } from '../src/platform/ledger/store.ts';
+import { createLedgerStore } from '@juli-os/ledger';
 
 const store = createLedgerStore(':memory:');
 

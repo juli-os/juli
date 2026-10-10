@@ -11,7 +11,7 @@
 import { checkAuthz, type AuthzPolicy } from '../../contracts/authz.ts';
 import { inboxDedupKey, withDedupe, type InboxMessage, type MessageHandler } from './inbox.ts';
 import { dialImap, type ImapParams } from './imap.ts';
-import type { Clock } from '../shared/clock.ts';
+import type { Clock } from '@juli-os/artifacts';
 
 export interface SourceStatus {
   readonly enabled: boolean;

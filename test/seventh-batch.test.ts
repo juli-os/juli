@@ -7,11 +7,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   callModeConfigs, createVoiceCall, extractPlanBlock, isConfirmPhrase, voiceGateHook,
-} from '../src/platform/agents/voice.ts';
-import { takeSnapshot, recoverFromSnapshot } from '../src/platform/agents/snapshot.ts';
-import { makeAllTools, isBlockedCommand } from '../src/platform/agents/tools.ts';
-import { ok } from '../src/platform/shared/result.ts';
-import type { TmuxClient } from '../src/platform/agents/tmux.ts';
+} from '@juli-os/agents';
+import { takeSnapshot, recoverFromSnapshot } from '@juli-os/agents';
+import { makeAllTools, isBlockedCommand } from '@juli-os/agents';
+import { ok } from '@juli-os/artifacts';
+import type { TmuxClient } from '@juli-os/agents';
 
 const PLAN_REPLY = `好的，方案如下。\n\`\`\`plan\n{"session":"agent-a","summary":"生成周报","brief":"请生成本周销量周报"}\n\`\`\`\n要我落实吗？`;
 

@@ -3,7 +3,7 @@
 
 import { createHash } from 'node:crypto';
 import { simpleParser, type ParsedMail } from 'mailparser';
-import { ok, toResult, type Result } from '../shared/result.ts';
+import { ok, toResult, type Result } from '@juli-os/artifacts';
 
 export const MAX_ATTACHMENT_BYTES = 25 << 20; // 超限附件保留身份（名字/大小）不留字节
 export const MAX_SOURCE_BYTES = 50 << 20; // 整封邮件的读取上限

@@ -10,7 +10,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createUsageStore } from '../src/platform/ledger/usage.ts';
+import { createUsageStore } from '@juli-os/ledger';
 
 /** 与 ingestFile 插入形状一致的 claude_code 行直插。 */
 const insertClaudeRow = (

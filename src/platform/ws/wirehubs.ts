@@ -10,7 +10,7 @@ import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { safeEqual } from '../shared/secure.ts';
 import type { ChatHub } from './chathub.ts';
-import type { TmuxClient } from '../agents/tmux.ts';
+import type { TmuxClient } from '@juli-os/agents';
 
 /** 事件对象 → wire 帧（唯一映射事实源）：语音/路由侧的 chat:X 带字符串
  * data；编排器原始事件带 content/tool/args。未知类型透传。 */
