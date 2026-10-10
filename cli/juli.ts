@@ -6,6 +6,7 @@
 
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
@@ -656,6 +657,11 @@ if (isCliEntry) (async () => {
           description: 'Default agent session (seeded by juli setup)', model_tier: 'standard',
         }];
         if (needDefault) seed['email'] = { ...email, default_session: 'main' };
+        // claude_dir 播种（2026-10-10 e2e 实锤）：不设则引擎跳过 CC hooks 注入
+        // ——agent 完成后 Stop 事件无人上报，单子只能等 zombie 超时兜底。
+        if (cfgRaw['claude_dir'] === undefined || cfgRaw['claude_dir'] === '') {
+          seed['claude_dir'] = join(homedir(), '.claude');
+        }
         const r2 = saveConfigFile({ home: homedir(), dataDir: process.env['JULI_DATA_DIR'] }, seed);
         if (r2.ok) {
           mark('agents 播种', true, needAgents ? 'main 会话 + default_session=main' : 'default_session=main');
