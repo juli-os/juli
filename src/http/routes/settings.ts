@@ -98,7 +98,7 @@ export const registerSettingsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => 
     const t0 = Date.now();
     const r = await port.chat({
       messages: [{ role: 'user', content: 'Reply with exactly: OK' }],
-      maxTokens: 8,
+      maxTokens: 32,
       signal: AbortSignal.timeout(20_000),
     });
     const latencyMs = Date.now() - t0;

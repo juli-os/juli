@@ -49,6 +49,11 @@ COPY package*.json ./
 COPY --from=deps /app/node_modules ./node_modules
 # Claude Code — the agent executor (npm ships with node:22-slim).
 RUN npm install -g @anthropic-ai/claude-code --no-fund --no-audit
+# Skip Claude Code first-run onboarding (theme picker etc.) — fresh containers
+# would otherwise boot into an interactive wizard instead of the REPL, and
+# dispatched prompts would be lost on it.
+RUN mkdir -p /root/.claude \
+  && printf '%s\n' '{' '  "hasCompletedOnboarding": true,' '  "theme": "dark"' '}' > /root/.claude.json
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/web-dist ./web-dist
 # CLI 源码（setup/doctor 走 npx tsx 直跑 TS，imports ../src/*；引擎本体在 dist/）

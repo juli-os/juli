@@ -604,28 +604,38 @@ if (isCliEntry) (async () => {
     try { cfgRaw = JSON.parse(readFileSync(cfgPath, 'utf8')) as Record<string, unknown>; } catch { /* 缺省容忍 */ }
     mark('config.json', true, cfgPath);
     let aiNow = resolveAiConfig(configSchema.parse(cfgRaw), process.env);
-    if (aiNow.apiKey === '' && setup) {
-      console.log('\n— AI 配置（一处配置两处用：引擎 LLM + agent 执行环境）—');
-      const key = arg('api-key') || process.env['JULI_AI_API_KEY'] || (await ask('API key（Anthropic 或兼容端点）: '));
-      if (key !== '') {
-        const patch: Record<string, string> = { api_key: key };
-        const baseUrl = arg('base-url') || process.env['JULI_AI_BASE_URL'] || (await ask('Base URL（留空 = 官方 api.anthropic.com）: '));
-        const model = arg('model') || process.env['JULI_AI_MODEL'] || (await ask('模型 id（可留空）: '));
-        const provider = arg('provider') || process.env['JULI_AI_PROVIDER'] || '';
-        if (baseUrl !== '') patch['base_url'] = baseUrl;
-        if (model !== '') patch['model'] = model;
-        if (provider === 'anthropic' || provider === 'openai') patch['provider'] = provider;
+    if (setup) {
+      // 旗标/env 补齐（与 key 来源无关——env 只给 key、旗标给端点/模型是常态，
+      // 此前 key 来自 env 时旗标被整段跳过，401 的常见根因）。
+      const patch: Record<string, string> = {};
+      const flagProvider = arg('provider') || process.env['JULI_AI_PROVIDER'] || '';
+      const flagBaseUrl = arg('base-url') || process.env['JULI_AI_BASE_URL'] || '';
+      const flagModel = arg('model') || process.env['JULI_AI_MODEL'] || '';
+      if (flagProvider === 'anthropic' || flagProvider === 'openai') patch['provider'] = flagProvider;
+      if (flagBaseUrl !== '') patch['base_url'] = flagBaseUrl;
+      if (flagModel !== '') patch['model'] = flagModel;
+      // key：旗标 > 交互输入（env 的 key 不落盘——容器/CI 形态由 env 供给）。
+      let promptKey = '';
+      if (aiNow.apiKey === '' && arg('api-key') === '' && !process.env['JULI_AI_API_KEY']) {
+        console.log('\n— AI 配置（一处配置两处用：引擎 LLM + agent 执行环境）—');
+        promptKey = await ask('API key（Anthropic 或兼容端点）: ');
+        if (promptKey === '') mark('ai 段', false, '未提供 key（--api-key / 交互输入 / 引擎 Settings → AI）');
+      }
+      if (arg('api-key') !== '') patch['api_key'] = arg('api-key');
+      else if (promptKey !== '') patch['api_key'] = promptKey;
+      if (Object.keys(patch).length > 0) {
         const r = saveConfigFile({ home: homedir(), dataDir: process.env['JULI_DATA_DIR'] }, { ai: patch });
         if (r.ok) {
-          mark('ai 段写入', true, `${cfgPath}（api_key${patch['base_url'] !== undefined ? ' + base_url' : ''}${patch['model'] !== undefined ? ' + model' : ''}）`);
+          mark('ai 段写入', true, `${cfgPath}（${Object.keys(patch).join('+')}）`);
           cfgRaw = { ...cfgRaw, ai: { ...((cfgRaw['ai'] as Record<string, unknown>) ?? {}), ...patch } };
           aiNow = resolveAiConfig(configSchema.parse(cfgRaw), process.env);
         } else {
           mark('ai 段写入', false, r.error);
         }
-      } else {
-        mark('ai 段', false, '未提供 key（--api-key / 交互输入 / 引擎 Settings → AI）');
       }
+      mark('ai 段（现行生效）', aiNow.apiKey !== '', aiNow.apiKey !== ''
+        ? `provider=${aiNow.provider}${aiNow.model !== '' ? ` · model=${aiNow.model}` : ''}${aiNow.baseUrl !== '' ? ' · base_url=已设' : ' · base_url=未设（官方 Anthropic）'}`
+        : '未配置 API key——Settings → AI 或 juli setup --api-key');
     } else {
       mark('ai 段', aiNow.apiKey !== '', aiNow.apiKey !== ''
         ? `provider=${aiNow.provider}${aiNow.model !== '' ? ` · model=${aiNow.model}` : ''}${aiNow.baseUrl !== '' ? ' · base_url=已设' : ''}`
@@ -664,7 +674,7 @@ if (isCliEntry) (async () => {
       const t0 = Date.now();
       const r = await port.chat({
         messages: [{ role: 'user', content: 'Reply with exactly: OK' }],
-        maxTokens: 8,
+        maxTokens: 32,
         signal: AbortSignal.timeout(20_000),
       });
       mark('LLM 连通', r.ok ? true : false, r.ok
