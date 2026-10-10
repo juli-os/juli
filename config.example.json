@@ -1,0 +1,29 @@
+{
+  "password": "change-me",
+  "listen_host": "127.0.0.1",
+  "listen_port": 7070,
+  "ai": {
+    "provider": "anthropic",
+    "api_key": "",
+    "base_url": "",
+    "model": ""
+  },
+  "agents": [
+    {
+      "session": "main",
+      "company": "",
+      "domain": "",
+      "senders": [],
+      "cwd": "",
+      "description": "Default agent session",
+      "model_tier": "standard"
+    }
+  ],
+  "email": {
+    "enabled": false,
+    "default_session": "main",
+    "bound_agents": []
+  },
+  "queue": { "concurrency": 1 },
+  "notify": { "to": [], "cc": [] }
+}

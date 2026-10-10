@@ -1,0 +1,37 @@
+# julI single-service compose — self-contained deployment (node:sqlite inside
+# the image; no external DB/Redis). The MVP image carries tmux + Claude Code,
+# so dispatched agents run inside the container.
+#
+# First start:
+#   JULI_PASSWORD=change-me docker compose up -d --build
+#   open http://localhost:7170
+#
+# All state lands in ./data (config.json included — set JULI_DATA_DIR below):
+# lifecycle.db / pipelines / case-inbox … Recreating the container keeps state.
+services:
+  juli:
+    build: .
+    image: juli:latest
+    container_name: juli
+    ports:
+      - "7170:7070"
+    environment:
+      # Engine refuses to listen on non-loopback without a password.
+      JULI_PASSWORD: ${JULI_PASSWORD:?JULI_PASSWORD is required — set it in the environment or .env}
+      # Explicit locale: tmux-style subprocesses misbehave in a zero-LANG env,
+      # and CJK content needs correct decoding.
+      LANG: C.UTF-8
+      TZ: ${TZ:-UTC}
+      # Optional: inject the AI key via env instead of Settings UI.
+      # JULI_AI_API_KEY: ${JULI_AI_API_KEY:-}
+      # JULI_AI_BASE_URL: ${JULI_AI_BASE_URL:-}
+      # JULI_AI_MODEL: ${JULI_AI_MODEL:-}
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7070/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

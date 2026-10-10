@@ -1,0 +1,51 @@
+{
+  "name": "juli",
+  "version": "0.1.0",
+  "description": "juli — human-in-the-loop agent workflow engine: chat a task in, Claude Code runs it in tmux, you approve at the gate.",
+  "type": "module",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/juli-os/juli"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.web.json",
+    "web": "vite build --config vite.web.config.ts",
+    "web:dev": "vite --config vite.web.config.ts",
+    "setup": "tsx cli/juli.ts setup",
+    "doctor": "tsx cli/juli.ts doctor"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.14.4",
+    "@juli-os/agents": "^0.1.2",
+    "@juli-os/artifacts": "^0.2.1",
+    "@juli-os/ledger": "^0.1.2",
+    "@juli-os/routing": "^0.1.0",
+    "@xterm/xterm": "^6.0.0",
+    "hono": "^4.9.7",
+    "imapflow": "^1.7.8",
+    "mailparser": "^3.9.22",
+    "node-pty": "^1.1.0",
+    "nodemailer": "^6.10.1",
+    "ws": "^8.21.3",
+    "yaml": "^2.8.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/mailparser": "^3.4.6",
+    "@types/node": "^22.15.0",
+    "@types/nodemailer": "^6.4.17",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.0",
+    "vite": "^7.3.6",
+    "vitest": "^3.2.0"
+  }
+}
