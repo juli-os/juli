@@ -51,6 +51,8 @@ COPY --from=deps /app/node_modules ./node_modules
 RUN npm install -g @anthropic-ai/claude-code --no-fund --no-audit
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/web-dist ./web-dist
+# CLI 源码（setup/doctor 走 npx tsx 直跑 TS；引擎本体在 dist/）
+COPY cli ./cli
 
 # Data plane (lifecycle.db / pipelines / config.json via JULI_DATA_DIR).
 VOLUME ["/data"]
