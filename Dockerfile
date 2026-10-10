@@ -54,7 +54,7 @@ RUN npm install -g @anthropic-ai/claude-code --no-fund --no-audit
 # REPL, and dispatched prompts would be lost on them (the trust dialog even
 # defaults to "No, exit").
 RUN mkdir -p /root/.claude \
-  && printf '%s\n' '{' '  "hasCompletedOnboarding": true,' '  "theme": "dark",' '  "projects": {' '    "/app": { "hasTrustVoted": true, "allowedTools": [] }' '  }' '}' > /root/.claude.json
+  && printf '%s\n' '{' '  "hasCompletedOnboarding": true,' '  "theme": "dark",' '  "projects": {' '    "/app": { "hasTrustVoted": true, "hasTrustDialogAccepted": true, "allowedTools": [] }' '  }' '}' > /root/.claude.json
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/web-dist ./web-dist
 # CLI 源码（setup/doctor 走 npx tsx 直跑 TS，imports ../src/*；引擎本体在 dist/）
