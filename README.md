@@ -61,7 +61,7 @@ degradation. Either:
 - **Web:** log in with your password → **Settings → AI** → paste an API key →
   *Test connectivity* → *Save*, or
 - **CLI:** `npm run setup -- --api-key sk-… [--base-url https://…] [--model …]`
-  (inside Docker: `docker compose exec juli node dist/cli/juli.js setup`), or
+  (inside Docker: `docker compose exec juli npx tsx cli/juli.ts setup`), or
 - **Env:** `JULI_AI_API_KEY` (+ optional `JULI_AI_BASE_URL`, `JULI_AI_MODEL`).
 
 `base_url` empty = official Anthropic API. `base_url` set = any
