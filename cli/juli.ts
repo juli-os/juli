@@ -692,11 +692,12 @@ if (isCliEntry) (async () => {
       const socketCfg = readSocketCfg();
       const tmux = createTmuxClient(socketCfg ? { socketPath: socketCfg } : {});
       const name = 'juli-setup-check';
-      // 与引擎同源的执行环境注入：进程 env（本 CLI 首建 server 时继承）+
-      // tmux 全局环境（server 已在跑时对新会话生效）。
+      // 与引擎同源的执行环境注入（双通道 API_KEY+AUTH_TOKEN：AUTH_TOKEN 无
+      // 「自定义 key」批准对话框，官方与兼容端都吃 Bearer）。进程 env（本 CLI
+      // 首建 server 时继承）+ tmux 全局环境（server 已在跑时对新会话生效）。
       const pairs: readonly (readonly [string, string])[] = aiNow.baseUrl !== ''
-        ? [['ANTHROPIC_API_KEY', aiNow.apiKey], ['ANTHROPIC_BASE_URL', aiNow.baseUrl]]
-        : [['ANTHROPIC_API_KEY', aiNow.apiKey]];
+        ? [['ANTHROPIC_API_KEY', aiNow.apiKey], ['ANTHROPIC_AUTH_TOKEN', aiNow.apiKey], ['ANTHROPIC_BASE_URL', aiNow.baseUrl]]
+        : [['ANTHROPIC_API_KEY', aiNow.apiKey], ['ANTHROPIC_AUTH_TOKEN', aiNow.apiKey]];
       for (const [k, v] of pairs) {
         process.env[k] = v;
         await tmux.exec(['set-environment', '-g', k, v]);

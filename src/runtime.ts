@@ -249,18 +249,23 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
   // 已在跑的会话不受影响——热改 key 后新会话生效（诚实边界，见 applySettings）。----
   const injectAgentEnv = (resolved: AiResolved): void => {
     if (resolved.apiKey === '') return;
+    // 双通道：API_KEY（x-api-key）+ AUTH_TOKEN（Bearer）。Claude Code 对自定义
+    // API_KEY 有一次性「是否使用」对话框（误答 No 即写进 .claude.json 永拒，
+    // 容器无头环境必踩）；AUTH_TOKEN 无此对话框且 Anthropic 官方与兼容端
+    // （GLM 等）都接受 Bearer——两键同值并注，两世界通吃。
     process.env['ANTHROPIC_API_KEY'] = resolved.apiKey;
+    process.env['ANTHROPIC_AUTH_TOKEN'] = resolved.apiKey;
     if (resolved.baseUrl !== '') process.env['ANTHROPIC_BASE_URL'] = resolved.baseUrl;
     if (tmux === null) return;
     const vars: readonly (readonly [string, string])[] = resolved.baseUrl !== ''
-      ? [['ANTHROPIC_API_KEY', resolved.apiKey], ['ANTHROPIC_BASE_URL', resolved.baseUrl]]
-      : [['ANTHROPIC_API_KEY', resolved.apiKey]];
+      ? [['ANTHROPIC_API_KEY', resolved.apiKey], ['ANTHROPIC_AUTH_TOKEN', resolved.apiKey], ['ANTHROPIC_BASE_URL', resolved.baseUrl]]
+      : [['ANTHROPIC_API_KEY', resolved.apiKey], ['ANTHROPIC_AUTH_TOKEN', resolved.apiKey]];
     for (const [k, v] of vars) {
       void tmux.exec(['set-environment', '-g', k, v]).then((r) => {
         if (!r.ok) log.info(`[ai] tmux set-environment ${k} 跳过（${r.error.message}）——引擎 env 继承兜底`);
       });
     }
-    log.info(`[ai] agent 执行环境已注入（ANTHROPIC_API_KEY${resolved.baseUrl !== '' ? ' + ANTHROPIC_BASE_URL' : ''}，新会话生效）`);
+    log.info(`[ai] agent 执行环境已注入（ANTHROPIC_API_KEY+AUTH_TOKEN${resolved.baseUrl !== '' ? ' + BASE_URL' : ''}，新会话生效）`);
   };
 
   // ---- 工件账本（disk 主存 + S3/OSS 兼容远端，share 走 presigned URL）----
