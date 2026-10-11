@@ -1,13 +1,17 @@
+#!/usr/bin/env node
 // juli CLI:任务闭环的操作面——任何会话/工具通用的薄壳(状态在 juli DB,
 // 不在交接里)。子命令全部打既有 API;本文件不含业务逻辑。
 // 例外:session:start/send 直连 agents 层(provision+提交确认),是会话保障
 // 链的测试器(2026-09-21 冷启动吞 Enter 事故),逐段报时。
 // 用法:npx tsx cli/juli.ts <command> ... (环境变量 JULI_SERVICE_URL / JULI_PASSWORD)
+// 单文件 bundle:npm run build:cli → dist-cli/juli.js(esbuild 自包含,可装
+// <data_dir>/bin/juli 数据卷稳定路径,与 checkout 解耦)。
 
-import { readFileSync } from 'node:fs';
+import { accessSync, chmodSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { runHook } from '../src/cli/hook.ts';
 import { execSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { createTmuxClient } from '@juli-os/agents';
@@ -18,7 +22,7 @@ import {
   type RoutingFacts, type RoutingPlan,
 } from '@juli-os/routing';
 import {
-  configFilePath, configSchema, danglingFeedbackRoutes, resolveAiConfig, saveConfigFile,
+  configFilePath, configSchema, danglingFeedbackRoutes, defaultDataDir, resolveAiConfig, saveConfigFile,
 } from '../src/platform/config/schema.ts';
 import { createAnthropicChat, createOpenAiChat } from '../src/platform/llm/chat.ts';
 import type { FbRecord } from '@juli-os/routing';
@@ -90,6 +94,12 @@ export const factsForPlan = (cfg: RoutingCfg): RoutingFacts => {
   return f.agents.length === 0 ? SAMPLE_FACTS : f;
 };
 
+/** `juli hook <verb> <session> [status]` 子命令分派（机器向，不进人类 help
+ * 主列表——CC hook 注册面的统一入口）。argv 形态 ['hook', verb, session,
+ * extra?]，剥掉 'hook' 后交 runHook——与 node dist/cli/hook.js 存量入口同
+ * 一条逻辑，零分叉。独立导出可单测。 */
+export const dispatchHook = (argv: readonly string[]): Promise<void> => runHook(argv.slice(1));
+
 const cmd = process.argv[2] ?? '';
 
 /** 路由计划的人面渲染（--json 走机器面，不经此）。 */
@@ -128,9 +138,16 @@ const renderPlan = (plan: RoutingPlan): void => {
 
 // 直跑守卫:仅作为 CLI 入口执行时跑主流程;被 import(如测试消费导出的
 // 路由投影纯函数)时零副作用。process.argv[1]=入口脚本路径,与 import.meta
-// .url 同源比对(pathToFileURL 处理转义)。
-const isCliEntry = process.argv[1] !== undefined
-  && import.meta.url === pathToFileURL(process.argv[1]).href;
+// .url 同源比对;两侧 realpath 后比——符号路径部署下(如 macOS /tmp→
+// /private/tmp)node 把模块 URL 解析成真实路径,不 realpath 就永不相等
+// (main 静默不跑)。realpath 失败(异常路径)回退 URL 字面比对。
+const isCliEntry = process.argv[1] !== undefined && (() => {
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return pathToFileURL(process.argv[1]).href === import.meta.url;
+  }
+})();
 if (isCliEntry) (async () => {
   if (cmd === 'start') {
     // 双形态：带模板名=配方起流；只有 --title=免模板起单（动态模型标准入口）。
@@ -463,6 +480,12 @@ if (isCliEntry) (async () => {
     for (const w of stale) console.log(`  ⚠ failed: ${w.id} ${w.title.slice(0, 40)} → juli 收口或重试`);
     for (const w of running) console.log(`  • 在途: ${w.id} ${w.title.slice(0, 40)}`);
     console.log(stale.length === 0 ? '✓ 无积压' : `✗ ${stale.length} 条需处置`);
+  } else if (cmd === 'hook') {
+    // 机器向子命令（CC hook 注册面，2026-10-10 统一 CLI 收编）：
+    // juli hook <verb> <session> [status]——行为与 node dist/cli/hook.js 完全
+    // 一致（同 runHook，服务不在静默 exit 0）。注册面切到数据卷 bin 后，
+    // hook 存活性与 checkout 的 dist/ 清理彻底解耦。
+    return dispatchHook(process.argv.slice(2));
   } else if (cmd === 'routing') {
     // 路由判定面（2026-09-22）：jev 分类+合并，现行规则链做基线并排投影。
     // 恒 dry-run——本分支构造上无派发路径（不 claim/dispatch/建单/落账），
@@ -673,6 +696,86 @@ if (isCliEntry) (async () => {
       }
     }
 
+    // [2.5] juli bin 自装/校验（2026-10-10 统一 CLI）：bundle 安装到
+    // <data_dir>/bin/juli 数据卷稳定路径——CC hook 注册面指向它后，hook
+    // 存活性与 checkout 的 dist/ 清理解耦（昨天 dist 被清 hook 全灭的事故
+    // 形态断根）。data_dir 与 config 同源（env JULI_DATA_DIR > config 段 >
+    // 默认 ~/.juli-service；容器 /data → /data/bin/juli）。setup 安装/刷新
+    // （幂等：已存在且内容一致跳过），doctor 只校验。
+    const dataDir = (process.env['JULI_DATA_DIR'] && process.env['JULI_DATA_DIR'] !== ''
+      ? process.env['JULI_DATA_DIR']
+      : (configSchema.parse(cfgRaw).data_dir || defaultDataDir(homedir()))).replace(/\/+$/, '');
+    const binPath = join(dataDir, 'bin', 'juli');
+    if (setup) {
+      // bundle 来源：仓内形态（tsx cli/juli.ts 或 node dist-cli/juli.js）→
+      // repo 的 dist-cli/juli.js（缺则现场构建）；数据卷 bin 自跑形态 →
+      // 自己就是 bundle，校验在位即可。
+      const selfPath = fileURLToPath(import.meta.url);
+      const selfDir = dirname(selfPath);
+      const selfBase = selfPath.slice(selfDir.length + 1);
+      const repoRoot = (selfBase === 'juli.ts' && selfDir.endsWith('/cli')) || (selfBase === 'juli.js' && selfDir.endsWith('/dist-cli'))
+        ? dirname(selfDir) : null;
+      let bundleSrc: string | null = null;
+      if (repoRoot !== null) {
+        const candidate = join(repoRoot, 'dist-cli', 'juli.js');
+        if (!existsSync(candidate)) {
+          try {
+            execSync('npm run build:cli', { cwd: repoRoot, encoding: 'utf8', stdio: 'ignore', timeout: 120_000 });
+          } catch { /* 缺 devDeps 等构建失败 → 下方 mark 报告 */ }
+        }
+        if (existsSync(candidate)) bundleSrc = candidate;
+      } else if (existsSync(binPath)) {
+        bundleSrc = binPath; // 数据卷 bin 自跑：源即自身
+      }
+      const sameContent = (): boolean => {
+        try { return readFileSync(binPath, 'utf8') === readFileSync(bundleSrc!, 'utf8'); } catch { return false; }
+      };
+      if (bundleSrc === null) {
+        mark('juli bin 自装', false, '定位/构建 bundle 失败——仓内先跑 npm run build:cli 再 setup');
+      } else if (bundleSrc === binPath) {
+        mark('juli bin 自装', true, `${binPath}（当前即数据卷 bin 自跑）`);
+      } else if (sameContent()) {
+        mark('juli bin 自装', true, `${binPath} 已是最新（内容一致，跳过）`);
+      } else {
+        try {
+          mkdirSync(dirname(binPath), { recursive: true });
+          copyFileSync(bundleSrc, binPath);
+          chmodSync(binPath, 0o755);
+          mark('juli bin 自装', true, `${binPath}（CC hook 注册的稳定路径，与 checkout 解耦）`);
+        } catch (e) {
+          mark('juli bin 自装', false, `写入失败: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+    }
+    // 校验项（setup/doctor 共用）：bin 在位且可执行。
+    let binOk = false;
+    let binNote = `${binPath} 不存在或不可执行——juli setup 安装`;
+    try {
+      accessSync(binPath, constants.X_OK);
+      binOk = true;
+      binNote = binPath;
+    } catch { /* 上面的缺省文案 */ }
+    mark('juli bin', binOk, binNote);
+    // CC hooks 注册面（只报告，绝不改写——写面归引擎 installClaudeHooks）：
+    // 命令应指向数据卷 bin；仍指 checkout 内 dist/cli/hook.js = dist 清理
+    // 即灭。不一致只提示，引擎重启后自动重注册。
+    const claudeDir = configSchema.parse(cfgRaw).claude_dir || join(homedir(), '.claude');
+    type HookSettingsShape = { hooks?: Record<string, { hooks?: { command?: string }[] }[]> };
+    let hookSettings: HookSettingsShape | null = null;
+    try {
+      hookSettings = JSON.parse(readFileSync(join(claudeDir, 'settings.json'), 'utf8')) as HookSettingsShape;
+    } catch { /* 无文件/坏 JSON → 按未注册报告 */ }
+    if (hookSettings === null) {
+      mark('CC hooks 注册', null, `${join(claudeDir, 'settings.json')} 未读到位（引擎注入后再查）`);
+    } else {
+      const cmds = Object.values(hookSettings.hooks ?? {}).flat().flatMap((g) => g?.hooks ?? []).map((h) => h.command ?? '');
+      const toBin = cmds.filter((c) => c.includes(binPath));
+      const stale = cmds.filter((c) => c.includes('cli/hook.js') && !c.includes(binPath));
+      if (toBin.length > 0) mark('CC hooks 注册', true, `${toBin.length} 条指向数据卷 bin`);
+      else if (stale.length > 0) mark('CC hooks 注册', null, `${stale.length} 条仍指 checkout 内 dist/cli/hook.js（dist 清理即灭）——引擎重启后自动重注册`);
+      else mark('CC hooks 注册', null, '未见 juli hook 命令（引擎注入后再查）');
+    }
+
     // [3] LLM 连通（直打一次最小 completion；不落账不写盘）
     if (aiNow.apiKey !== '') {
       const port = aiNow.provider === 'openai'
@@ -782,6 +885,8 @@ if (isCliEntry) (async () => {
   doctor                             同套自检只读形态（不安装/不写盘/不起会话）
   routing plan [id...|--queue|--sample] [--no-jev] [--json]
                                       路由判定计划（jev 分类+合并，恒 dry-run）
-  routing rules                      路由菜单与现行规则/悬空规则`);
+  routing rules                      路由菜单与现行规则/悬空规则
+  (internal) hook <verb> <session> [status]
+                                      CC hook 转发(机器向,与 dist/cli/hook.js 同逻辑)`);
   }
 })().catch((e) => { console.error('✗', e.message); process.exit(1); });

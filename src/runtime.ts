@@ -21,7 +21,6 @@ import { createSkillRegistry } from '@juli-os/agents';
 import { createVoiceCall, voiceGateHook, type VoiceCall, type CallMode, type VoiceEvent } from '@juli-os/agents';
 import { startSnapshotLoop, recoverFromSnapshot, takeSnapshot } from '@juli-os/agents';
 import type { SessionHealer } from '@juli-os/agents';
-import type { PartyDirectory } from './business/party/party.ts';
 import { attachPtyHub } from './platform/ws/ptyhub.ts';
 import { attachChatWireWs, attachSnapshotWireWs } from './platform/ws/wirehubs.ts';
 import { createCompositeAuthenticator, createLocalAuthenticator, createPbAuthenticator, type Authenticator } from './platform/auth/authenticator.ts';
@@ -53,6 +52,10 @@ import { installClaudeHooks, defaultHookSpecs } from '@juli-os/agents';
 import { createArtifactLedger, sweepCaseInbox, type ArtifactLedger, type ArtifactRole } from '@juli-os/artifacts';
 import { createDiskBackend, createS3Backend, createDualBackend, type ArtifactBackend } from '@juli-os/artifacts';
 import { createDevicePusher, createEmailNotifier, combinePushers, withAlertGrade } from './platform/push/email.ts';
+// 业务装配分册（反馈墙/客户库/CRM/Party/推送真实现/feedback 进件/巡检定时器）
+// ——私仓扩展位单一入口；开源投影以同形桩替换（export/overlay/）。
+import { wireBusiness, wireFeedbackIntake, startBusinessTimers, type BusinessParts, type BusinessIntake } from './runtime.business.ts';
+import type { PartyDirectory } from './business/party/party.ts';
 import { truncate } from './platform/shared/json.ts'
 import { fileURLToPath } from 'node:url';
 
@@ -98,6 +101,12 @@ export interface Runtime {
   readonly chatHub: ChatHub;
   emitChat(type: string, data: string): void;
   chat(input: string): Promise<{ events: { type: string; data?: string }[]; reply: string }>;
+  /** 业务装配分册产物（类型透传 BusinessParts/BusinessIntake——公开桩全 null）。 */
+  readonly feedback: BusinessParts['feedback'];
+  /** feedback 进件：镜像新记录/手动点名 → startTask 起单（09-19）。 */
+  readonly feedbackIntake: BusinessIntake;
+  readonly customers: BusinessParts['customers'];
+  readonly crm: BusinessParts['crm'];
   /** Party 目录（Twenty）：null = 未接入（进件不查 CRM，客户页显降级）。 */
   readonly party: PartyDirectory | null;
   /** 内部判定域（自家域，推导一次的单一事实）。 */
@@ -302,9 +311,7 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
     })
     : null;
 
-  // ---- 推送（APNs/Bark 不进开源投影）：设备推送面降级为空，通知走邮件 ----
-  const apns = null;
-  const bark = null;
+  // ---- 推送注册表（runtime.ts 持有文件与读写；业务侧消费见 wireBusiness）----
   const tokensFile = join(dataDir, 'device_tokens.json');
   const deviceTokens = (): readonly string[] => {
     try {
@@ -314,9 +321,12 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
       return [];
     }
   };
-  // 装配可见（2026-10-07 通知事故）：推送通道装配结果与在册设备数 boot 即
-  // 显——此前装配失败/零在册完全无声，坏了只能靠用户「收不到通知」才发现。
-  log.info(`[push] 通道装配：开源投影未含设备推送 · 在册设备 ${deviceTokens().length} 台（通知走邮件）`);
+  const saveDeviceTokens = (tokens: readonly string[]): void => {
+    writeFileSync(tokensFile, JSON.stringify(tokens), { mode: 0o600 });
+  };
+  // ---- 业务装配分册（APNs/Bark 推送真实现、反馈墙/客户库/CRM/Party 目录）
+  // ----：全部私仓扩展位，装配体在 runtime.business.ts（公开投影=同形桩）。----
+  const business = wireBusiness({ config, dataDir, store, backend, log, deviceTokens, saveDeviceTokens });
   // 自动批准现行配置（Settings 热改键 auto_approve 的内存落点——sweep 每
   // 轮现读这里，规则改动下轮即生效，无需重启）。
   let autoApproveCfg: AutoApproveConfig = projectAutoApprove(config.auto_approve);
@@ -337,27 +347,12 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
   // 设备推送（APNs/Bark）：三事件——chainDangling/stepFailed 是邮件专属
   // （设备侧维持现状不扩面，热键/悬空这类「要人动手」的低频警报先进邮箱
   // 验证价值，扩不扩另裁）。事件→深链字段映射在 createDevicePusher 钉死
-  // （契约=iOS AppDelegate 读 userInfo.workflow_id/step_id）。
-  // 2026-10-07 通知事故修复：APNs 客户端的错误走 Result 返回值（非 throw），
-  // 旧版 `.catch(() => undefined)` 连 rejection 都接不到——网络错/HTTP 错/
-  // 死设备 token 全部双重静默（live 日志零痕迹，对着 3 个死号空发无人知晓）。
-  // 现在：失败一律 log.warn 显性化；BadDeviceToken/Unregistered（设备已
-  // 卸载/换机/token 轮换）自动从注册表除名，死档自愈不再复发。
-  const pruneDeviceToken = (token: string, why: string): void => {
-    try {
-      writeFileSync(tokensFile, JSON.stringify(deviceTokens().filter((t) => t !== token)), { mode: 0o600 });
-      log.warn(`[push] ${token.slice(0, 8)}… 已从注册表除名（${why}）`);
-    } catch (e) {
-      log.warn(`[push] ${token.slice(0, 8)}… 除名写盘失败：${e instanceof Error ? e.message : String(e)}`);
-    }
-  };
-  const devicePushRaw = async (_title: string, _body: string, _deepLink: string, _workflowId?: string, _stepId?: string): Promise<void> => {
-    // 开源投影未含设备推送（APNs/Bark）——通知统一走邮件通道。
-  };
+  // （契约=iOS AppDelegate 读 userInfo.workflow_id/step_id）。真实现（通道
+  // 装配/失败显性化/死 token 除名）在 runtime.business.ts；公开桩为 no-op。
   const deviceSend = async (title: string, body: string, link: {
     workflowId: string; stepId?: string;
   }): Promise<void> => {
-    await devicePushRaw(title, body, `juli://workflow/${link.workflowId}`, link.workflowId, link.stepId);
+    await business.devicePushRaw(title, body, `juli://workflow/${link.workflowId}`, link.workflowId, link.stepId);
   };
   const devicePusher: PusherPort = createDevicePusher(deviceSend);
   // 告警分级（alert_grade，2026-09-27，影子先行）挂钩：推送前判严重度。
@@ -410,12 +405,7 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
   // ---- 聊天事件 hub（环形历史 + 广播；orchestrator/voice 事件注入）----
   const chatHub = createChatHub();
 
-  // 反馈墙/客户库不在开源投影内（MVP 砍面）：chat 工具 lookupCustomer 空表降级。
-  const feedback = null;
-  const customers = null;
-
-  // Party 目录不进开源投影（MVP 砍面）——引擎收 null（进件不查 CRM）。
-  const party: PartyDirectory | null = null;
+  // （反馈墙/客户库/CRM/Party 目录装配已收进 wireBusiness——见上方业务分册调用。）
 
   // 自家域=进件账号的邮箱域（example.com 类）：内部判定的唯一域来源——只推导
   // 一次，routing 注入与 rt 暴露（/api/parties 等消费方）共用，禁止各处再推导。
@@ -566,7 +556,7 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
     model: ai.model,
     queueConcurrency: config.queue?.concurrency,
     workHours: config.work_hours,
-    partyDirectory: party,
+    partyDirectory: business.party,
     partyAutoCreate: config.party.auto_create,
     routing: taskRouting,
     dispatch,
@@ -693,7 +683,7 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
       llm: makeChatLlm(),
       model: ai.model,
       tools: makeChatTools({
-        lookupCustomer: async () => [],
+        lookupCustomer: business.lookupCustomer,
         listTasks: (scope, limit) => store.listWorkflows(scope === 'inflight' ? 50 : limit)
           .filter((w) => scope !== 'inflight' || !terminalStatuses.has(w.status))
           .slice(0, limit)
@@ -801,7 +791,9 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
     });
   }
 
-  // feedback 进件链不进开源投影（MVP 砍面）。
+  // ---- feedback 进件（09-19）：镜像新记录 → startTask 起单（装配体在
+  // runtime.business.ts——不走 onInbound 的裁决语义见该文件；公开桩=null）----
+  const feedbackIntake = wireFeedbackIntake({ config, store, engine, judgment: judgmentGateway, log });
 
   // ---- 周期任务 ----
   let timers: NodeJS.Timeout[] = [];
@@ -836,7 +828,11 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
     chatIntake,
     taskRoute,
     mailSource,
-    party,
+    feedback: business.feedback,
+    feedbackIntake,
+    customers: business.customers,
+    crm: business.crm,
+    party: business.party,
     internalDomains,
     templateErrors: loaded.errors,
     get templateFiles() { return loaded.files; },
@@ -1069,10 +1065,6 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
         setInterval(() => void engine.autoSettleApprovedRuns().catch(() => undefined), 60_000),
         // 僵尸扫描：30s tick。
         setInterval(() => void engine.sweepZombies().catch(() => undefined), 30_000),
-        // feedback 镜像：acme PB 事件流 → 引擎 SQLite 镜像表（可配置+状态透明，见 feedback-mirror.json）。
-        // 时间线记在镜像自己的 feedback_mirror_log 表，不进 lifecycle 账本（避免看板噪音）。
-        // 同步落新记录 → 进件起单（只「新建」状态，dedup+失败只记日志不阻塞镜像）。
-        // 0927 多源化：sweep 返回全部启用源本轮实际执行的 run，逐源消费。
         // CC transcript 摄取：每分钟增量。
         // wf_9658ce9225e0：ingest 的 tmux_session 归属靠 claude_sessions 映射，
         // 而 recordClaudeSession 此前从未接线（映射 0 行→归属恒空→详情页
@@ -1131,6 +1123,13 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
             if (r.events + r.workflows > 0) log.info(`[prune] 清理 ${r.events} 事件 / ${r.workflows} 终态工作流`);
           } catch (e) { log.error(`[prune] ${String(e).slice(0, 100)}`); }
         }, 86_400_000),
+        // 业务定时器（feedback 镜像 sweep + villa 运营源 + 财务备份巡检）：
+        // 装配体在 runtime.business.ts（公开桩=空集，零业务定时器）。
+        ...startBusinessTimers({
+          config, store, engine, feedbackIntake, mailer,
+          recipients: () => ({ to: notifyTo, cc: notifyCc }),
+          log,
+        }),
       ];
       log.info(`juli-service 已启动：data_dir=${dataDir} templates=${Object.keys(registry).length}`);
     },

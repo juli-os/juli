@@ -7,12 +7,10 @@ import { topbar, sidebar } from './ui.ts';
 import { esc } from './esc.ts';
 import { anchorHref } from './anchors.ts';
 import { TOAST_LEVELS, TOAST_TEXT, type ToastLevel } from './events-meta.ts';
-import { dashboardView } from './views/dashboard.ts';
-import { lifecycleView } from './views/lifecycle.ts';
-import { flowView } from './views/flow.ts';
-import { sessionsView } from './views/sessions.ts';
-import { settingsView } from './views/settings.ts';
-import { chatView } from './views/chat.ts';
+// 视图路由表/默认页/兜底视图 + 手机门牌：单一事实源在各自注册表文件
+// （开源投影以同形桩替换——公开视图子集与英文门牌）。
+import { ROUTES, DEFAULT_ROUTE, FALLBACK_VIEW } from './views-registry.ts';
+import { MOBILE_GATE_HTML } from './mgate.ts';
 
 // Electron 壳桥：juli Service 桌面（window.juli）优先，旧 Makro 壳
 // （window.makro）兼容——主进程持有密码，原生前端从不手输；纯浏览器
@@ -31,19 +29,12 @@ const app = document.getElementById('app') as HTMLElement;
 if (window.matchMedia('(max-width: 768px)').matches) {
   document.getElementById('topbar')!.innerHTML =
     '<span class="brand"><span class="brand-dot" aria-hidden="true"></span>juli-service</span>';
-  app.innerHTML = `
-    <div class="mgate">
-      <div class="mgate-card">
-        <h1>Desktop browser required</h1>
-        <p>The juli cockpit is currently desktop-only — please open this address on a desktop browser.</p>
-        <p class="mgate-sub">Chat intake, run timeline, approval gates and terminals all work there.</p>
-      </div>
-    </div>`;
+  app.innerHTML = MOBILE_GATE_HTML;
 } else {
 // 顶栏（存在感行）+ 左栏导航各注入一次（2026-10-07 左栏化：head-tab 退役）；
 // 路由切换只切 #nav .active，SSE 连接态切 #conn。
 // 默认首页 = 路由图（2026-10-07 用户裁决：按路由图的形式出版本——图=空间轴底座）。
-const route0 = location.hash.replace(/^#/, '').split('?')[0] || '/dashboard';
+const route0 = location.hash.replace(/^#/, '').split('?')[0] || DEFAULT_ROUTE;
 document.getElementById('topbar')!.innerHTML = topbar(route0);
 document.getElementById('sidebar')!.innerHTML = sidebar(route0);
 // 移动端底部 tab 已随手机 Web 弃用拆除（2026-09-30；手机入口=iOS App）。
@@ -53,20 +44,6 @@ tokenInput.addEventListener('change', () => {
   setToken(tokenInput.value.trim());
   void render();
 });
-
-const ROUTES: Record<string, (el: HTMLElement) => (() => void) | void | Promise<(() => void) | void>> = {
-  '/dashboard': dashboardView,
-  '/chat': chatView,
-  // trigger 表单已退役（2026-09-29 用户裁决：发单=对话）；旧深链重定向不死链
-  '/trigger': () => { location.replace('#/chat'); },
-  '/lifecycle': lifecycleView,
-  // 单子聚焦视图（2026-10-07 驾驶舱二期）：#/order?w=ID = 流水详情的 solo
-  // 形态（ordersolo 隐左目录/费用面板，详情吃满）；无 w 参数退化为整页流水。
-  '/order': lifecycleView,
-  '/flow': flowView,
-  '/sessions': sessionsView,
-  '/settings': settingsView,
-};
 
 let cleanup: (() => void) | void;
 // 代际计数（九跑 P1）：async view（如 routegraph 四路 fetch）await 期间切走，
@@ -78,8 +55,8 @@ const render = async (): Promise<void> => {
   cleanup?.();
   const gen = ++renderGen;
   const hash = location.hash.replace(/^#/, '');
-  const route = hash.split('?')[0] || '/dashboard';
-  const view = ROUTES[route] ?? dashboardView;
+  const route = hash.split('?')[0] || DEFAULT_ROUTE;
+  const view = ROUTES[route] ?? FALLBACK_VIEW;
   // 会话全屏（2026-09-29 用户裁定：会话是操作面，直接吃满视口）——壳层
   // 版心/边距按路由开关，其余视图版心不动。发单聊天面同理（js-261006-s0msv9）。
   app.classList.toggle('fullbleed', route === '/sessions');

@@ -4,6 +4,8 @@
 
 import { esc } from './esc.ts';
 import { ALL_STATUS_LABELS, statusLabelOf as listLabelOf } from './statuses.ts';
+// 导航分组表单一事实源在 nav.ts（开源投影以公开四组同形桩替换）。
+import { NAV_GROUPS } from './nav.ts';
 
 /** 状态徽标（旧原语，范围外视图续用；八屏内新代码用 statusChip/statusDot）。 */
 export const badge = (s: string): string =>
@@ -81,18 +83,7 @@ export const panelHead = (kicker: string, title: string, right = ''): string => 
     ${right}
   </div>`;
 
-/** 顶栏导航（2026-09-22 用户裁决：tab 按「打开时在问什么」收成五组，组内下拉）。
- * 路由本身不变（旧深链全部存活）；终端 /console 首次入组。 */
-export interface NavGroup {
-  readonly label: string;
-  readonly items: ReadonlyArray<readonly [label: string, route: string]>;
-}
-export const NAV_GROUPS: ReadonlyArray<NavGroup> = [
-  { label: '工作台', items: [['总览', '/dashboard'], ['流水', '/lifecycle']] },
-  { label: '入口', items: [['发单', '/chat']] },
-  { label: '运行', items: [['会话', '/sessions'], ['模板', '/flow']] },
-  { label: '系统', items: [['设置', '/settings']] },
-];
+/** 顶栏导航：分组表（NavGroup/NAV_GROUPS）已抽至 nav.ts——sidebar 数据源。 */
 
 /** 顶栏（2026-10-07 左栏化）：只留存在感——橘点 wordmark + 拖拽区 + LIVE 灯 +
  * 密码框；导航职能整体移交左栏 sidebar（head-tab 退役：用户习惯左侧切换）。

@@ -18,6 +18,8 @@ import { registerAgentsRoutes } from './routes/agents.ts';
 import { registerArtifactsRoutes } from './routes/artifacts.ts';
 import { registerChatRoutes } from './routes/chat.ts';
 import { registerEventsRoutes } from './routes/events.ts';
+// 业务路由分册（反馈墙/客户/运维/统计——MVP 公开砍面聚合处，公开投影=空桩）
+import { registerBusinessRoutes } from './businessRoutes.ts';
 import { VERSION } from '../contracts/version.ts';
 
 export { VERSION };
@@ -100,6 +102,8 @@ export const createHttpApp = (rt: Runtime): Hono<AppEnv> => {
   registerArtifactsRoutes(app, rt);
   registerChatRoutes(app, rt);
   registerEventsRoutes(app, rt);
+  // 业务四族（反馈墙/客户/运维/统计）聚合注册——分册见 businessRoutes.ts。
+  registerBusinessRoutes(app, rt);
 
   // ---- 静态托管（web/dist SPA 壳；/api 与 /healthz 之外 SPA 回退）------------
   const webRoot = resolveWebDist();
