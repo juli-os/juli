@@ -100,6 +100,10 @@ export const factsForPlan = (cfg: RoutingCfg): RoutingFacts => {
  * 一条逻辑，零分叉。独立导出可单测。 */
 export const dispatchHook = (argv: readonly string[]): Promise<void> => runHook(argv.slice(1));
 
+/** defaultHookSpecs 命令模板的裸 verb 面（`node <bin> <verb> <session>`）——
+ * bin 作为 hook.js 替身时从 argv[2] 起就是 verb，见主分派首行的直通分支。 */
+const HOOK_VERBS = new Set(['notify', 'permission', 'claude-start', 'capture', 'awaiting', 'skill-used']);
+
 const cmd = process.argv[2] ?? '';
 
 /** 路由计划的人面渲染（--json 走机器面，不经此）。 */
@@ -149,6 +153,11 @@ const isCliEntry = process.argv[1] !== undefined && (() => {
   }
 })();
 if (isCliEntry) (async () => {
+  // CC hook 注册面命令形态直通：defaultHookSpecs 模板是 `node <bin> <verb>
+  // <session>`——裸 verb 首参进来直接走 runHook（bin 是 hook.js 的 drop-in
+  // 替身，存量注册面零改写平滑切换到数据卷 bin）。与 juli 显式子命令无词
+  // 面冲突（六个 verb 均不在子命令表内）。
+  if (HOOK_VERBS.has(cmd)) return runHook(process.argv.slice(2));
   if (cmd === 'start') {
     // 双形态：带模板名=配方起流；只有 --title=免模板起单（动态模型标准入口）。
     const tpl = pos(0);

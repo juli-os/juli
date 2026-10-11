@@ -1035,7 +1035,11 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
       // hook 脚本真在盘上——注入死路径会让每个会话的每个事件都报
       // Cannot find module（0923 loader:1386：src/cli/hook.js 残留条目）。
       if (config.claude_dir !== '' && existsSync(config.claude_dir)) {
-        const hookJs = join(distDirOf(import.meta), 'cli', 'hook.js');
+        // hook 入口优先数据卷自装 bin（`juli setup` 维护的 <data_dir>/bin/juli，
+        // 与 checkout 解耦——2026-10-11 dist 清失事故后定案）；缺席回退仓内
+        // dist 构建产物（需 npm run build）。两入口同 runHook，命令模板零改写。
+        const hookBin = join(config.data_dir, 'bin', 'juli');
+        const hookJs = existsSync(hookBin) ? hookBin : join(distDirOf(import.meta), 'cli', 'hook.js');
         if (!existsSync(hookJs)) {
           log.error(`CC hooks 注入跳过：hook 脚本不存在 ${hookJs}（先 npm run build）`);
         } else {

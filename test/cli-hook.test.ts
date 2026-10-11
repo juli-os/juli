@@ -67,4 +67,10 @@ describe('juli hook 真入口（tsx 直跑 cli/juli.ts，真实 argv 接线）',
     expect(r.status).toBe(0);
     expect(r.stderr).toContain('[juli-hook] usage:');
   });
+
+  it('裸 verb 直通（defaultHookSpecs 模板形态 node <bin> notify）：exit 0 + usage——bin 是 hook.js 的 drop-in 替身', () => {
+    const r = run(['notify']);
+    expect(r.status).toBe(0);
+    expect(r.stderr).toContain('[juli-hook] usage:');
+  });
 });
