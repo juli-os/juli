@@ -5,7 +5,7 @@
 //
 // 与引擎动词面的对应：approve/deny/resolve/rework/align → 闸门动作；
 // retry/amend/rework-send → 步修复动词；intervene/intervene2 → 会话插话；
-// cancel → 单步取消。可干预口径与 src/contracts/entities.ts AGENT_STEP_KINDS 对齐
+// cancel → 单步取消。可干预口径与 @juli-os/ledger AGENT_STEP_KINDS 对齐
 // （web 不引 src，测试锁定）；失败分支额外含 llm（干预重试=带补丁重臂）。
 
 /** 动词 id（视图按 id 渲染按钮文案/图标/绑定，不在此拼 HTML）。 */

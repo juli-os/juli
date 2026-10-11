@@ -433,7 +433,7 @@ describe('问询闸门=选择题（2026-09-28 用户口令「升格为 step+审�
   ].join('\n');
 
   it('parsePaneQuestion：菜单→编号选项（reply=编号）；无菜单→通用选项兜底', async () => {
-    const { parsePaneQuestion } = await import('../src/platform/shared/paneFingerprint.ts');
+    const { parsePaneQuestion } = await import('@juli-os/agents');
     const q = parsePaneQuestion(MENU_PANE, 'Claude needs your permission to use Edit');
     expect(q.options.map((o) => o.reply)).toEqual(['1', '2', '3']);
     expect(q.options[0]!.label).toContain('Yes');

@@ -7,7 +7,7 @@ import { asString, truncate } from '../../platform/shared/json.ts'
 import type { JsonRecord, JsonValue } from '@juli-os/artifacts'
 import type { Logger } from '../../platform/events/bus.ts';
 import type { LifecycleStore } from '@juli-os/ledger';
-import { AGENT_STEP_KINDS, INSTRUCTABLE_STEP_KINDS } from '../../contracts/entities.ts';
+import { AGENT_STEP_KINDS, INSTRUCTABLE_STEP_KINDS } from '@juli-os/ledger';
 import { isActiveWorkflowStatus, isSettledWorkflowStatus } from '../../contracts/statuses.ts';
 import { agentLiveSessionOf } from './capabilities/index.ts';
 import type { EngineDeps } from './engine.ts';

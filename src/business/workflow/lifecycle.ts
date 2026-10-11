@@ -8,7 +8,7 @@ import type { JsonRecord, JsonValue } from '@juli-os/artifacts'
 import type { Logger } from '../../platform/events/bus.ts';
 import type { LifecycleStore } from '@juli-os/ledger';
 import { type Step, type StepKind, type Workflow } from '@juli-os/ledger';
-import { STEP_KINDS } from '../../contracts/entities.ts';
+import { STEP_KINDS } from '@juli-os/ledger';
 import { isActiveStepStatus, isActiveWorkflowStatus, isLiveNodeStatus } from '../../contracts/statuses.ts';
 import { carryStepConfig, type Template } from '../templates/template.ts';
 import { envelopeTo, isSendGateDecision, seedSendFromGate } from '../send/sendSeed.ts';

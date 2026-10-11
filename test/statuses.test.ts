@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { createLedgerStore, type LifecycleStore } from '@juli-os/ledger';
-import { TERMINAL_WORKFLOW_STATUSES } from '../src/contracts/entities.ts';
+import { TERMINAL_WORKFLOW_STATUSES } from '@juli-os/ledger';
 import { type StepKind, type StepStatus, type WorkflowStatus } from '@juli-os/ledger';
 import {
   ACTIVE_STEP_STATUSES, ACTIVE_WORKFLOW_STATUSES, DEDUP_WINDOW_STATUSES,

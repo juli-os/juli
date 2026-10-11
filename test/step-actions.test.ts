@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { decideStepActions, FAILED_INTERVENABLE_KINDS } from '../web/src/step-actions.ts';
-import { AGENT_STEP_KINDS } from '../src/contracts/entities.ts';
+import { AGENT_STEP_KINDS } from '@juli-os/ledger';
 
 const step = (kind: string, status: string, extra: Record<string, unknown> = {}):
   { id: string; kind: string; status: string; output?: Record<string, unknown> } =>

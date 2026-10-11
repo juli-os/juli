@@ -8,7 +8,7 @@ import type { JsonValue } from '@juli-os/artifacts'
 import type { Logger } from '../../platform/events/bus.ts';
 import type { LifecycleStore } from '@juli-os/ledger';
 import { type Step } from '@juli-os/ledger';
-import { AGENT_STEP_KINDS, INSTRUCTABLE_STEP_KINDS } from '../../contracts/entities.ts';
+import { AGENT_STEP_KINDS, INSTRUCTABLE_STEP_KINDS } from '@juli-os/ledger';
 import { deliverablesBody, gateDelivery, isEffectDelivery, isSendGateDecision, seedSendFromGate } from '../send/sendSeed.ts';
 import { feedbackRefsOf } from './support.ts';
 import type { EngineDeps } from './engine.ts';

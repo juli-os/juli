@@ -27,7 +27,7 @@ export interface StatusDef {
 export const STATUS_GROUP_OTHER = '其他';
 
 /** 流水（workflow）状态名单，序 = 看板列序/过滤序。与 src/contracts/statuses.ts
- * 对齐（测试强制）；与 src/contracts/entities.ts 的 WorkflowStatus 一一对应。 */
+ * 对齐（测试强制）；与 @juli-os/ledger 的 WorkflowStatus 一一对应。 */
 export const WORKFLOW_STATUSES: readonly StatusDef[] = [
   { key: 'queued', label: '排队中', group: '进行中', terminal: false },
   { key: 'running', label: '进行中', group: '进行中', terminal: false },

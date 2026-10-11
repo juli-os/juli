@@ -7,7 +7,7 @@ import type { LifecycleStore } from '@juli-os/ledger';
 import { type Step } from '@juli-os/ledger';
 import { agentLiveSessionOf } from './capabilities/index.ts';
 import { paneAwaitingInput } from '@juli-os/agents';
-import { parsePaneQuestion } from '../../platform/shared/paneFingerprint.ts';
+import { parsePaneQuestion } from '@juli-os/agents';
 import { asString } from '../../platform/shared/json.ts'
 import type { JsonValue } from '@juli-os/artifacts'
 import { parseDur, type Template, type ZombiePolicy } from '../templates/template.ts';

@@ -6,7 +6,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { yamlParse } from '../../platform/shared/yamlparse.ts';
-import { STEP_KINDS } from '../../contracts/entities.ts';
+import { STEP_KINDS } from '@juli-os/ledger';
 import { type StepKind } from '@juli-os/ledger';
 import type { JsonRecord, JsonValue } from '@juli-os/artifacts'
 
