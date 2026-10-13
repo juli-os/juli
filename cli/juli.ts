@@ -7,7 +7,7 @@
 // 单文件 bundle:npm run build:cli → dist-cli/juli.js(esbuild 自包含,可装
 // <data_dir>/bin/juli 数据卷稳定路径,与 checkout 解耦)。
 
-import { accessSync, chmodSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
+import { accessSync, chmodSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -101,8 +101,9 @@ export const factsForPlan = (cfg: RoutingCfg): RoutingFacts => {
 export const dispatchHook = (argv: readonly string[]): Promise<void> => runHook(argv.slice(1));
 
 /** defaultHookSpecs 命令模板的裸 verb 面（`node <bin> <verb> <session>`）——
- * bin 作为 hook.js 替身时从 argv[2] 起就是 verb，见主分派首行的直通分支。 */
-const HOOK_VERBS = new Set(['notify', 'permission', 'claude-start', 'capture', 'awaiting', 'skill-used']);
+ * bin 作为 hook.js 替身时从 argv[2] 起就是 verb，见主分派首行的直通分支。
+ * 导出供 test/cli-hook.test.ts 的撞名守卫（子命令表扫描 ∩ verbs = ∅）。 */
+export const HOOK_VERBS: ReadonlySet<string> = new Set(['notify', 'permission', 'claude-start', 'capture', 'awaiting', 'skill-used']);
 
 const cmd = process.argv[2] ?? '';
 
@@ -633,7 +634,13 @@ if (isCliEntry) (async () => {
     mark('Claude Code', claudeOk, claudeV.ok ? claudeV.out.slice(0, 60) : '未安装——npm install -g @anthropic-ai/claude-code');
 
     // [2] 配置与统一 ai 段
-    const cfgPath = configFilePath(homedir(), process.env['JULI_DATA_DIR']);
+    // 数据卷 env 解析（与 loadConfig 的 envOverrides 同源语义：JULI_* 优先，
+    // MAKRO_* 迁移期兜底）——config 读写与 bin 落点吃同一解析，防 MAKRO_*
+    // 存量用户的自检面与引擎实际注入面分裂。
+    const dataDirEnv = (process.env['JULI_DATA_DIR'] && process.env['JULI_DATA_DIR'] !== ''
+      ? process.env['JULI_DATA_DIR']
+      : process.env['MAKRO_DATA_DIR']) ?? '';
+    const cfgPath = configFilePath(homedir(), dataDirEnv);
     let cfgRaw: Record<string, unknown> = {};
     try { cfgRaw = JSON.parse(readFileSync(cfgPath, 'utf8')) as Record<string, unknown>; } catch { /* 缺省容忍 */ }
     mark('config.json', true, cfgPath);
@@ -658,7 +665,7 @@ if (isCliEntry) (async () => {
       if (arg('api-key') !== '') patch['api_key'] = arg('api-key');
       else if (promptKey !== '') patch['api_key'] = promptKey;
       if (Object.keys(patch).length > 0) {
-        const r = saveConfigFile({ home: homedir(), dataDir: process.env['JULI_DATA_DIR'] }, { ai: patch });
+        const r = saveConfigFile({ home: homedir(), dataDir: dataDirEnv === '' ? undefined : dataDirEnv }, { ai: patch });
         if (r.ok) {
           mark('ai 段写入', true, `${cfgPath}（${Object.keys(patch).join('+')}）`);
           cfgRaw = { ...cfgRaw, ai: { ...((cfgRaw['ai'] as Record<string, unknown>) ?? {}), ...patch } };
@@ -695,7 +702,7 @@ if (isCliEntry) (async () => {
         if (cfgRaw['claude_dir'] === undefined || cfgRaw['claude_dir'] === '') {
           seed['claude_dir'] = join(homedir(), '.claude');
         }
-        const r2 = saveConfigFile({ home: homedir(), dataDir: process.env['JULI_DATA_DIR'] }, seed);
+        const r2 = saveConfigFile({ home: homedir(), dataDir: dataDirEnv === '' ? undefined : dataDirEnv }, seed);
         if (r2.ok) {
           mark('agents 播种', true, needAgents ? 'main 会话 + default_session=main' : 'default_session=main');
           cfgRaw = { ...cfgRaw, ...seed };
@@ -708,29 +715,34 @@ if (isCliEntry) (async () => {
     // [2.5] juli bin 自装/校验（2026-10-10 统一 CLI）：bundle 安装到
     // <data_dir>/bin/juli 数据卷稳定路径——CC hook 注册面指向它后，hook
     // 存活性与 checkout 的 dist/ 清理解耦（昨天 dist 被清 hook 全灭的事故
-    // 形态断根）。data_dir 与 config 同源（env JULI_DATA_DIR > config 段 >
-    // 默认 ~/.juli-service；容器 /data → /data/bin/juli）。setup 安装/刷新
-    // （幂等：已存在且内容一致跳过），doctor 只校验。
-    const dataDir = (process.env['JULI_DATA_DIR'] && process.env['JULI_DATA_DIR'] !== ''
-      ? process.env['JULI_DATA_DIR']
+    // 形态断根）。data_dir 与 config 同源（env JULI_DATA_DIR > MAKRO_DATA_DIR
+    // > config 段 > 默认 ~/.juli-service；容器 /data → /data/bin/juli）。setup
+    // 安装/刷新（幂等：已存在且内容一致跳过），doctor 只校验。
+    const dataDir = (dataDirEnv !== ''
+      ? dataDirEnv
       : (configSchema.parse(cfgRaw).data_dir || defaultDataDir(homedir()))).replace(/\/+$/, '');
     const binPath = join(dataDir, 'bin', 'juli');
+    // bundle 来源探测（setup/doctor 共用）：仓内形态（tsx cli/juli.ts 或 node
+    // dist-cli/juli.js）→ repo 根（bundle=dist-cli/juli.js）；数据卷 bin 自跑
+    // 形态 → 自身即 bundle。repoRoot 判不出且数据卷 bin 缺席的部署形态（如
+    // 公开投影不带构建脚本）＝ bundle 不可得——bin 两项降级信息态（null，
+    // 不计失败）：hooks 由引擎回退 dist/cli/hook.js（npm run build 产出，
+    // 公开仓真实存在）。提示语不指向公开仓不存在的 npm run build:cli。
+    const selfPath = fileURLToPath(import.meta.url);
+    const selfDir = dirname(selfPath);
+    const selfBase = selfPath.slice(selfDir.length + 1);
+    const repoRoot = (selfBase === 'juli.ts' && selfDir.endsWith('/cli')) || (selfBase === 'juli.js' && selfDir.endsWith('/dist-cli'))
+      ? dirname(selfDir) : null;
+    const bundleUnavailable = (): boolean => repoRoot !== null && !existsSync(join(repoRoot, 'dist-cli', 'juli.js'));
+    const binFallbackNote = 'bin 自装不可用——CC hooks 将回退 dist/cli/hook.js（npm run build 产出），不算失败';
     if (setup) {
-      // bundle 来源：仓内形态（tsx cli/juli.ts 或 node dist-cli/juli.js）→
-      // repo 的 dist-cli/juli.js（缺则现场构建）；数据卷 bin 自跑形态 →
-      // 自己就是 bundle，校验在位即可。
-      const selfPath = fileURLToPath(import.meta.url);
-      const selfDir = dirname(selfPath);
-      const selfBase = selfPath.slice(selfDir.length + 1);
-      const repoRoot = (selfBase === 'juli.ts' && selfDir.endsWith('/cli')) || (selfBase === 'juli.js' && selfDir.endsWith('/dist-cli'))
-        ? dirname(selfDir) : null;
       let bundleSrc: string | null = null;
       if (repoRoot !== null) {
         const candidate = join(repoRoot, 'dist-cli', 'juli.js');
         if (!existsSync(candidate)) {
           try {
             execSync('npm run build:cli', { cwd: repoRoot, encoding: 'utf8', stdio: 'ignore', timeout: 120_000 });
-          } catch { /* 缺 devDeps 等构建失败 → 下方 mark 报告 */ }
+          } catch { /* 缺 devDeps/缺脚本等构建失败 → bundleUnavailable，下方 mark 信息态 */ }
         }
         if (existsSync(candidate)) bundleSrc = candidate;
       } else if (existsSync(binPath)) {
@@ -740,7 +752,7 @@ if (isCliEntry) (async () => {
         try { return readFileSync(binPath, 'utf8') === readFileSync(bundleSrc!, 'utf8'); } catch { return false; }
       };
       if (bundleSrc === null) {
-        mark('juli bin 自装', false, '定位/构建 bundle 失败——仓内先跑 npm run build:cli 再 setup');
+        mark('juli bin 自装', null, binFallbackNote);
       } else if (bundleSrc === binPath) {
         mark('juli bin 自装', true, `${binPath}（当前即数据卷 bin 自跑）`);
       } else if (sameContent()) {
@@ -748,23 +760,37 @@ if (isCliEntry) (async () => {
       } else {
         try {
           mkdirSync(dirname(binPath), { recursive: true });
-          copyFileSync(bundleSrc, binPath);
-          chmodSync(binPath, 0o755);
+          // 原子替换（tmp + 同目录 rename）：hook 模板 `node <bin> <verb>` 直打
+          // 本文件，原地覆盖写存在半截文件瞬间——在飞 hook 读到即 SyntaxError
+          // 丢事件；rename 原子生效无中间态。
+          // tmp 名带 pid：并发双跑 setup 各写各的 tmp——固定名两进程交错写
+          // 可把损坏内容 rename 转正为 bin（在飞 hook 读坏文件）。
+          const tmpBin = `${binPath}.${process.pid}.tmp`;
+          copyFileSync(bundleSrc, tmpBin);
+          chmodSync(tmpBin, 0o755);
+          renameSync(tmpBin, binPath);
           mark('juli bin 自装', true, `${binPath}（CC hook 注册的稳定路径，与 checkout 解耦）`);
         } catch (e) {
           mark('juli bin 自装', false, `写入失败: ${e instanceof Error ? e.message : String(e)}`);
         }
       }
     }
-    // 校验项（setup/doctor 共用）：bin 在位且可执行。
-    let binOk = false;
+    // 校验项（setup/doctor 共用）：bin 在位且可执行；bundle 不可得的部署形态
+    // （公开投影等）降级信息态，不令 setup/doctor 恒红。现场重判（setup 可能
+    // 刚把 dist-cli 建出来）——bundle 在位而 bin 仍缺席 = 真失败（跑 setup）。
+    let binState: boolean | null = false;
     let binNote = `${binPath} 不存在或不可执行——juli setup 安装`;
     try {
       accessSync(binPath, constants.X_OK);
-      binOk = true;
+      binState = true;
       binNote = binPath;
-    } catch { /* 上面的缺省文案 */ }
-    mark('juli bin', binOk, binNote);
+    } catch {
+      if (bundleUnavailable()) {
+        binState = null;
+        binNote = binFallbackNote;
+      }
+    }
+    mark('juli bin', binState, binNote);
     // CC hooks 注册面（只报告，绝不改写——写面归引擎 installClaudeHooks）：
     // 命令应指向数据卷 bin；仍指 checkout 内 dist/cli/hook.js = dist 清理
     // 即灭。不一致只提示，引擎重启后自动重注册。

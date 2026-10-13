@@ -27,7 +27,7 @@
     "@juli-os/agents": "^0.1.4",
     "@juli-os/artifacts": "^0.2.1",
     "@juli-os/ledger": "^0.1.4",
-    "@juli-os/routing": "^0.1.0",
+    "@juli-os/routing": "^0.1.1",
     "@xterm/xterm": "^6.0.0",
     "hono": "^4.9.7",
     "imapflow": "^1.7.8",

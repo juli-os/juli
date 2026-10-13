@@ -45,7 +45,7 @@ export const makeSteps = (o: {
   readonly log: Logger;
   readonly withLock: <T>(workflowId: string, fn: () => Promise<T>) => Promise<T>;
   readonly journal: Journal;
-  readonly queue: Pick<Queue, 'continueWorkflow'>;
+  readonly queue: Pick<Queue, 'continueWorkflow' | 'enqueueBack'>;
   readonly zombie: Pick<Zombie, 'touchSession'>;
   /** 晚绑 advanceLocked：解释器装配后才指向真身（步收工后续推锁内链）。 */
   readonly late: { advanceLocked: (workflowId: string) => Promise<void> };
@@ -325,6 +325,47 @@ export const makeSteps = (o: {
           }
         }
       }
+      // 判定收敛执行层（2026-10-13 用户裁定「排队后再决定路由」）：三无单
+      // （无显式 session=也无人挂靠继承、无挂靠、无显式档位、未判定过）在
+      // 派发时刻问落点与档位——进件层只收倾向，进件判的是排队前的世界、
+      // 这里判的是现在（jev 对实时忙闲）。与上面 route_fallback（点名落空
+      // 兜底）互补：那条管「点错名」，这条管「没点名」。判定挂/缺缝=零行
+      // 为走 default（fail-open）。留痕=route_decision（路由图同款事件）。
+      const tInput = (w.meta['template_input'] ?? {}) as JsonRecord;
+      if (asString(st.input['session']).trim() === '' && asString(st.input['resolved_session']).trim() === ''
+        && asString(tInput['relates_to']).trim() === '' && asString(tInput['model_tier']).trim() === '') {
+        let tierReasons: Record<string, string> | null = null;
+        if (deps.taskRoute !== undefined) {
+          try {
+            const landing = await deps.taskRoute(w.title, asString(tInput['brief']));
+            if (landing !== null && landing.session.trim() !== ''
+                && (landing.via === 'jev' || landing.diverted)) {
+              tierReasons = { route_task: `${landing.note}（via=${landing.via}${landing.diverted ? ' 改道' : ''}）` };
+              session = landing.session.trim();
+              st0.setStepInput(st.id, { resolved_session: session });
+            }
+          } catch { /* fail-open：判定挂了不许挂派发 */ }
+        }
+        const twin = deps.highTwinFor !== undefined ? deps.highTwinFor(session) : '';
+        if (twin !== '' && deps.taskTier !== undefined) {
+          const tier = await deps.taskTier(w.title, asString(tInput['brief'])).catch(() => null);
+          if (tier === 'high') {
+            tierReasons = { ...(tierReasons ?? {}), model_tier: `jev 判 high → 升档 ${twin}` };
+            session = twin;
+            st0.setStepInput(st.id, { resolved_session: session, model_tier: 'high', model_tier_by: 'jev' });
+          }
+        }
+        if (tierReasons !== null) {
+          store.setWorkflowSession(w.id, session);
+          try {
+            store.appendEvent('workflow', w.id, 'route_decision', {
+              from: 'engine-dispatch', company: '', domain: '', session,
+              chain: ['task', 'route_task'], fallback: false,
+              reasons: { task: '三无单派发时判定（收敛执行层）', ...tierReasons },
+            });
+          } catch { /* 留痕失败不推翻派发 */ }
+        }
+      }
       // 忙闲选枝（板D/G dispatcher 选枝函数落地，2026-09-20；2026-09-27 用户
       // 裁决改道语义）：默认路由的会话若已有 running 的 agent 步，改道到
       // **其他声明 agent**（非绑定、tmux 真实存在、空闲），同公司优先——
@@ -368,6 +409,17 @@ export const makeSteps = (o: {
           log.info(`[engine] step ${st.id} 忙闲改道：${session} → ${divert}（基会话有未完单，负载摊给声明 agent）`);
           session = divert;
           store.setWorkflowSession(w.id, session);
+        } else {
+          // 全忙兜底（2026-10-13 双落点事故）：无空闲替代时不硬闯忙会话——
+          // 步留 pending、置回 queued（启动扫描兜底重启窗口）延迟回队
+          // （延迟避开 pump 即泵即判的热循环）。常态由 holdGate 忙会话腿
+          // 在 pump 侧压住，本分支只兜「pump 检查后瞬间变忙」的竞态窗。
+          o.journal.stepEvent(st, 'route_busy_wait', { session, by: 'busy_agent' });
+          log.info(`[engine] step ${st.id} 目标会话 ${session} 忙且无空闲替代——回队等待`);
+          store.setWorkflowStatus(w.id, 'queued');
+          const retry = setTimeout(() => o.queue.enqueueBack(w.id), 30_000) as unknown as { unref?: () => void };
+          retry.unref?.(); // 重试定时器不拖住进程退出
+          return;
         }
       }
     }

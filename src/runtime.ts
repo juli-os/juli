@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import type { Config } from './platform/config/schema.ts';
-import { resolveAiConfig, resolveSecret, danglingFeedbackRoutes, type AiResolved } from './platform/config/schema.ts';
+import { resolveAiConfig, resolveSecret, danglingFeedbackRoutes, mergeConfigPatch, type AiResolved } from './platform/config/schema.ts';
 import { consoleLogger, createBus, type Logger } from './platform/events/bus.ts';
 import { createLedgerStore, type LifecycleStore } from '@juli-os/ledger';
 import type { JsonRecord } from '@juli-os/artifacts'
@@ -122,6 +122,13 @@ export interface Runtime {
    * HTTP /api/lifecycle/tasks 共用）——jev 判定 + 忙闲感知落点，判定在
    * routing 层，本面只做装配。 */
   taskRoute(title: string, brief: string): Promise<TaskLanding>;
+  /** 任务档位判定（2026-10-12「按任务类型选模型」）：task_tier 场景判 title+
+   * brief 配不配高智能。只在 mode=on 且置信度过阈值时返回 'high'，其余
+   * （shadow/off/失败/低置信）一律 null——fail-open 落 standard。 */
+  taskTier(title: string, brief: string): Promise<'high' | null>;
+  /** 命名孪生查找（agents 命名 schema 硬规则③的读侧）：session 的 -hi 孪生
+   * 已声明且 high 才返回孪生名；无孪生业务线返回空串（升档无处落）。 */
+  highTwinFor(session: string): string;
   takeSnapshotNow(): Promise<number>;
   recoverNow(): Promise<number>;
   /** xterm PTY WebSocket 桥挂载（须在 HTTP server 建立后调用）。 */
@@ -549,6 +556,45 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
       availableSessions: router ? router.available() : undefined,
     });
 
+  /** 任务档位判定（task_tier 场景，2026-10-12）：进件无键路径的难度分类。
+   * 采用口径与 routeTask 的 menuHit 同构（mode=on + ok + answer + 置信度
+   * ≥阈值），shadow 期只记账不采用；判不准 = standard（成本纪律：花便宜
+   * 的钱）。判定留痕 judgment 流（gradeAlert 同款）——shadow 期的观察面。 */
+  const taskTier = async (title: string, brief: string): Promise<'high' | null> => {
+    const outcome = await judgmentGateway.ask('task_tier',
+      { title, brief: brief.slice(0, 600) },
+      {
+        tier: {
+          type: 'choice',
+          instructions: 'Does this task need the high-intelligence model tier, or is the standard tier enough? The high tier costs several times more — default to standard unless the task clearly demands depth.',
+          criteria: {
+            standard: 'Routine, well-scoped work: content edits, translations, data lookups and simple reports, formatting, scripts with clear specs, straightforward fixes. The standard model handles these reliably and much cheaper.',
+            high: 'Genuinely hard work: multi-file architecture changes with subtle interactions, debugging with unclear cause, novel design decisions with trade-offs, security-sensitive changes, cross-system integration with hidden failure modes, heavy reasoning over images or unstructured data.',
+          },
+        },
+      });
+    if (outcome === null) return null;
+    try {
+      store.appendEvent('judgment', `task_tier:${title.slice(0, 24)}`, 'judgment_made', {
+        scenario: 'task_tier', mode: outcome.mode, provider: outcome.provider,
+        ok: outcome.ok === true, answer: outcome.answer ?? '', confidence: outcome.confidence ?? 0,
+        threshold: outcome.threshold, error: outcome.error ?? '',
+        model: outcome.model ?? '', input_tokens: outcome.inputTokens ?? 0,
+        output_tokens: outcome.outputTokens ?? 0, duration_ms: outcome.durationMs ?? 0,
+      });
+    } catch { /* 留痕失败不阻断档位判定 */ }
+    if (!outcome.ok || outcome.mode !== 'on' || outcome.answer !== 'high') return null;
+    return (outcome.confidence ?? 0) >= outcome.threshold ? 'high' : null;
+  };
+
+  /** 命名孪生查找：session+'-hi' 在声明表且 high 才算孪生（无孪生不升档——
+   * 改道落点必须真实存在，与 zod 硬规则③互为读写两侧）。 */
+  const highTwinFor = (session: string): string => {
+    if (session === '' || session.endsWith('-hi')) return '';
+    const twin = `${session}-hi`;
+    return config.agents.some((a) => a.session === twin && a.model_tier === 'high') ? twin : '';
+  };
+
   const engine = createEngine({
     usage: (r) => usage.record(r),
     store,
@@ -595,6 +641,11 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
     get availableSessions() { return router ? router.available() : []; },
     resolveSession: router ? (session: string) => router.resolve(session) : null,
     judgment: judgmentGateway,
+    // 判定收敛执行层（2026-10-13）：三无单的落点/档位判定从进件层移进引擎
+    // 派发时刻（steps 三无腿）——runtime 只装配缝，判定本体仍在此处定义。
+    taskRoute: (title: string, brief: string) => taskRoute(title, brief).catch(() => null),
+    taskTier,
+    highTwinFor,
     // 一等插话/回流投递面：与引擎派发同一 tmux 通道（bracketed paste + Enter）。
     // 入队语义（2026-09-23 插话 400 事故）：intervene/relay 面对的常是忙碌会话
     // （agent 正在跑，输入排队消费，输入框不重置）——严格提交确认（20s 预算）
@@ -827,6 +878,8 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
     orchestrator,
     chatIntake,
     taskRoute,
+    taskTier,
+    highTwinFor,
     mailSource,
     feedback: business.feedback,
     feedbackIntake,
@@ -970,7 +1023,8 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
         // saveConfigFile 的 zod 校验（不过=文件未动，到不了这里）。
         const fresh = resolveAiConfig({
           ...config,
-          ai: { ...config.ai, ...(aiPatch as Partial<Config['ai']>) },
+          // 与落盘侧同源语义：mergeConfigPatch 剔哨兵（掩码回写不进热注入 env）。
+          ai: mergeConfigPatch(config.ai, aiPatch) as Config['ai'],
         });
         if (fresh.apiKey !== '') {
           injectAgentEnv(fresh);
@@ -1044,7 +1098,9 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
           log.error(`CC hooks 注入跳过：hook 脚本不存在 ${hookJs}（先 npm run build）`);
         } else {
           const res = installClaudeHooks(config.claude_dir, defaultHookSpecs(hookJs, config.password, `http://127.0.0.1:${config.listen_port}`));
-          if (res.ok) log.info(`CC hooks 已注入 ${config.claude_dir}/settings.json`);
+          // 日志带实际解析的 hook 入口路径：bin 在位（数据卷）vs 缺席回退
+          // dist 两种形态立即可辨——陈旧 bin 静默服役的第一现场。
+          if (res.ok) log.info(`CC hooks 已注入 ${config.claude_dir}/settings.json（hook=${hookJs}）`);
           else log.error(`CC hooks 注入失败: ${res.error.message}`);
         }
       }

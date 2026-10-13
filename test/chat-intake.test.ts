@@ -184,7 +184,7 @@ describe('chatIntake loop', () => {
 
   // ---- 落点（0930「所有的都走路由」）：chat 层不自选会话 -------------------------
 
-  it('落点判定注入：暂存时调 resolveLanding，state/chat:plan 带 landing，confirm 带 session', async () => {
+  it('落点展示：暂存时调 resolveLanding，state/chat:plan 带 landing；机器判定不再注入（执行层判）', async () => {
     const { llm } = fakeLlm([{ content: PLAN_BLOCK }]);
     const st = fakeStartTask('wf_land_1');
     const asked: { title: string; brief: string }[] = [];
@@ -205,7 +205,9 @@ describe('chatIntake loop', () => {
     expect(JSON.parse(planEvt!.data).landing).toEqual({ session: 'acme', note: 'acme 忙 → 改道 meridian-product-stats', via: 'jev', diverted: false });
     const r = await intake.confirm();
     expect(r.runId).toBe('wf_land_1');
-    expect(st.calls[0]).toMatchObject({ session: 'acme' });
+    // 2026-10-13 判定收敛执行层：机器判定（jev/改道）不随 input.session 注入
+    // ——计划卡落点是展示预测，真判定在派发时刻（engine steps 三无腿）。
+    expect(st.calls[0]).not.toHaveProperty('session');
   });
 
   it('钉住转述：用户点名会话在 pinnableSessions 内 → 不调 resolveLanding，confirm 钉死', async () => {
@@ -225,7 +227,7 @@ describe('chatIntake loop', () => {
     expect(st.calls[0]).toMatchObject({ session: 'juli-dev' });
   });
 
-  it('无效钉住（不在名单/LLM 幻觉）→ 转述作废走判定', async () => {
+  it('无效钉住（不在名单/LLM 幻觉）→ 转述作废；判定结果仅展示不注入', async () => {
     const block = '```intake-plan\n{"title":"t","summary":"s","brief":"b","pinned_session":"不存在的会话"}\n```';
     const { llm } = fakeLlm([{ content: block }]);
     const st = fakeStartTask();
@@ -239,7 +241,7 @@ describe('chatIntake loop', () => {
     expect(plan.pinnedSession).toBe(''); // 钉住作废清空
     expect(plan.landing).toEqual({ session: 'juli-reply', note: 'juli-reply', via: 'jev', diverted: false });
     await intake.confirm();
-    expect(st.calls[0]).toMatchObject({ session: 'juli-reply' });
+    expect(st.calls[0]).not.toHaveProperty('session'); // 判定收敛执行层：不注入
   });
 
   it('resolveLanding 抛错 fail-open：session 空 → confirm 不带 session（default），不开天窗', async () => {
@@ -256,7 +258,7 @@ describe('chatIntake loop', () => {
     expect(st.calls[0]).not.toHaveProperty('session');
   });
 
-  it('onDispatched 开单留痕：落点进账本事件（runtime 接 store.appendEvent）', async () => {
+  it('机器判定不注入 → onDispatched 零留痕（留痕只属于真注入=用户钉住）', async () => {
     const { llm } = fakeLlm([{ content: PLAN_BLOCK }]);
     const dispatched: { id: string; session: string; pinned: boolean }[] = [];
     const intake = createChatIntake({
@@ -266,7 +268,7 @@ describe('chatIntake loop', () => {
     });
     await intake.turn('官网反馈');
     await intake.confirm();
-    expect(dispatched).toEqual([{ id: 'wf_audit', session: 'villa', pinned: false }]);
+    expect(dispatched).toEqual([]); // 判定收敛执行层：没注入就不留「注过」的痕
   });
 
   it('fail-open default（via=default 未改道）→ confirm 不注 session、onDispatched 不留痕（十一跑 P1-1）', async () => {
@@ -288,7 +290,7 @@ describe('chatIntake loop', () => {
     expect(dispatched).toHaveLength(0); // 「没判」不记成「判过」——零 route_decision
   });
 
-  it('忙闲改道（diverted=true）也算真判定 → confirm 注入改道落点（十一跑 P1-1）', async () => {
+  it('忙闲改道（diverted=true）的判定结果 → 仅展示不注入（执行层对实时忙闲重判）', async () => {
     const { llm } = fakeLlm([{ content: PLAN_BLOCK }]);
     const st = fakeStartTask('wf_divert_1');
     const dispatched: { id: string; session: string; note: string; pinned: boolean }[] = [];
@@ -299,20 +301,21 @@ describe('chatIntake loop', () => {
     });
     await intake.turn('出材料');
     await intake.confirm();
-    expect(st.calls[0]).toMatchObject({ session: 'juli-dev' });
-    expect(dispatched).toEqual([{ id: 'wf_divert_1', session: 'juli-dev', note: 'juli-reply 忙 → 改道 juli-dev', pinned: false }]);
+    expect(st.calls[0]).not.toHaveProperty('session'); // 进件快照的改道不作数
+    expect(dispatched).toHaveLength(0);
   });
 
-  it('onDispatched 留痕抛错 → 已开的单不报错：runId 正常返回（十一跑 P2-2）', async () => {
-    const { llm } = fakeLlm([{ content: PLAN_BLOCK }]);
+  it('onDispatched 留痕抛错 → 已开的单不报错：runId 正常返回（十一跑 P2-2，钉住注入路径）', async () => {
+    const block = '```intake-plan\n{"title":"t","summary":"s","brief":"b","pinned_session":"juli-dev"}\n```';
+    const { llm } = fakeLlm([{ content: block }]);
     const logs: string[] = [];
     const intake = createChatIntake({
       llm, model: 'fake', tools: [], startTask: fakeStartTask('wf_audit_boom').fn,
-      resolveLanding: async () => ({ session: 'villa', note: 'villa', via: 'jev', diverted: false }),
+      pinnableSessions: ['juli-dev'],
       onDispatched: () => { throw new Error('账本炸了'); },
       log: (m) => logs.push(m),
     });
-    await intake.turn('官网反馈');
+    await intake.turn('给 juli-dev');
     const r = await intake.confirm();
     expect(r.runId).toBe('wf_audit_boom'); // 单已开，留痕失败只记日志
     expect(r.events.map((e) => e.type)).toContain('chat:dispatched');
@@ -504,7 +507,7 @@ describe('chat 线落点注入引擎级（十一跑 P1-1）', () => {
     expect(audit).toHaveLength(0);
   });
 
-  it('对照：via=jev 真判定 → 注入即钉（session_pinned），忙时排队不改道（既有取舍不变）', async () => {
+  it('对照：via=jev 真判定 → 不再注入（判定收敛执行层）——default 直达，忙会话守卫照常', async () => {
     const { w, intake, audit } = setup({ session: 'juli-dev', note: 'juli-dev', via: 'jev', diverted: false });
     const busy = await w.engine.startTask('占用 juli-dev', { brief: 'busy', session: 'juli-dev' });
     await until(() => w.store.getWorkflow(busy.id)!.status === 'running');
@@ -512,11 +515,13 @@ describe('chat 线落点注入引擎级（十一跑 P1-1）', () => {
     const r = await intake.confirm();
     expect(r.runId).not.toBeNull();
     const step = w.store.stepsForWorkflow(r.runId!)![0]!;
-    expect(step.input['session']).toBe('juli-dev');
-    expect(step.input['session_pinned']).toBe(true); // 真判定=钉住（不改道宁可排队）
+    // 机器判定不随 input.session 注入播种——计划卡落点是展示预测，真判定
+    // 在派发时刻（engine steps 三无腿，本测试世界无 taskRoute 缝=走 default）。
+    expect(step.input['session']).toBeUndefined();
+    expect(step.input['session_pinned']).toBeUndefined();
     await until(() => w.dispatched.some((d) => d.text.includes(CHAT_BRIEF)));
-    const hit = w.dispatched.find((d) => d.text.includes(CHAT_BRIEF))!;
-    expect(hit.session).toBe('juli-dev');
-    expect(audit).toEqual([{ id: r.runId, session: 'juli-dev', pinned: false }]); // 真判定留痕
+    // default juli-reply 空闲 → 直达（不注入，也不改道去忙的 juli-dev）
+    expect(w.dispatched.find((d) => d.text.includes(CHAT_BRIEF))!.session).toBe('juli-reply');
+    expect(audit).toEqual([]); // 「没注入」不记成「注过」
   });
 });

@@ -92,6 +92,10 @@ describe('收单台', () => {
     await w.engine.onAgentStopped('juli-reply', 'done', '理解完成');
     await drain();
     expect(w.engine.queueStatus().active).not.toContain(hold.id);
+    // 占位单卡闸等人=仍占会话（2026-10-13 裁定后：闸门等待中的会话算忙，
+    // 下张同会话单排队不放行）；收口让 juli-reply 空出再验「释放后可派」。
+    await w.engine.forceClose(hold.id, 'test', 'test');
+    await drain();
     // 释放后新单立即可派
     void w.engine.onEmailReceived(makeEmail({ messageId: '<next@x>' }));
     await drain();

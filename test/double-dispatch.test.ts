@@ -521,6 +521,10 @@ describe('feedback 锚继承 → 主动 settle（2026-09-28 两次实战后补�
     await until(() => w.store.stepsForWorkflow(first.id)[0]!.status === 'running');
     // 父单先收工让槽（并发 1）——它的故事已完成，跟进才派得出去。
     await w.engine.onAgentStopped('juli-reply', 'done', '原批量执行完毕');
+    // 父单收口（2026-10-13 裁定后语义）：挂靠继承忙时等待/改道——父单卡闸
+    // 等人期间 juli-reply 视为忙，跟进不再直接挤进父会话（旧=挤入）。此处
+    // 单 agent 世界=等父单终态；测试直接 force-close 让会话空出。
+    await w.engine.forceClose(first.id, 'test', 'test');
     const follow = await w.engine.startTask('跟进执行段', { brief: '按 skill 处理并交付 input.delivery="apply"', relates_to: first.id });
     await until(() => w.store.stepsForWorkflow(follow.id)[0]!.status === 'running');
     // 跟进 agent 干完：stop hook 结算 + autoAppend 补 apply 闸（锚继承后认它）

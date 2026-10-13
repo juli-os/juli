@@ -6,9 +6,9 @@ import { resolve } from 'node:path';
 import { stepToGo, workflowToGo } from '../../platform/shared/goShape.ts';
 import { type StepKind } from '@juli-os/ledger';
 import type { Runtime } from '../../runtime.ts';
-import type { TaskLanding } from '@juli-os/routing';
 import type { JsonRecord } from '@juli-os/artifacts'
 import { clampInt, readBody, type AppEnv } from '../helpers.ts';
+import { asString } from '../../platform/shared/json.ts';
 import { costContextOf } from '../../business/workflow/costContext.ts';
 
 export const registerLifecycleRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
@@ -341,49 +341,11 @@ const stepAction = (action: 'approve' | 'deny' | 'resolve' | 'retry') =>
     const rawInput = body['input'] ?? {};
     const input = (rawInput !== null && typeof rawInput === 'object' && !Array.isArray(rawInput) ? rawInput : {}) as JsonRecord;
     try {
-      // 无键兜底（2026-09-30「所有的都走路由」）：无显式 session、无挂靠
-      // （relates_to 继承）、无 tier 改道时过 routeTask 判定（jev + 忙闲感知），
-      // 判中随 input.session 钉死（播种即 session_pinned）。放在 startTask 之前
-      // ——startTask 保持「入口到 createWorkflow 无 await」不变量（feedback
-      // 去重窗口依赖，P2-C）。人显式指定的 session 永远赢。只注「真判定」
-      // （jev 采纳或忙闲改道）：fail-open 落 default 时不注 session——否则
-      // default 被当显式钉住，忙时只排队挤死既有改道。taskRoute 抛错同样
-      // fail-open（判定挂了不许挂起单正门）。
-      const brief = typeof input['brief'] === 'string' ? input['brief'] : '';
-      const hasSession = typeof input['session'] === 'string' && input['session'].trim() !== '';
-      const hasRelates = typeof input['relates_to'] === 'string' && input['relates_to'].trim() !== '';
-      const tierHigh = input['model_tier'] === 'high';
-      let effective = input;
-      let landing: TaskLanding | null = null;
-      if (!hasSession && !hasRelates && !tierHigh) {
-        try {
-          landing = await rt.taskRoute(title, brief);
-        } catch {
-          landing = null; // fail-open：原样进件走 default
-        }
-      }
-      if (landing !== null && landing.session.trim() !== ''
-          && (landing.via === 'jev' || landing.diverted)) {
-        effective = { ...input, session: landing.session };
-      }
-      const w = await rt.engine.startTask(title, effective);
-      if (effective !== input && landing !== null) {
-        // 兜底落点进账本（路由图 recent 读同款事件；显式 session 不留——那是
-        // 调用方自己的决定，不是路由判定）。留痕失败不推翻已成功的开单
-        // （十一跑 P2-2）：本端点无幂等键，400 会诱导重试=重复单——只记日志。
-        try {
-          rt.store.appendEvent('workflow', w.id, 'route_decision', {
-            from: 'task-intake', company: '', domain: '', session: String(effective['session'] ?? ''),
-            chain: ['task', 'route_task'], fallback: false,
-            reasons: {
-              task: '无键起单兜底判定',
-              route_task: `${landing.note}（via=${landing.via}${landing.diverted ? ' 改道' : ''}）`,
-            },
-          });
-        } catch (e) {
-          console.error(`[task-intake] route_decision 留痕失败（单 ${w.id} 已开）：${e instanceof Error ? e.message : String(e)}`);
-        }
-      }
+      // 判定收敛执行层（2026-10-13 用户裁定「排队后再决定路由」）：进件只
+      // 收倾向（显式 session/挂靠/档位原样透传），落点与档位判定移到派发
+      // 时刻（engine steps 三无腿，jev 对实时忙闲判）——进件快照过期就此
+      // 收口；startTask「入口到 createWorkflow 无 await」不变量随之恢复。
+      const w = await rt.engine.startTask(title, input);
       return c.json({ workflow: w });
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);

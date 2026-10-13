@@ -229,14 +229,18 @@ export const createChatIntake = (deps: ChatIntakeDeps): ChatIntake => {
     staged = null;
     phase = 'discuss';
     if (!plan) return { events, runId: null };
-    // 注入口径（十一跑 P1-1，与 HTTP 线 lifecycle.ts 同款）：只有「真判定」
-    // （jev 采纳 / 忙闲改道）或用户显式钉住才随 input.session 播种（播种即
-    // session_pinned，忙时只排队）；fail-open default 落空不注——计划卡照常
-    // 显示落点（display 与注入分离，web/iOS 只读 session/note 两键）。
+    // 注入口径（十一跑 P1-1 收窄，2026-10-13 判定收敛执行层）：只有用户
+    // 显式钉住（pinnedSession 与落点一致）才随 input.session 播种（播种即
+    // session_pinned，忙时真排队）——机器判定（jev 采纳/忙闲改道）不再注入：
+    // 计划卡落点降级为展示预测，真判定在派发时刻（engine steps 三无腿）对
+    // 实时忙闲做。display 与注入分离（web/iOS 只读 session/note 两键）。
     const pinned = plan.pinnedSession !== undefined && plan.pinnedSession !== ''
       && plan.pinnedSession === (plan.landing?.session ?? '');
-    const routed = plan.landing?.via === 'jev' || plan.landing?.diverted === true;
-    const session = pinned || routed ? (plan.landing?.session ?? '') : '';
+    const session = pinned ? (plan.landing?.session ?? '') : '';
+    // 任务档位（task_tier）第二跳口径（R1-2 定，2026-10-12）：chat 确认线
+    // 暂不判档、恒 standard——53c3cc8 有意收窄在 /tasks 无键路径（lifecycle.ts
+    // 第二跳），chat 线未收。采用口径唯一事实源 = runtime taskTier；若裁定
+    // chat 线也要判档，走共享进件助手收编（扩功能待人裁，勿在此悄悄补）。
     const res = await deps.startTask(plan.title, plan.brief, session !== '' ? session : undefined, opts?.autoApprove === true);
     if (!res.ok) {
       // 开单失败显性报错回到讨论——单没开出去，对话不能装作成功。

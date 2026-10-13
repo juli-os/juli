@@ -44,6 +44,17 @@ describe('loadConfig', () => {
     expect(cfg.email_authz_mode).toBe('open');
     expect(cfg.email_authz_allow).toEqual(['a@x.com', 'b@y.com']);
   });
+
+  it('JULI_DATA_DIR 空串作未设（|| 双认）：实读 MAKRO config.json，不与写侧分家', () => {
+    const cfg = loadConfig({
+      env: { JULI_DATA_DIR: '', MAKRO_DATA_DIR: '/data/makro' },
+      home: '/home/test',
+      // 旧 `??` 语义会去读默认路径（readFile 返回 null → 全默认），读写分家。
+      readFile: (p) => (p === '/data/makro/config.json' ? JSON.stringify({ listen_port: 7071 }) : null),
+    });
+    expect(cfg.listen_port).toBe(7071);
+    expect(cfg.data_dir).toBe('/data/makro'); // envOverrides get 同语义兜出 MAKRO
+  });
 });
 
 describe('resolveSecret', () => {
@@ -64,6 +75,37 @@ describe('resolveSecret', () => {
 
   it('字面量直通', () => {
     expect(resolveSecret({ configured: 'plain' }, { run: () => 'x' })).toBe('plain');
+  });
+});
+
+describe('agents 命名 schema 硬校验（2026-10-12 more structure）', () => {
+  const load = (agents: unknown) =>
+    loadConfig({ env: {}, home: '/home/test', readFile: () => JSON.stringify({ agents }) });
+
+  it('合规名照常通过：standard 无后缀 + high 孪生成对', () => {
+    const cfg = load([
+      { session: 'juli-reply' },
+      { session: 'juli-dev' },
+      { session: 'juli-dev-hi', model_tier: 'high' },
+      { session: 'team-research-cases' },
+    ]);
+    expect(cfg.agents.map((a) => a.session)).toEqual(['juli-reply', 'juli-dev', 'juli-dev-hi', 'team-research-cases']);
+  });
+
+  it('非 kebab 名（下划线/大写/空串）→ 配置拒载', () => {
+    expect(() => load([{ session: 'juli_dev' }])).toThrow(/命名 schema/);
+    expect(() => load([{ session: 'Juli-Dev' }])).toThrow(/命名 schema/);
+    expect(() => load([{ session: '' }])).toThrow(/命名 schema/);
+  });
+
+  it('后缀 -hi ⟺ model_tier=high，缺一不可', () => {
+    expect(() => load([{ session: 'juli-web-hi' }])).toThrow(/-hi 后缀但 model_tier 非 high/);
+    expect(() => load([{ session: 'juli-web', model_tier: 'high' }])).toThrow(/high 但会话名不带 -hi/);
+  });
+
+  it('-hi 孪生的基名必须在声明表内（改道目标不成对 = 拒载）', () => {
+    expect(() => load([{ session: 'juli-eng-hi', model_tier: 'high' }])).toThrow(/孪生基名/);
+    expect(() => load([{ session: 'juli-eng' }, { session: 'juli-eng-hi', model_tier: 'high' }])).not.toThrow();
   });
 });
 

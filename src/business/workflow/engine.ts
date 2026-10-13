@@ -87,6 +87,15 @@ export interface EngineDeps {
   readonly resolveSession: ((session: string) => string) | null;
   /** 语义判定网关（Jev，可选）：缺省=全场景 off，零行为零网络。 */
   readonly judgment?: JudgmentGateway;
+  /** 执行时任务路由（2026-10-13 判定收敛执行层）：三无单（无显式 session/
+   * 无挂靠/无显式档位）在派发时刻问一次落点（jev+忙闲实时），替代进件时
+   * 判定（快照过期收口）。结构型 TaskLanding（session/via/note/diverted），
+   * 免类型依赖穿透围栏。缺省=不判（default 兜底旧行为）。 */
+  readonly taskRoute?: (title: string, brief: string) => Promise<{ session: string; via: string; note: string; diverted: boolean } | null>;
+  /** 执行时档位判定（task_tier 场景）：判 high 才升档，缺省=不判。 */
+  readonly taskTier?: (title: string, brief: string) => Promise<'high' | null>;
+  /** 命名孪生查找（session+'-hi' 在声明表且 high 才算）：缺省=无孪生不升档。 */
+  readonly highTwinFor?: (session: string) => string;
   /** 僵尸自愈接缝。 */
   readonly interruptSession: ((session: string) => Promise<boolean>) | null;
   readonly rebuildAgent: ((session: string) => Promise<boolean>) | null;
@@ -296,6 +305,35 @@ export const createEngine = (deps: EngineDeps): Engine => {
   const holdGate = (workflowId: string): boolean => {
     const w = store.getWorkflow(workflowId);
     if (w === null) return false;
+    // 忙会话腿（2026-10-13 双落点事故）：目标会话有未完单时不硬闯派发——
+    // 钉住（人显式点名）/绑定/全忙（无空闲替代）压单等待；有空闲替代则
+    // 放行由 steps 守卫改道。任何 settle/停放都会泵队，会话空出自然放行
+    // （事件驱动，无定时器）。排在人工放行/窗口腿之前：一活单一会话的
+    // 不变量高于时机策略（人放行的是「现在派」，不是「挤进去」）。
+    // availableSessions 空=可用面未知，fail-open 放行（守卫兜底旧行为）。
+    if (w.status === 'queued') {
+      const st = store.currentStep(workflowId);
+      const sess = st !== null && st.status === 'pending' && st.kind === 'agent'
+        && typeof st.input['session'] === 'string' ? (st.input['session'] as string).trim() : '';
+      const avail = deps.availableSessions ?? [];
+      if (sess !== '' && avail.length > 0) {
+        // 占用=已派发在跑的单（running）——同会话排队的兄弟单不算占（否则
+        // 两个等待单互相视为忙=死锁）；0930「排队也是忙」口径保留给下面的
+        // 改道候选判定（idleAlt 用 sessionHasOpenWork，queued 计忙防堆积）。
+        const occupied = store.listWorkflows(500).some((x) => x.id !== workflowId && x.status === 'running'
+          && (x.session === sess || (x.meta?.['assigned_session'] ?? '') === sess));
+        if (occupied) {
+        const pinV = st!.input['session_pinned'];
+        const pinned = pinV === true || pinV === 'true';
+        const boundNames = (deps.routing.boundAgents ?? []).map((b) => b.session);
+        const idleAlt = (deps.routing.agents ?? []).some((a) =>
+          a.session !== '' && a.session !== sess && !boundNames.includes(a.session)
+          && a.model_tier !== 'high' && avail.includes(a.session)
+          && !store.sessionHasOpenWork(a.session, workflowId));
+        if (pinned || boundNames.includes(sess) || !idleAlt) return true;
+        }
+      }
+    }
     if (w.meta['hold_released'] === true) return false;
     const hu = w.meta['hold_until'];
     if (typeof hu === 'string' && hu !== '' && !Number.isNaN(Date.parse(hu)) && now().getTime() < Date.parse(hu)) return true;

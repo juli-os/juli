@@ -234,11 +234,13 @@ export const makeLifecycle = (o: {
         }
       }
     }
-    // 模型分层路由（2026-09-28 用户裁定「非必要不高智能，说了高智能才升档」）：
+    // 模型分层路由（2026-09-28 用户裁定「非必要不高智能」；2026-10-12 增
+    // task_tier 自动档——jev 判难度，判 high 才升）：
     // input.model_tier='high' 时——①未点名会话（无 input.session、无继承）→ 改道
     // 声明 high 的会话：同 cwd 孪生优先（活儿还是那个仓，只是模型升档），否则
-    // 第一个 high；②已点名会话（显式/渠道钉死/继承）→ 尊重落点不改道，落点非
-    // high 只留 mismatch 事件；③无 high 声明 → 照旧派发 + unavailable 事件。
+    // 第一个 high；②已点名会话（显式/渠道钉死/继承/task_tier 落孪生）→ 尊重
+    // 落点不改道，落点非 high 只留 mismatch 事件（model_tier_by 在场=jev 升档
+    // 记 model_tier_auto）；③无 high 声明 → 照旧派发 + unavailable 事件。
     // 全部 fail-open：tier 是成本优化不是硬约束，任何情况不拦单。standard/缺省
     // = 零变化。事件：model_tier_routed / model_tier_mismatch / model_tier_unavailable。
     let tierEvent: { kind: string; payload: JsonRecord } | null = null;
@@ -249,6 +251,10 @@ export const makeLifecycle = (o: {
       if (explicit !== '') {
         if (highs.length > 0 && !highs.some((a) => a.session === explicit)) {
           tierEvent = { kind: 'model_tier_mismatch', payload: { requested: 'high', session: explicit } };
+        } else if (asString(input['model_tier_by']).trim() !== '' && highs.some((a) => a.session === explicit)) {
+          // 自动升档留痕（2026-10-12 task_tier）：进件侧 jev 判 high 落孪生——
+          // 与手动 mismatch/改道同流记账，审计一眼分得清「谁说的升档」。
+          tierEvent = { kind: 'model_tier_auto', payload: { to: explicit, by: asString(input['model_tier_by']) } };
         }
       } else if (highs.length > 0) {
         const wantCwd = inheritTo !== ''
@@ -294,16 +300,18 @@ export const makeLifecycle = (o: {
       });
     }
     try {
+      // 钉住收窄（2026-10-13 双落点事故裁定「忙时优先空闲 agent」）：只有
+      // 「显式 input.session」=人的意志（chat 钉住转述/CLI --session/feedback
+      // 渠道规则/HTTP 注入）才播种 session_pinned——忙时真排队等它、不被
+      // 改道（0930 宁可慢不换人保留给人）。挂靠继承/tier 改道是机器推断的
+      // 落点，不再钉：播种仍写 session（上下文倾向），派发时过忙闲判定
+      // （engine holdGate 忙会话腿压单 + steps 守卫改道空闲 agent）。
+      const pinned = asString(input['session']).trim() !== '';
       store.insertStepsAt(w.id, 0, [{
         kind: 'agent', title: '理解与接单',
-        // session_pinned（0930 修「钉住不改道」未落引擎）：显式 input.session
-        // （chat 钉住转述/CLI --session/feedback 渠道规则）与继承落点都是
-        // 「上下文有名有姓」的落点——忙时不改道宁可排队（0928 宁可慢不换人
-        // +0930 路由裁定）。机器兜底（HTTP 层 routeTask 注入）只在真判定时
-        // 注入（routes/lifecycle.ts），注进来的同样享受钉住。
         input: seedSession === ''
           ? { plan: truncate(brief !== '' ? brief : t, 8000), seq_ref: 'n1' }
-          : { plan: truncate(brief !== '' ? brief : t, 8000), seq_ref: 'n1', session: seedSession, session_pinned: true },
+          : { plan: truncate(brief !== '' ? brief : t, 8000), seq_ref: 'n1', session: seedSession, session_pinned: pinned },
       }]);
       // 落点锚定提前到播种（0930 忙闲重定义）：忙=名下非终态单——queued 期
       // 就要占住会话，否则「排队也是忙」判定不到。派发面幂等再写。

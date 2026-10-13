@@ -46,6 +46,15 @@ export const configSchema = z.object({
   // agents 全量声明（板C：图的唯一结构源——bound_agents 只是它的绑定段，
   // 2026-09-20 升格）。company/domain 是组织树两个维度；未声明的会话在
   // mesh 里落「未归属」虚线区（进图先声明，数据驱动，视图零自有状态）。
+  // 命名 schema（2026-10-12 用户裁定 more structure）：{org}-{role}[-{aspect}]
+  // [-{tier}]，org=归属主体（juli 自家/客户名），role=职能（reply/dev/eng/
+  // accounting/web/research），aspect=多主题限定（cases/products/…），tier=
+  // 档位后缀。org/role 语义属约定不可机检，以下三条硬规则 zod 把关（loadConfig
+  // 与 saveConfigFile（PUT /api/settings 热注入）同一 parse 口，启动/热注入同
+  // 语义）：① 全名 kebab 小写
+  // （tmux 名安全）；② 后缀 -hi ⟺ model_tier=high（standard 永无后缀）；③
+  // -hi 孪生的基名（去后缀）必须在声明表内——升档改道落的是孪生会话，基名
+  // 缺席=改道目标凭空消失。
   agents: z
     .array(
       z.object({
@@ -62,6 +71,36 @@ export const configSchema = z.object({
         model_tier: z.enum(['standard', 'high']).default('standard'),
       }),
     )
+    .superRefine((decls, ctx) => {
+      const names = new Set(decls.map((a) => a.session));
+      for (const [i, a] of decls.entries()) {
+        if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(a.session)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [i, 'session'],
+            message: `agent 会话名 "${a.session}" 不合命名 schema：须 kebab 小写 {org}-{role}[-{aspect}][-{tier}]`,
+          });
+          continue;
+        }
+        const hi = a.session.split('-').at(-1) === 'hi';
+        if (hi !== (a.model_tier === 'high')) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [i, 'session'],
+            message: hi
+              ? `agent 会话名 "${a.session}" 带 -hi 后缀但 model_tier 非 high（后缀 ⟺ 档位，二选一改齐）`
+              : `agent "${a.session}" model_tier=high 但会话名不带 -hi 后缀（升档孪生命名 = 基名 + "-hi"）`,
+          });
+        }
+        if (hi && !names.has(a.session.slice(0, -3))) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [i, 'session'],
+            message: `agent 会话名 "${a.session}" 的孪生基名 "${a.session.slice(0, -3)}" 不在声明表——改道目标必须成对声明`,
+          });
+        }
+      }
+    })
     .default([]),
 
   // 模型两档声明（2026-09-28）：模型 id（CC 透传给 GLM anthropic 兼容端），
@@ -431,11 +470,13 @@ export const mergeConfigPatch = (
   patch: unknown,
 ): Record<string, unknown> => {
   const merge = (base: unknown, over: unknown): unknown => {
-    if (!isPlainObject(base) || !isPlainObject(over)) return over;
-    const out: Record<string, unknown> = { ...base };
+    if (!isPlainObject(over)) return over;
+    // base 缺席/非对象（段首建）也照走剔哨兵分支——嵌套哨兵绝不透传落盘。
+    const b = isPlainObject(base) ? base : {};
+    const out: Record<string, unknown> = { ...b };
     for (const [k, v] of Object.entries(over)) {
       if (v === SECRET_SENTINEL) continue; // 掩码回写保护
-      out[k] = merge(base[k], v);
+      out[k] = merge(b[k], v);
     }
     return out;
   };
@@ -495,7 +536,9 @@ export const saveConfigFile = (deps: SaveConfigDeps, patch: unknown): SaveConfig
 export const loadConfig = (deps: LoadConfigDeps): Config => {
   // 默认真读磁盘（注入仅测试用）——冒烟抓过"默认空读导致 config.json 被忽略"。
   const read = deps.readFile ?? createReadFile();
-  const path = configFilePath(deps.home, deps.env['JULI_DATA_DIR'] ?? deps.env['MAKRO_DATA_DIR']);
+  // 双认空串作未设（|| 而非 ??）：与 envOverrides get / 写侧落盘定位同语义，
+  // JULI=''×MAKRO 设时读写不打同一个文件就是分家。
+  const path = configFilePath(deps.home, deps.env['JULI_DATA_DIR'] || deps.env['MAKRO_DATA_DIR']);
   const raw = read(path);
   const parsed = configSchema.parse(raw ? JSON.parse(raw) : {});
   // 只应用真正存在的覆盖项——显式 undefined 绝不许抹掉文件值。

@@ -46,7 +46,8 @@ export const registerSettingsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => 
     // 用户刷新再存会把热值静默回滚。
     const view = mergeConfigPatch(maskConfig(rt.config), rt.liveOverrides());
     return c.json({
-      file: configFilePath(rt.home, process.env['JULI_DATA_DIR']),
+      // 展示路径与下方 PUT 落盘定位同款双认——展示的必须是实写的那个文件。
+      file: configFilePath(rt.home, process.env['JULI_DATA_DIR'] || process.env['MAKRO_DATA_DIR']),
       config: view,
       hot_keys: ['email.poll_interval_sec', 'ledger_retention_days', 'notify.to', 'notify.cc', 'auto_approve'],
     });
@@ -58,7 +59,13 @@ export const registerSettingsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => 
     if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) {
       return c.json({ error: 'patch (object) required' }, 400);
     }
-    const saved = saveConfigFile({ home: rt.home, dataDir: process.env['JULI_DATA_DIR'] }, patch);
+    // dataDir 双认（JULI 非空优先 → MAKRO → 默认），与引擎 boot 的 config
+    // 定位（schema.ts loadConfig）、cli dataDirEnv 同语义——MAKRO_* 迁移用户
+    // 的 Settings 改动必须落回引擎读的同一 config.json，否则重启即丢。
+    const saved = saveConfigFile(
+      { home: rt.home, dataDir: process.env['JULI_DATA_DIR'] || process.env['MAKRO_DATA_DIR'] },
+      patch,
+    );
     if (!saved.ok) return c.json({ error: saved.error }, 400);
     const hot = rt.applySettings(patch as JsonRecord);
     return c.json({ ok: true, applied_hot: hot.applied });

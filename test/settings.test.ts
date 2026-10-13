@@ -1,8 +1,8 @@
 // Settings 面：掩码（敏感字面量不出门）/ 写回（哨兵剔除 + zod 拒改留盘）/
 // 热改键（轮询间隔 + 账本保留天数）/ HTTP GET+PUT 全链（tmp home，不碰真配置）。
 
-import { describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -66,6 +66,22 @@ describe('saveConfigFile', () => {
     expect(saved['password']).toBe('real'); // 哨兵没有覆盖真值
   });
 
+  it('base 缺段 + 嵌套哨兵：段首建时嵌套哨兵照样剔除（绝不透传落盘），正常键保留', () => {
+    const existing = JSON.stringify({ listen_port: 7070 }); // 无 ai 段——base 同位缺席
+    const written: { path: string; content: string }[] = [];
+    const r = saveConfigFile(deps(existing, written), {
+      ai: { api_key: SECRET_SENTINEL, model: 'glm-5.3' },
+      password: SECRET_SENTINEL,
+    });
+    expect(r.ok).toBe(true);
+    const saved = JSON.parse(written[0]!.content);
+    expect(JSON.stringify(saved)).not.toContain(SECRET_SENTINEL); // 嵌套哨兵不落盘
+    expect(saved['ai']['model']).toBe('glm-5.3'); // 同段正常键照常写入
+    expect(saved['ai']['api_key']).toBeUndefined(); // 哨兵键不物化
+    expect(saved['listen_port']).toBe(7070); // 正常键保留
+    expect(saved['password']).toBeUndefined(); // 顶层哨兵在 base 缺键时不新建
+  });
+
   it('落盘写 merged 而非 zod parse 结果：未知键保留、默认值不物化', () => {
     const existing = JSON.stringify({ listen_port: 7070, future_key: { a: 1 } });
     const written: { path: string; content: string }[] = [];
@@ -121,6 +137,26 @@ const j = async (method: string, path: string, body?: unknown): Promise<{ status
 };
 
 describe('HTTP /api/settings', () => {
+  // describe 级 env 清场（NEW-R3-4）：PUT 落盘定位（settings.ts JULI||MAKRO 双认）
+  // 与热注入回退链都吃本机 env——开发者本机设了这些键，模块级 PUT 会写穿真数据卷
+  // config.json、GET 展示断言误红。清场管本 describe 全部用例，恢复在 afterAll
+  //（等价 try/finally：describe 收尾即还原，不向同 worker 其他测试文件泄漏）。
+  const envKeys = [
+    'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN',
+    'JULI_AI_API_KEY', 'JULI_LLM_API_KEY', 'MAKRO_LLM_API_KEY',
+    'JULI_DATA_DIR', 'MAKRO_DATA_DIR',
+  ];
+  const savedEnv = new Map(envKeys.map((k) => [k, process.env[k]]));
+  beforeAll(() => {
+    for (const k of envKeys) delete process.env[k];
+  });
+  afterAll(() => {
+    savedEnv.forEach((v, k) => {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    });
+  });
+
   it('GET：全量配置 + 密码脱敏 + 文件路径', async () => {
     const r = await j('GET', '/api/settings');
     expect(r.status).toBe(200);
@@ -199,6 +235,49 @@ describe('HTTP /api/settings', () => {
     // 清空收件人 = 关通知：PUT 空数组合法，热改落点归零。
     await j('PUT', '/api/settings', { patch: { notify: { to: [] } } });
     expect(rt.liveOverrides()['notify']).toEqual({ to: [], cc: ['watcher@example.com'] });
+  });
+
+  it('PUT：ai 掩码哨兵回写不进热注入——env 注入的是配置真 key 而非 __MASKED__（与落盘侧同语义）', async () => {
+    // echo-GET-PUT 攻击形态：配置真 key 在（GET 才吐掩码），客户端掩码原样回写
+    // 只改别的字段——热注入绝不能把哨兵当真 key。独立 runtime 承载真 key
+    //（模块级 rt 的冻结 config 无 ai 段，热合并 base 不同）；env 清场已上移
+    // describe 级（AI 回退链 + 落盘定位双认键），此处不再重复。
+    const dir2 = mkdtempSync(join(tmpdir(), 'juli-settings-sentinel-'));
+    const home2 = mkdtempSync(join(tmpdir(), 'juli-settings-sentinel-home-'));
+    mkdirSync(join(home2, '.juli-service'), { recursive: true });
+    const cfg2Path = join(home2, '.juli-service', 'config.json');
+    writeFileSync(cfg2Path, JSON.stringify({ password: 'pw-masked', ai: { api_key: 'sk-real', model: 'old-model' } }));
+    const rt2 = createRuntime(
+      configSchema.parse({ data_dir: dir2, password: 'pw-masked', ai: { api_key: 'sk-real', model: 'old-model' } }),
+      { home: home2 },
+    );
+    const put2 = async (patch: unknown): Promise<{ status: number; data: any }> => {
+      const res = await createHttpApp(rt2).request('/api/settings', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer pw-masked' },
+        body: JSON.stringify({ patch }),
+      });
+      return { status: res.status, data: await res.json().catch(() => null) };
+    };
+    try {
+      const r = await put2({ ai: { api_key: SECRET_SENTINEL, model: 'glm-4-6' }, ledger_retention_days: 45 });
+      expect(r.status).toBe(200);
+      expect(r.data.ok).toBe(true);
+      // 热注入走的是配置真 key（幂等重注），哨兵绝不进 env（修复前 = '__MASKED__'，必红已实测）。
+      expect(process.env['ANTHROPIC_API_KEY']).toBe('sk-real');
+      expect(process.env['ANTHROPIC_AUTH_TOKEN']).toBe('sk-real');
+      // 落盘侧同语义：真 key 不被哨兵洗掉；同 patch 其他字段照常生效。
+      const saved = JSON.parse(readFileSync(cfg2Path, 'utf8'));
+      expect(saved['ai']['api_key']).toBe('sk-real');
+      expect(saved['ai']['model']).toBe('glm-4-6');
+      expect(r.data.applied_hot).toContain('ledger_retention_days');
+      // 返回面如实：ai 项报告的是「真 key 已热注入」（修复前该位也在列，
+      // 但注入的是哨兵垃圾值——假 applied_hot；配合上方 env 断言钉死诚实面）。
+      expect(r.data.applied_hot.join('\n')).toContain('ai（');
+    } finally {
+      rmSync(dir2, { recursive: true, force: true });
+      rmSync(home2, { recursive: true, force: true });
+    }
   });
 });
 

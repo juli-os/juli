@@ -202,7 +202,7 @@ describe('忙闲选枝（板D/G dispatcher 选枝函数）', () => {
     expect(w.store.getWorkflow(wf.id)!.session).toBe('juli-dev');
   });
 
-  it('声明 agent 不在 tmux → 跳过；全忙 → 原路挤入，不留改道事件', async () => {
+  it('声明 agent 不在 tmux → 跳过；全忙 → 回队等待不挤入，不留改道事件', async () => {
     const w = busyWorld(['juli-reply'], {
       routing: {
         defaultSession: 'juli-reply', defaultProject: 'p',
@@ -220,7 +220,12 @@ describe('忙闲选枝（板D/G dispatcher 选枝函数）', () => {
     const wf = w.store.createWorkflow({ kind: 'adhoc', title: '新单', status: 'running', meta: { mode: 'nodes' } });
     w.store.createStep({ workflowId: wf.id, seq: 1, kind: 'agent', title: '干活', input: { session: 'juli-reply', plan: '排队' } });
     await w.engine.advance(wf.id);
-    expect((w as { dispatchedTo: string[] }).dispatchedTo).toEqual(['juli-reply']);
+    // 全忙（唯一候选 juli-dev 不在 tmux）→ 回队等待：不派发、无改道事件
+    // （2026-10-13 裁定「忙时优先空闲 agent，全忙排队」；旧=原路挤入忙会话
+    // ——双落点事故形态，已废除）。
+    expect((w as { dispatchedTo: string[] }).dispatchedTo).toEqual([]);
+    expect(w.store.getWorkflow(wf.id)!.status).toBe('queued');
+    expect(w.store.listEvents(50).some((e) => e.type === 'route_busy_wait')).toBe(true);
     expect(w.store.listEvents(50).some((e) => e.type === 'route_busy_divert')).toBe(false);
   });
 

@@ -61,6 +61,9 @@ describe('动态进件（无模板/无 trigger）', () => {
     const w = makeEngineEmpty();
     const parent = await w.engine.startEmailWorkflow(makeEmail());
     await w.engine.onAgentStopped('juli-reply', 'done', '理解');
+    // 父单终态让出 juli-reply（2026-10-13 裁定后：挂靠继承忙时等待/改道，
+    // 单 agent 世界=等父单收口；旧=直接挤进闸门等待中的父会话）。
+    await w.engine.forceClose(parent.id, 'test', 'test');
     const t = await w.engine.startTask('banner 重做', {
       relates_to: parent.id, brief: '口径：设备居中', from: 'c@x.de',
     });
