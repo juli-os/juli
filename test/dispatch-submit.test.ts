@@ -53,7 +53,7 @@ const realImplWith = (stub: {
   sendText: TmuxClient['sendText'];
 }): TmuxClient => {
   const real = createTmuxClient({ submitConfirmMs: 1_200 });
-  return { ...real, capturePane: stub.capturePane, exec: stub.exec, sendText: stub.sendText } as TmuxClient;
+  return { ...real, capturePane: stub.capturePane, exec: stub.exec, sendText: stub.sendText };
 };
 
 describe('sendTextConfirmed（行为契约，真实现+桩 tmux）', () => {

@@ -38,7 +38,7 @@ export const makeZombie = (o: {
   readonly journal: Journal;
   readonly queue: Pick<Queue, 'continueWorkflow'>;
 }): Zombie => {
-  const { deps, store, log } = o;
+  const { deps, store } = o;
   const now = o.now;
   const lastBeat = new Map<string, Date>();
   const lastFp = new Map<string, string>();

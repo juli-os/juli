@@ -8,7 +8,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { configSchema } from '../src/platform/config/schema.ts';
 import { createRuntime, type RuntimeSeams } from '../src/runtime.ts';
-import type { CompletionResult } from '../src/contracts/ports.ts';
 import { createHttpApp } from '../src/http/app.ts';
 import { ok } from '@juli-os/artifacts';
 
@@ -46,6 +45,7 @@ const cfg = configSchema.parse({
 const rt = createRuntime(cfg, seams);
 const app = createHttpApp(rt);
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- 测试 JSON 探针：data=JSON.parse 动态形态，下游数十处临时断言消费，精确建型需给全部 expect 补窄化（零安全增益 churn）。
 const j = async (method: string, path: string, body?: unknown): Promise<{ status: number; data: any }> => {
   const res = await app.request(path, {
     method,

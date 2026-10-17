@@ -9,7 +9,7 @@ import { dirname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { safeEqual } from '../platform/shared/secure.ts';
 import type { Runtime } from '../runtime.ts';
-import { makeShareAuth, readBody, type AppEnv } from './helpers.ts';
+import { bodyStr, makeShareAuth, readBody, type AppEnv } from './helpers.ts';
 import { registerLifecycleRoutes } from './routes/lifecycle.ts';
 import { registerPipelinesRoutes } from './routes/pipelines.ts';
 import { registerSettingsRoutes } from './routes/settings.ts';
@@ -87,7 +87,7 @@ export const createHttpApp = (rt: Runtime): Hono<AppEnv> => {
   // iOS 设备推送 token 注册（幂等 upsert）。
   app.post('/api/device-token', async (c) => {
     const body = await readBody(c);
-    const token = typeof body['token'] === 'string' ? body['token'] : '';
+    const token = bodyStr(body, 'token');
     if (token === '') return c.json({ error: 'token required' }, 400);
     rt.registerDeviceToken(token);
     return c.json({ ok: true });

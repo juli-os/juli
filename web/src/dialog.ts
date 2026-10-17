@@ -5,6 +5,36 @@
 
 import { esc } from './esc.ts';
 
+/** 焦点圈闭+归还原语（R7-F1 P2-4/5/6）：弹层/抽屉打开时调用——记录触发钮
+ * （opener），Tab 键在容器内可聚焦件首尾环绕（焦点已逃出容器也拉回，杜绝
+ * 回车在「被遮罩盖住的背景件」上触发）；返回释放器=移除监听并把焦点还给
+ * 触发钮（opener 已离树则不还，自然回落 BODY）。四件对话框与开单抽屉共用。 */
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+export const trapFocus = (wrap: HTMLElement): (() => void) => {
+  const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const onKey = (e: KeyboardEvent): void => {
+    if (e.key !== 'Tab') return;
+    const focusables = [...wrap.querySelectorAll<HTMLElement>(FOCUSABLE)];
+    if (focusables.length === 0) return;
+    const first = focusables[0]!;
+    const last = focusables[focusables.length - 1]!;
+    const inside = wrap.contains(document.activeElement);
+    if (e.shiftKey && (document.activeElement === first || !inside)) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && (document.activeElement === last || !inside)) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
+  document.addEventListener('keydown', onKey, true);
+  return () => {
+    document.removeEventListener('keydown', onKey, true);
+    if (opener !== null && document.contains(opener)) opener.focus();
+  };
+};
+
 export interface AskTextOpts {
   readonly title: string;
   readonly value?: string;
@@ -30,9 +60,13 @@ export const askText = (opts: AskTextOpts): Promise<string | null> =>
         </div>
       </div>`;
     document.body.appendChild(wrap);
+    wrap.setAttribute('role', 'dialog');
+    wrap.setAttribute('aria-modal', 'true');
+    const release = trapFocus(wrap);
     const f = wrap.querySelector('#dlg-f') as HTMLInputElement | HTMLTextAreaElement;
     f.value = opts.value ?? '';
     const done = (v: string | null): void => {
+      release();
       wrap.remove();
       document.removeEventListener('keydown', onKey, true);
       resolve(v);
@@ -78,8 +112,12 @@ export const askSelect = (opts: {
         </div>
       </div>`;
     document.body.appendChild(wrap);
+    wrap.setAttribute('role', 'dialog');
+    wrap.setAttribute('aria-modal', 'true');
+    const release = trapFocus(wrap);
     const sel = wrap.querySelector('#dlg-s') as HTMLSelectElement;
     const done = (v: string | null): void => {
+      release();
       wrap.remove();
       document.removeEventListener('keydown', onKey, true);
       resolve(v);
@@ -113,12 +151,26 @@ export const askChecks = (title: string, options: { id: string; label: string }[
         </div>
       </div>`;
     document.body.appendChild(wrap);
-    const done = (v: string[] | null): void => { wrap.remove(); resolve(v); };
+    wrap.setAttribute('role', 'dialog');
+    wrap.setAttribute('aria-modal', 'true');
+    const release = trapFocus(wrap);
+    const done = (v: string[] | null): void => {
+      release();
+      wrap.remove();
+      document.removeEventListener('keydown', onKey, true);
+      resolve(v);
+    };
+    const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') done(null); };
+    wrap.addEventListener('click', (e) => { if (e.target === wrap) done(null); });
     wrap.querySelector('#dlg-cancel')!.addEventListener('click', () => done(null));
     wrap.querySelector('#dlg-ok')!.addEventListener('click', () => {
       const picked = [...wrap.querySelectorAll('input[type=checkbox]:checked')].map((x) => (x as HTMLInputElement).value);
       done(picked.length > 0 ? picked : null);
     });
+    document.addEventListener('keydown', onKey, true);
+    // 初始聚焦首个 checkbox（P1-1）：与同族三件一致——打开即可 Tab/空格操作，
+    // 不落 BODY。
+    wrap.querySelector<HTMLInputElement>('input[type=checkbox]')?.focus();
   });
 
 export interface AskConfirmOpts {
@@ -155,8 +207,12 @@ export const askConfirm = (opts: AskConfirmOpts): Promise<string | null> =>
         </div>
       </div>`;
     document.body.appendChild(wrap);
+    wrap.setAttribute('role', 'dialog');
+    wrap.setAttribute('aria-modal', 'true');
+    const release = trapFocus(wrap);
     const note = wrap.querySelector('#dlg-note') as HTMLInputElement;
     const done = (v: string | null): void => {
+      release();
       wrap.remove();
       document.removeEventListener('keydown', onKey, true);
       resolve(v);

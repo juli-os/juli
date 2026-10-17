@@ -75,12 +75,13 @@ const fake = makeFakeTmux();
 const rtT = createRuntime(mkTmpCfg('tmux'), { tmux: fake.tmux });
 const appT = createHttpApp(rtT);
 // share 诚实化守卫：S3 已配置（artifactSharing = true）的第二运行时。
-const rtS3 = createRuntime(configSchema.parse({
+const _rtS3 = createRuntime(configSchema.parse({
   data_dir: mkdtempSync(join(tmpdir(), 'juli-ios-s3-')),
   s3: { endpoint: 'http://127.0.0.1:1', bucket: 'juli-test', access_key_id: 'ak' },
   secrets: { s3_secret_key: 'sk' },
 }));
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- 测试 JSON 探针：data=JSON.parse 动态形态，下游数十处临时断言消费，精确建型需给全部 expect 补窄化（零安全增益 churn）。
 const j = async (method: string, path: string, body?: unknown): Promise<{ status: number; data: any }> => {
   const res = await app.request(path, {
     method,
@@ -88,7 +89,7 @@ const j = async (method: string, path: string, body?: unknown): Promise<{ status
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
-  let data: any = null;
+  let data: unknown = null;
   try { data = JSON.parse(text); } catch { data = text; }
   return { status: res.status, data };
 };
@@ -111,7 +112,7 @@ describe('agents 族', () => {
     const { data } = await j('GET', '/api/agents');
     expect(data.agents).toEqual([]);
     expect(data.history.length).toBeGreaterThanOrEqual(1);
-    const h = data.history.find((x: any) => x.workflow_id === wid);
+    const h = data.history.find((x: { workflow_id: string; error?: unknown; workflow_title?: unknown }) => x.workflow_id === wid);
     expect(h.error).toBe('boom');
     expect(h.workflow_title).toBe('t');
     expect(typeof h.updated_at).toBe('string');
@@ -126,7 +127,7 @@ describe('agents 族', () => {
     rt.store.setStepOutput(stAgent.id, { error: 'agent boom', session: 'sess-fallback' });
     rt.store.setStepStatus(stAgent.id, 'failed');
     const { data } = await j('GET', '/api/agents');
-    const mine = data.history.filter((x: any) => x.workflow_id === wid);
+    const mine = data.history.filter((x: { workflow_id: string; step_id?: unknown; error?: unknown; session?: unknown }) => x.workflow_id === wid);
     expect(mine).toHaveLength(1);
     expect(mine[0].step_id).toBe(stAgent.id);
     expect(mine[0].error).toBe('agent boom');
@@ -136,11 +137,11 @@ describe('agents 族', () => {
 
   it('profile/session 未分类时不得带空 project 键（空串会让 iOS owns() 恒真）', async () => {
     const prof = await app.request('/api/agents/profiles');
-    const profiles = (await prof.json()) as { profiles: any[] };
-    expect(profiles.profiles.every((x: any) => x.project === undefined)).toBe(true);
+    const profiles = (await prof.json()) as { profiles: Array<{ project?: unknown }> };
+    expect(profiles.profiles.every((x: { project?: unknown }) => x.project === undefined)).toBe(true);
     const sess = await app.request('/api/sessions');
-    const arr = (await sess.json()) as any[];
-    expect(arr.every((x: any) => x.project === undefined)).toBe(true);
+    const arr = (await sess.json()) as Array<{ project?: unknown }>;
+    expect(arr.every((x: { project?: unknown }) => x.project === undefined)).toBe(true);
   });
 
   it('GET /api/agents/profiles：数组且条目字段逐字（updated_at 毫秒）', async () => {
@@ -188,9 +189,9 @@ describe('artifacts 族', () => {
       workflowId: wid, role: 'agent_output', name: 'page.html', bytes: Buffer.from('<p>x</p>'),
     });
     const list = await app.request('/api/artifacts');
-    const arr = (await list.json()) as any[];
+    const arr = (await list.json()) as Array<{ name?: unknown; session?: unknown; type?: unknown; size?: unknown; mtime?: unknown; id: string }>;
     expect(Array.isArray(arr)).toBe(true);
-    const entry = arr.find((x) => x.name === 'page.html');
+    const entry = arr.find((x) => x.name === 'page.html')!;
     expect(entry.session).toBe(wid);
     expect(entry.type).toBe('html');
     expect(typeof entry.mtime).toBe('number');
@@ -214,7 +215,7 @@ describe('artifacts 族', () => {
     const purge = await j('POST', `/api/lifecycle/workflows/${wid}/artifacts/purge`);
     expect(purge.data.purged).toBe(1);
     // (a) /api/artifacts 列表不含该 name（墓碑过滤生效）
-    const arr = (await (await app.request('/api/artifacts')).json()) as any[];
+    const arr = (await (await app.request('/api/artifacts')).json()) as Array<{ name?: unknown }>;
     expect(arr.find((x) => x.name === 'purge-me.html')).toBeUndefined();
     // (b) /api/artifact?session&path 404
     expect((await app.request(`/api/artifact?session=${wid}&path=purge-me.html`)).status).toBe(404);
@@ -270,7 +271,7 @@ describe('artifacts 族', () => {
     globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
       putCalls.push({ url: String(input), headers: (init?.headers ?? {}) as Record<string, string> });
       return new Response('', { status: 200 });
-    }) as typeof fetch;
+    });
     const rtOss = createRuntime(configSchema.parse({
       data_dir: mkdtempSync(join(tmpdir(), 'juli-sh-oss-')),
       s3: {
@@ -344,7 +345,7 @@ describe('会话列表批量化（N+1 消除）', () => {
     const appx = createHttpApp(createRuntime(mkTmpCfg('ls'), { tmux: f.tmux }));
     const res = await appx.request('/api/sessions');
     expect(res.status).toBe(200);
-    const arr = (await res.json()) as any[];
+    const arr = (await res.json()) as Array<Record<string, unknown>>;
     expect(arr).toHaveLength(1);
     expect(arr[0]).toMatchObject({ name: 'sess-a', active: true, path: '/tmp/proj-a', agent: 'claude' });
     expect(f.execCount()).toBeLessThanOrEqual(1);
@@ -354,7 +355,7 @@ describe('会话列表批量化（N+1 消除）', () => {
     const appx = createHttpApp(createRuntime(mkTmpCfg('ls2'), { tmux: f.tmux }));
     const res = await appx.request('/api/agents/profiles');
     expect(res.status).toBe(200);
-    const p = ((await res.json()) as { profiles: any[] }).profiles;
+    const p = ((await res.json()) as { profiles: Array<Record<string, unknown>> }).profiles;
     expect(p).toHaveLength(1);
     expect(p[0]).toMatchObject({ name: 'sess-a', runtime: 'tmux', cwd: '/tmp/proj-a' });
     expect(f.execCount()).toBeLessThanOrEqual(1);
@@ -367,7 +368,7 @@ describe('lifecycle steps / workflows2', () => {
     const steps = rt.store.stepsForWorkflow(wid);
     rt.store.setStepStatus(steps[1]!.id, 'waiting_human');
     const { data } = await j('GET', '/api/lifecycle/steps?status=waiting_human&limit=30');
-    const hit = data.steps.find((x: any) => x.step.workflow_id === wid);
+    const hit = data.steps.find((x: { step: { workflow_id: string } }) => x.step.workflow_id === wid);
     expect(hit).toBeDefined();
     expect(hit.step.kind).toBe(steps[1]!.kind);
     expect(hit.workflow).toEqual({ id: wid, title: 't4', kind: 'email', status: 'running' });
@@ -393,7 +394,7 @@ describe('lifecycle steps / workflows2', () => {
     const steps = rt.store.stepsForWorkflow(wid);
     rt.store.setStepStatus(steps[1]!.id, 'waiting_human');
     const post = await j('POST', '/api/lifecycle/workflows2', {});
-    const wf = post.data.workflows.find((x: any) => x.id === wid);
+    const wf = post.data.workflows.find((x: { id: string; created_at?: unknown; waiting_steps?: unknown }) => x.id === wid);
     expect(wf.created_at).toBeTruthy();
     expect(wf.waiting_steps).toBe(1);
     expect(wf.meta.from).toBe('e@x.com');
@@ -453,7 +454,7 @@ describe('ws chat wire', () => {
     attachChatWireWs({ server, chatHub: hub, password: 'pw1', log: () => undefined });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
     const port = (server.address() as { port: number }).port;
-    const frames: any[] = [];
+    const frames: unknown[] = [];
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/chat?token=pw1`);
     const opened = new Promise<void>((r) => ws.on('open', r));
     ws.on('message', (d) => frames.push(JSON.parse(String(d))));

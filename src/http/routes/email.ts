@@ -3,7 +3,7 @@
 
 import type { Hono } from 'hono';
 import type { Runtime } from '../../runtime.ts';
-import { readBody, type AppEnv } from '../helpers.ts';
+import { bodyStr, readBody, type AppEnv } from '../helpers.ts';
 
 export const registerEmailRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
   app.get('/api/email/status', (c) => {
@@ -32,10 +32,12 @@ export const registerEmailRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
       return c.json({ error: 'email simulate endpoint disabled — set config email.simulate_enabled=true（测试注入口，生产默认关）' }, 403);
     }
     const body = await readBody(c);
-    const str = (k: string): string => (typeof body[k] === 'string' ? body[k] as string : '');
+    // str() 收口（R8 批3）：原内联 body 版清洗与 bodyStr 同形（静默空串）——
+    // 并入共享实现，语义逐字不变。
+    const str = (k: string): string => bodyStr(body, k);
     const from = str('from');
     if (from === '') return c.json({ error: 'from required' }, 400);
-    const w = await rt.engine.onEmailReceived({
+    await rt.engine.onEmailReceived({
       from,
       to: str('to'),
       subject: str('subject'),

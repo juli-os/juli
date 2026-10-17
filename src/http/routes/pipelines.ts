@@ -4,7 +4,7 @@
 import type { Hono } from 'hono';
 import type { Runtime } from '../../runtime.ts';
 import type { JsonRecord } from '@juli-os/artifacts'
-import { readBody, type AppEnv } from '../helpers.ts';
+import { bodyStr, readBody, type AppEnv } from '../helpers.ts';
 
 export const registerPipelinesRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
   // ---- 管线控制面 ---------------------------------------------------------------
@@ -23,8 +23,8 @@ export const registerPipelinesRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
 
   app.post('/api/pipelines', async (c) => {
     const body = await readBody(c);
-    const fileName = typeof body['file'] === 'string' ? body['file'] : '';
-    const yaml = typeof body['yaml'] === 'string' ? body['yaml'] : '';
+    const fileName = bodyStr(body, 'file');
+    const yaml = bodyStr(body, 'yaml');
     if (fileName === '' || yaml === '') return c.json({ error: 'file and yaml required' }, 400);
     const saveErr = rt.saveTemplate(fileName, yaml);
     if (saveErr !== null) return c.json({ error: saveErr }, 400);
@@ -49,8 +49,8 @@ export const registerPipelinesRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
 
   app.post('/api/pipelines/start', async (c) => {
     const body = await readBody(c);
-    const template = typeof body['template'] === 'string' ? body['template'] : '';
-    const title = typeof body['title'] === 'string' ? body['title'] : '';
+    const template = bodyStr(body, 'template');
+    const title = bodyStr(body, 'title');
     if (template === '') return c.json({ error: 'template required' }, 400);
     const rawInput = body['input'] ?? {};
     if (rawInput === null || typeof rawInput !== 'object' || Array.isArray(rawInput)) {

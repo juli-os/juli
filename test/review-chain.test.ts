@@ -8,14 +8,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createLedgerStore } from '@juli-os/ledger';
-import { createEngine, type EngineDeps } from '../src/business/workflow/engine.ts';
+import { createEngine } from '../src/business/workflow/engine.ts';
 import { parseTemplate } from '../src/business/templates/template.ts';
 import { createArtifactLedger, sweepCaseInbox } from '@juli-os/artifacts';
 import { createDiskBackend } from '@juli-os/artifacts';
 import { extractFinalMessage, parseHookStdin } from '@juli-os/agents';
-import { fixedClock, makeEmail, seqIds } from './helpers.ts';
-import { ok, type Result } from '@juli-os/artifacts';
-import type { LlmPort, MailerPort, PusherPort } from '../src/contracts/ports.ts';
+import { fixedClock, seqIds } from './helpers.ts';
+import { ok } from '@juli-os/artifacts';
+import type { MailerPort, PusherPort } from '../src/contracts/ports.ts';
 
 /** agent → 发送闸门 → send 的最小答复阶梯（trigger=email 让邮件进件直接命中）。 */
 const REPLY_YAML = `key: reply-artifact
@@ -75,7 +75,7 @@ const makeWorld = (over: { yaml?: string; redlineWords?: readonly string[] } = {
     store,
     llm: {
       async complete() { return ok({ text: '{}', inputTokens: 1, outputTokens: 1 }); },
-    } as unknown as LlmPort,
+    },
     model: 'test',
     routing: { defaultSession: '', defaultProject: 'p' },
     dispatch: {

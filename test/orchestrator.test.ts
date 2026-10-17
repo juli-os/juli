@@ -74,7 +74,7 @@ describe('tool-calling 循环', () => {
   });
 
   it('上下文裁剪：超过 maxContextMessages 时丢最旧的历史', async () => {
-    const { dir, cleanup } = await makeSession();
+    const { dir: _dir, cleanup } = await makeSession();
     try {
       const { llm } = scriptedLlm(Array.from({ length: 30 }, () =>
         ({ content: 'ok', toolCalls: [], stopReason: 'end_turn' })));
@@ -132,7 +132,7 @@ describe('tool-calling 循环', () => {
       await orch.handle('写文件', emit);
       const tr = events.find((e) => e.type === 'tool_result');
       expect(tr).toMatchObject({ content: '写入被守护者拦截' });
-      expect(() => { void readX(join(dir, 'x.txt')); }).not.toThrow;
+      expect(() => { void readX(join(dir, 'x.txt')); }).not.toThrow();
       void readX;
     } finally {
       cleanup();

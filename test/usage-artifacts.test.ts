@@ -130,7 +130,7 @@ describe('工件账本（disk 后端）', () => {
     globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
       calls.push({ url: String(input), headers: (init?.headers ?? {}) as Record<string, string> });
       return new Response('', { status: 200 });
-    }) as typeof fetch;
+    });
     try {
       const s3 = createS3Backend({
         endpoint: 'https://b.oss-cn-hangzhou.aliyuncs.com', region: 'cn-hangzhou', bucket: 'b',

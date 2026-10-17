@@ -3,7 +3,6 @@
 
 import type { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { resolve } from 'node:path';
 import type { Runtime } from '../../runtime.ts';
 import { clampInt, type AppEnv } from '../helpers.ts';
 

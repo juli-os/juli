@@ -17,7 +17,7 @@ import { type StepKind, type StepStatus, type WorkflowStatus } from '@juli-os/le
 import {
   ACTIVE_STEP_STATUSES, ACTIVE_WORKFLOW_STATUSES, DEDUP_WINDOW_STATUSES,
   PRUNE_WORKFLOW_STATUSES, SETTLED_STEP_STATUSES, SETTLED_WORKFLOW_STATUSES,
-  STATUS_GROUP_OTHER, STEP_STATUSES, TERMINAL_STEP_STATUSES, WORKFLOW_STATUSES,
+  STEP_STATUSES, TERMINAL_STEP_STATUSES, WORKFLOW_STATUSES,
   isActiveStepStatus, isActiveWorkflowStatus, isLiveNodeStatus, isSettledStepStatus,
   isSettledWorkflowStatus, isTerminalStepStatus, sqlInList, statusLabelOf,
 } from '../src/contracts/statuses.ts';

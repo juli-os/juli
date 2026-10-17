@@ -142,7 +142,7 @@ describe('④ 闸门开启不经收单台排队', () => {
     let advances = 0;
     const queue = makeQueue({
       store, queueConcurrency: 1,
-      late: { advance: async (id) => { advances++; } },
+      late: { advance: async (_id) => { advances++; } },
     });
     // 占槽单：agent 步 running。
     const busy = store.createWorkflow({ kind: 'adhoc', title: 'busy', status: 'running', meta: { mode: 'nodes' } });

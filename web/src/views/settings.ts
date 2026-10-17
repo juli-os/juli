@@ -8,6 +8,7 @@
 import { api } from '../api.ts';
 import { esc } from './dashboard.ts';
 import { askConfirm } from '../dialog.ts';
+import { toast } from '../ui.ts';
 
 type FieldType = 'string' | 'number' | 'boolean' | 'secret' | 'list' | 'json';
 
@@ -207,7 +208,7 @@ const setByPath = (obj: Record<string, unknown>, path: string, value: unknown): 
   for (const seg of segs.slice(0, -1)) {
     let next = cur[seg];
     if (next === null || typeof next !== 'object' || Array.isArray(next)) {
-      next = {} as Record<string, unknown>;
+      next = {};
       cur[seg] = next;
     }
     cur = next as Record<string, unknown>;
@@ -261,7 +262,7 @@ const rowHtml = (f: FieldSpec, value: unknown, hotKeys: readonly string[]): stri
 const panelHead = (titleHtml: string, apiPath: string): string =>
   `<div class="set-ph"><h2>${titleHtml}</h2><span class="set-api mono">${esc(apiPath)}</span></div>`;
 
-export const settingsView = async (el: HTMLElement): Promise<() => void> => {
+export const settingsView = async (el: HTMLElement): Promise<(() => void) | void> => {
   el.innerHTML = `
     <div class="set-layout">
       <div class="panel set-nav">
@@ -273,12 +274,24 @@ export const settingsView = async (el: HTMLElement): Promise<() => void> => {
       <div id="setMain" class="set-main"><p class="muted">加载配置…</p></div>
     </div>`;
 
-  const { file, config, hot_keys } = await api.get<{
-    file: string; config: Record<string, unknown>; hot_keys?: string[];
-  }>('/api/settings');
-  const hotKeys = Array.isArray(hot_keys) ? hot_keys : []; // 旧服务端缺字段 = 无热改标记
   const nav = el.querySelector('#setNav') as HTMLElement;
   const main = el.querySelector('#setMain') as HTMLElement;
+  // 初载失败（P1-7）：显性失败面+重试——此前=永久「加载配置…」（无 catch，
+  // 拒绝仅 console 可见）。重试=重进本视图（开头 el.innerHTML 整体重挂，幂等；
+  // 失败早退不建 IntersectionObserver，无观察器泄漏）。
+  let cfg: { file: string; config: Record<string, unknown>; hot_keys?: string[] };
+  try {
+    cfg = await api.get<{
+      file: string; config: Record<string, unknown>; hot_keys?: string[];
+    }>('/api/settings');
+  } catch (e) {
+    main.innerHTML = `<p>加载失败：${esc(e instanceof Error ? e.message : String(e))}</p>` +
+      `<button class="mini" id="set-retry">重试</button>`;
+    main.querySelector('#set-retry')?.addEventListener('click', () => void settingsView(el));
+    return;
+  }
+  const { file, config, hot_keys } = cfg;
+  const hotKeys = Array.isArray(hot_keys) ? hot_keys : []; // 旧服务端缺字段 = 无热改标记
   nav.innerHTML = SECTIONS.map((s, i) =>
     `<a data-sec="${s.id}"${i === 0 ? ' class="on"' : ''}>${esc(s.nav)}</a>`).join('') +
     `<div class="set-nav-file mono" title="${esc(file)}">${esc(file)}</div>` +
@@ -323,7 +336,7 @@ export const settingsView = async (el: HTMLElement): Promise<() => void> => {
   const renderAi = async (): Promise<void> => {
     const st = await api.get<{ configured: boolean; provider: string; model: string; base_url_set: boolean }>('/api/ai/status');
     const aiCfg = (getByPath(config, 'ai') ?? {}) as Record<string, unknown>;
-    const keyConfigured = aiCfg['api_key'] === SECRET_MARK || (typeof aiCfg['api_key'] === 'string' && (aiCfg['api_key'] as string) !== '');
+    const keyConfigured = aiCfg['api_key'] === SECRET_MARK || (typeof aiCfg['api_key'] === 'string' && (aiCfg['api_key']) !== '');
     const sec = document.createElement('div');
     sec.className = 'panel set-panel';
     sec.id = 'set-ai';
@@ -336,15 +349,15 @@ export const settingsView = async (el: HTMLElement): Promise<() => void> => {
     sec.innerHTML = `${panelHead('AI <span class="chip hot">统一段</span>', '/api/settings · /api/ai/check')}
       <p class="set-sub">一处配置两处用：引擎 LLM（chat 起单/记账）与 agent 执行（tmux 里 claude 的 ANTHROPIC_API_KEY 注入）同源。现行生效：provider=<b>${esc(st.provider)}</b> · model=<b>${esc(st.model || '（默认）')}</b> · base_url=${st.base_url_set ? '已设' : '未设'} · key=${st.configured ? '✓ 已配置' : '<b style="color:var(--danger,#c0392b)">未配置</b>'}</p>
       <div class="set-row"><label>provider</label><div class="set-ctl">
-        <select id="ai-provider">${provSel(typeof aiCfg['provider'] === 'string' ? (aiCfg['provider'] as string) : '')}</select>
+        <select id="ai-provider">${provSel(typeof aiCfg['provider'] === 'string' ? (aiCfg['provider']) : '')}</select>
         <span class="set-hint">Anthropic 兼容端点（GLM 等）选 anthropic + 填 base_url</span></div></div>
       <div class="set-row" data-init=""><label>API Key</label><div class="set-ctl">
         <input type="password" id="ai-key" data-secret="1" placeholder="${keyConfigured ? '••••••••' : ''}" autocomplete="off" />
         <span class="set-hint">${keyConfigured ? '已配置 · 留空保持不变' : '未配置（agent 无法干活）'}</span></div></div>
       <div class="set-row"><label>Base URL</label><div class="set-ctl">
-        <input type="text" id="ai-baseurl" value="${esc(typeof aiCfg['base_url'] === 'string' ? (aiCfg['base_url'] as string) : '')}" placeholder="留空 = 官方 api.anthropic.com" /></div></div>
+        <input type="text" id="ai-baseurl" value="${esc(typeof aiCfg['base_url'] === 'string' ? (aiCfg['base_url']) : '')}" placeholder="留空 = 官方 api.anthropic.com" /></div></div>
       <div class="set-row"><label>模型</label><div class="set-ctl">
-        <input type="text" id="ai-model" value="${esc(typeof aiCfg['model'] === 'string' ? (aiCfg['model'] as string) : '')}" placeholder="如 claude-sonnet-4-5 / glm-4.6" /></div></div>
+        <input type="text" id="ai-model" value="${esc(typeof aiCfg['model'] === 'string' ? (aiCfg['model']) : '')}" placeholder="如 claude-sonnet-4-5 / glm-4.6" /></div></div>
       <div class="set-save"><span class="dot" aria-hidden="true"></span>
         <span class="set-save-note">保存写入 ai 段（tmux 环境热注入，新 agent 会话生效；引擎 LLM 重启生效）</span>
         <span class="set-status" id="ai-status"></span>
@@ -357,7 +370,8 @@ export const settingsView = async (el: HTMLElement): Promise<() => void> => {
       base_url: (sec.querySelector('#ai-baseurl') as HTMLInputElement).value.trim(),
       model: (sec.querySelector('#ai-model') as HTMLInputElement).value.trim(),
     });
-    (sec.querySelector('#ai-check') as HTMLButtonElement).addEventListener('click', async () => {
+    (sec.querySelector('#ai-check') as HTMLButtonElement).addEventListener('click', () => {
+      void (async () => {
       status.textContent = '测试中…';
       try {
         const r = await api.post<{ ok: boolean; latency_ms?: number; error?: string; model?: string; reply?: string }>(
@@ -368,14 +382,16 @@ export const settingsView = async (el: HTMLElement): Promise<() => void> => {
       } catch (e) {
         status.textContent = `✗ ${e instanceof Error ? e.message : String(e)}`;
       }
+      })();
     });
-    (sec.querySelector('#ai-save') as HTMLButtonElement).addEventListener('click', async () => {
+    (sec.querySelector('#ai-save') as HTMLButtonElement).addEventListener('click', () => {
+      void (async () => {
       const v = collect();
       const ai: Record<string, string> = {};
-      if (v.provider !== (typeof aiCfg['provider'] === 'string' ? (aiCfg['provider'] as string) : '')) ai['provider'] = v.provider;
+      if (v.provider !== (typeof aiCfg['provider'] === 'string' ? (aiCfg['provider']) : '')) ai['provider'] = v.provider;
       if (v.api_key !== '') ai['api_key'] = v.api_key;
-      if (v.base_url !== (typeof aiCfg['base_url'] === 'string' ? (aiCfg['base_url'] as string) : '')) ai['base_url'] = v.base_url;
-      if (v.model !== (typeof aiCfg['model'] === 'string' ? (aiCfg['model'] as string) : '')) ai['model'] = v.model;
+      if (v.base_url !== (typeof aiCfg['base_url'] === 'string' ? (aiCfg['base_url']) : '')) ai['base_url'] = v.base_url;
+      if (v.model !== (typeof aiCfg['model'] === 'string' ? (aiCfg['model']) : '')) ai['model'] = v.model;
       if (Object.keys(ai).length === 0) { status.textContent = '没有改动'; return; }
       try {
         const r = await api.put<{ ok: boolean; applied_hot: string[] }>('/api/settings', { patch: { ai } });
@@ -383,8 +399,9 @@ export const settingsView = async (el: HTMLElement): Promise<() => void> => {
         status.textContent = hotAi.length > 0 ? `✓ ${hotAi.join(' · ')}` : '已写入，重启服务后生效';
         toast('AI 配置已保存', 'ok');
       } catch (e) {
-        alert('保存失败：' + (e instanceof Error ? e.message : String(e)));
+        toast('保存失败：' + (e instanceof Error ? e.message : String(e)), 'urgent');
       }
+      })();
     });
     main.prepend(sec); // 渲染晚于 authz（prepend 两次中后者在上）——AI 置顶
     spy.observe(sec);
@@ -408,7 +425,8 @@ export const settingsView = async (el: HTMLElement): Promise<() => void> => {
         <button class="j-primary" id="authz-save">保存</button>
       </div>
       <p class="set-note">支持 *@domain 通配 · 热更新无需重启 · 每次变更记录事件流</p>`;
-    (sec.querySelector('#authz-save') as HTMLButtonElement).addEventListener('click', async () => {
+    (sec.querySelector('#authz-save') as HTMLButtonElement).addEventListener('click', () => {
+      void (async () => {
       const split = (sel: string): string[] =>
         (sec.querySelector(sel) as HTMLInputElement).value.split(',').map((x) => x.trim()).filter(Boolean);
       const mode = (sec.querySelector('#authz-mode') as HTMLSelectElement).value;
@@ -433,8 +451,9 @@ export const settingsView = async (el: HTMLElement): Promise<() => void> => {
         await api.put('/api/settings', { patch: { email_authz_mode: mode, email_authz_allow: allow, email_authz_deny: deny } });
         toast('授权已生效并写入配置', 'ok');
       } catch (e) {
-        alert('保存失败：' + (e instanceof Error ? e.message : String(e)));
+        toast('保存失败：' + (e instanceof Error ? e.message : String(e)), 'urgent');
       }
+      })();
     });
     main.prepend(sec); // authz 是导航第一节，面板也必须在最前（渲染晚于其他节，故 prepend）
     spy.observe(sec);
@@ -456,11 +475,12 @@ export const settingsView = async (el: HTMLElement): Promise<() => void> => {
         <button class="j-primary" data-save="${s.id}">保存本节</button>
       </div>`;
     bindToggleHints(sec);
-    (sec.querySelector(`button[data-save="${s.id}"]`) as HTMLButtonElement).addEventListener('click', async () => {
+    (sec.querySelector(`button[data-save="${s.id}"]`) as HTMLButtonElement).addEventListener('click', () => {
+      void (async () => {
       const patch: Record<string, unknown> = {};
       const dirtyLabels: string[] = [];
       for (const f of s.fields) {
-        const input = sec.querySelector(`[data-field="${f.path}"]`) as HTMLInputElement | null;
+        const input = sec.querySelector<HTMLInputElement>(`[data-field="${f.path}"]`);
         if (input === null) continue;
         const init = input.closest('.set-row')?.getAttribute('data-init') ?? '';
         if (f.type === 'secret') {
@@ -491,7 +511,7 @@ export const settingsView = async (el: HTMLElement): Promise<() => void> => {
           try {
             setByPath(patch, f.path, JSON.parse(raw));
           } catch {
-            alert(`${f.label}：不是合法 JSON`);
+            toast(`${f.label}：不是合法 JSON`, 'urgent');
             return;
           }
           dirtyLabels.push(f.label);
@@ -500,7 +520,7 @@ export const settingsView = async (el: HTMLElement): Promise<() => void> => {
         if (raw === '' || raw === init) continue; // 清空/未动 = 不碰该键
         if (f.type === 'number') {
           const n = Number(raw);
-          if (!Number.isFinite(n)) { alert(`${f.label}：不是数字`); return; }
+          if (!Number.isFinite(n)) { toast(`${f.label}：不是数字`, 'urgent'); return; }
           setByPath(patch, f.path, n);
           dirtyLabels.push(f.label);
           continue;
@@ -520,8 +540,9 @@ export const settingsView = async (el: HTMLElement): Promise<() => void> => {
           sentRest.length > 0 ? `已写入，重启服务后生效：${sentRest.join('、')}` : '',
         ].filter(Boolean).join(' · ');
       } catch (e) {
-        alert('保存失败：' + (e instanceof Error ? e.message : String(e)));
+        toast('保存失败：' + (e instanceof Error ? e.message : String(e)), 'urgent');
       }
+      })();
     });
     main.appendChild(sec);
     spy.observe(sec);
@@ -533,7 +554,7 @@ export const settingsView = async (el: HTMLElement): Promise<() => void> => {
     const jd = await api.get<{
       file: string; exists: boolean; config: Record<string, unknown> | null; registry: readonly string[];
     }>('/api/settings/judgment');
-    const cfgj = (jd.config ?? {}) as Record<string, unknown>;
+    const cfgj = (jd.config ?? {});
     const cloud = (cfgj['cloud'] ?? {}) as Record<string, unknown>;
     const scen = (cfgj['scenarios'] ?? {}) as Record<string, string>;
     const sec = document.createElement('div');
@@ -568,25 +589,26 @@ export const settingsView = async (el: HTMLElement): Promise<() => void> => {
         <span class="set-save-note">保存写入 judgment.json——引擎每次判定热读，即时生效，无需重启</span>
         <span class="set-status" id="jd-status"></span>
         <button class="j-primary" id="jd-save">保存</button></div>`;
-    (sec.querySelector('#jd-save') as HTMLButtonElement).addEventListener('click', async () => {
+    (sec.querySelector('#jd-save') as HTMLButtonElement).addEventListener('click', () => {
+      void (async () => {
       const patch: Record<string, unknown> = {};
       const dirty: string[] = [];
       const provider = (sec.querySelector('#jd-provider') as HTMLSelectElement).value;
       if (provider !== (cfgj['provider'] ?? '')) { patch['provider'] = provider; dirty.push('provider'); }
       const token = (sec.querySelector('#jd-token') as HTMLInputElement).value;
       if (token !== '') {
-        patch['cloud'] = { ...(patch['cloud'] as object ?? {}), token };
+        patch['cloud'] = { ...(patch['cloud'] ?? {}), token };
         dirty.push('API Token');
       }
       const toRaw = (id: string): string => (sec.querySelector(id) as HTMLInputElement).value.trim();
       if (toRaw('#jd-timeout') !== '' && toRaw('#jd-timeout') !== String(cfgj['timeout_ms'] ?? '')) {
         const n = Number(toRaw('#jd-timeout'));
-        if (!Number.isFinite(n)) { alert('超时上限：不是数字'); return; }
+        if (!Number.isFinite(n)) { toast('超时上限：不是数字', 'urgent'); return; }
         patch['timeout_ms'] = n; dirty.push('超时上限');
       }
       if (toRaw('#jd-minconf') !== '' && toRaw('#jd-minconf') !== String(cfgj['min_confidence'] ?? '')) {
         const n = Number(toRaw('#jd-minconf'));
-        if (!Number.isFinite(n)) { alert('采纳阈值：不是数字'); return; }
+        if (!Number.isFinite(n)) { toast('采纳阈值：不是数字', 'urgent'); return; }
         patch['min_confidence'] = n; dirty.push('采纳阈值');
       }
       const scenPatch: Record<string, string> = {};
@@ -614,8 +636,9 @@ export const settingsView = async (el: HTMLElement): Promise<() => void> => {
         status.textContent = '✓ 已保存并生效（引擎热读）';
         toast('语义判定配置已生效', 'ok');
       } catch (e) {
-        alert('保存失败：' + (e instanceof Error ? e.message : String(e)));
+        toast('保存失败：' + (e instanceof Error ? e.message : String(e)), 'urgent');
       }
+      })();
     });
     main.appendChild(sec);
     spy.observe(sec);
@@ -639,12 +662,4 @@ export const settingsView = async (el: HTMLElement): Promise<() => void> => {
   await renderAi(); // 后 prepend 才在最前——AI 面板压到 authz 之上
   await renderJudgment();
   return () => spy.disconnect();
-};
-
-const toast = (msg: string, level: 'ok' | 'info' = 'info'): void => {
-  const el = document.createElement('div');
-  el.className = `toast ${level}`;
-  el.textContent = level === 'ok' ? `✓ ${msg}` : msg;
-  document.body.appendChild(el);
-  setTimeout(() => el.remove(), 3000);
 };

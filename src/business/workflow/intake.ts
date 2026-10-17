@@ -2,8 +2,9 @@
 // 线程三级建档/Party 指针/工件物证/绑定路由/route_decision 留痕/首节点
 // 任务卡）与泛化渠道（onInbound：按渠道路由模板的动态进件）。
 
-import { rfc3339, type Clock } from '@juli-os/artifacts';
+import { type Clock } from '@juli-os/artifacts';
 import { truncate } from '../../platform/shared/json.ts'
+import { normalizeEmail } from '../../platform/shared/email.ts';
 import type { Logger } from '../../platform/events/bus.ts';
 import type { LifecycleStore } from '@juli-os/ledger';
 import { type Workflow } from '@juli-os/ledger';
@@ -13,7 +14,7 @@ import {
 import { DEDUP_META_KEY, dedupKey, type EmailMessage } from '../../contracts/ports.ts';
 import type { InboundMessage } from '../../contracts/channels.ts';
 import { checkAuthz, type AuthzPolicy } from '../../contracts/authz.ts';
-import type { PartyDirectory, PartyMatch } from '../party/party.ts';
+import type { PartyMatch } from '../party/party.ts';
 import { decideRoute, isInternalSender } from '@juli-os/routing';
 import { INTAKE_PROMPT } from './support.ts';
 import type { EngineDeps } from './engine.ts';
@@ -174,7 +175,7 @@ export const makeIntake = (o: {  readonly deps: EngineDeps;
 
   const attachPartyPointer = async (m: EmailMessage, workflowId: string): Promise<void> => {
     const dir = deps.partyDirectory;
-    const email = m.from.trim().toLowerCase();
+    const email = normalizeEmail(m.from);
     if (isInternalSender(email, deps.routing)) {
       store.updateWorkflowMeta(workflowId, { party: { internal: true } });
       return;
@@ -309,7 +310,7 @@ export const makeIntake = (o: {  readonly deps: EngineDeps;
     // 白名单 → 本单钉死绑定会话（meta.session_bound 标记 + 首步 session 钉），
     // 其余发件人零变化走默认。确定性映射，不经 LLM triage。
     const bound = (deps.routing.boundAgents ?? []).find((b) =>
-      b.senders.some((s) => s.trim().toLowerCase() === m.from.trim().toLowerCase()));
+      b.senders.some((s) => normalizeEmail(s) === normalizeEmail(m.from)));
     if (bound) {
       store.updateWorkflowMeta(w.id, { session_bound: bound.session });
       store.appendEvent('workflow', w.id, 'session_bound_route', { from: m.from, session: bound.session });

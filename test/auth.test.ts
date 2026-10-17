@@ -20,7 +20,7 @@ describe('认证链', () => {
       url: 'https://pb.example.com',
       fetchImpl: (async () => new Response(JSON.stringify({
         record: { id: 'usr_1', email: 'customer@x.com' },
-      }), { status: 200 })) as never,
+      }), { status: 200 })),
     });
     const r = await pb.verify('any-token');
     expect(r.ok).toBe(true);

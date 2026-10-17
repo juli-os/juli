@@ -331,7 +331,7 @@ describe('P3 近匹配绑定会话守卫（大小写变体不落回默认会话�
   const BOUND = 'project-a';
   const SENDER = 'alice.chen@example.com';
   const makeBoundWorld = (over: Partial<EngineDeps> = {}) => {
-    const { clock, advance } = makeClock();
+    const { clock } = makeClock();
     const store = createLedgerStore(':memory:', { clock, ids: seqIds() });
     const dispatched: { session: string; text: string }[] = [];
     const engine = createEngine({
@@ -375,7 +375,7 @@ describe('P3 近匹配绑定会话守卫（大小写变体不落回默认会话�
 
   it('非变体的普通不存在会话不受影响（照常走 resolveSession）', async () => {
     const w = makeBoundWorld({
-      resolveSession: (s) => 'juli-reply',
+      resolveSession: (_s) => 'juli-reply',
     });
     const wf = w.store.createWorkflow({ kind: 'adhoc', title: '普通', status: 'running', meta: { mode: 'nodes' } });
     w.store.createStep({
@@ -440,6 +440,7 @@ const mkApp = (emailCfg: Record<string, unknown>, seams: RuntimeSeams = {}, extr
     ...extraCfg,
   }), seams);
   const app = createHttpApp(rt);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- 测试 JSON 探针：data=JSON.parse 动态形态，下游数十处临时断言消费，精确建型需给全部 expect 补窄化（零安全增益 churn）。
   const j = async (method: string, path: string, body?: unknown): Promise<{ status: number; data: any }> => {
     const res = await app.request(path, {
       method,

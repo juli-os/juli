@@ -12,7 +12,7 @@ import { type Step, type Workflow } from '@juli-os/ledger';
 const wf = (id: string, title: string): Workflow => ({ id, title } as unknown as Workflow);
 const st = (title: string): Step => ({ id: `st-${title}`, title } as unknown as Step);
 
-interface Sent extends MailSendCommand { /* 记录形态即命令本身 */ }
+type Sent = MailSendCommand; // 记录形态即命令本身
 
 const recorder = (fail = false): { mailer: MailerPort; sent: Sent[] } => {
   const sent: Sent[] = [];

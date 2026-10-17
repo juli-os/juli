@@ -1,9 +1,7 @@
 // draft：从已审定的执行产出起草回信（读案卷的累积上下文，非接力种子）。
 
 import { asString, truncate } from '../../../platform/shared/json.ts'
-import { asRecord, type JsonRecord } from '@juli-os/artifacts'
-import { rfc3339, type Clock } from '@juli-os/artifacts';
-import { type Step, type Workflow } from '@juli-os/ledger';
+import { asRecord } from '@juli-os/artifacts'
 import { originalEmail } from '@juli-os/ledger';
 import { parseLoose, type StepCtx } from './common.ts';
 
@@ -21,7 +19,7 @@ const DRAFT_SYSTEM = `你是商务邮件助理。基于原始邮件和已经人�
 
 /** draft：从已审定的执行产出起草回信（读案卷的累积上下文，非接力种子）。 */
 export const runDraft = async (ctx: StepCtx): Promise<void> => {
-  const { store, step: st, workflow: w, clock } = ctx;
+  const { store, step: st, workflow: w } = ctx;
   const cf = store.loadCaseFile(w.id);
   // 产出候选优先级：output（上游步直接携带）→ evidence（nodes 模式 deliver
   // 动作的交付证据——juli deliver --evidence 的落点）→ 案卷 executions。

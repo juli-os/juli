@@ -313,7 +313,7 @@ describe('忙闲选枝（板D/G dispatcher 选枝函数）', () => {
           return { ok: true, value: undefined } as const;
         },
       },
-    } as never) as ReturnType<typeof makeWorld> & { dispatchedTo: string[] };
+    }) as ReturnType<typeof makeWorld> & { dispatchedTo: string[] };
     (w as unknown as { dispatchedTo: string[] }).dispatchedTo = [];
     const other = w.store.createWorkflow({ kind: 'adhoc', title: '占坑', status: 'running', meta: { mode: 'nodes', session_bound: 'project-a' } });
     const occ = w.store.createStep({ workflowId: other.id, seq: 1, kind: 'agent', title: '在跑', input: { session: 'project-a' } });

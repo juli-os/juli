@@ -3,10 +3,11 @@
 
 import { api, getToken, setToken } from './api.ts';
 import { subscribeEvents } from './sse.ts';
-import { topbar, sidebar } from './ui.ts';
+import { topbar, sidebar, toast } from './ui.ts';
 import { esc } from './esc.ts';
 import { anchorHref } from './anchors.ts';
-import { TOAST_LEVELS, TOAST_TEXT, type ToastLevel } from './events-meta.ts';
+import { mountOrderDrawer } from './orderfab.ts';
+import { TOAST_LEVELS, TOAST_TEXT } from './events-meta.ts';
 // 视图路由表/默认页/兜底视图 + 手机门牌：单一事实源在各自注册表文件
 // （开源投影以同形桩替换——公开视图子集与英文门牌）。
 import { ROUTES, DEFAULT_ROUTE, FALLBACK_VIEW } from './views-registry.ts';
@@ -37,6 +38,8 @@ if (window.matchMedia('(max-width: 768px)').matches) {
 const route0 = location.hash.replace(/^#/, '').split('?')[0] || DEFAULT_ROUTE;
 document.getElementById('topbar')!.innerHTML = topbar(route0);
 document.getElementById('sidebar')!.innerHTML = sidebar(route0);
+// 常驻开单（2026-10-14）：左栏顶部主按钮 + 右侧抽屉（orderfab 自含开合）。
+mountOrderDrawer();
 // 移动端底部 tab 已随手机 Web 弃用拆除（2026-09-30；手机入口=iOS App）。
 const tokenInput = document.getElementById('token') as HTMLInputElement;
 tokenInput.value = getToken();
@@ -61,6 +64,8 @@ const render = async (): Promise<void> => {
   // 版心/边距按路由开关，其余视图版心不动。发单聊天面同理（js-261006-s0msv9）。
   app.classList.toggle('fullbleed', route === '/sessions');
   app.classList.toggle('chatfull', route === '/chat');
+  // 常驻开单按钮在 /chat 整页形态下隐藏（页面即合成器，按钮冗余）。
+  document.body.classList.toggle('on-chat', route === '/chat');
   // 单子聚焦（驾驶舱二期）：/order?w=ID 时隐左目录/费用面板，详情吃满；
   // 组高亮归属「流水」（order 是流水详情的 solo 形态，不是独立目的地）。
   const orderSolo = route === '/order' && (new URLSearchParams(hash.split('?')[1] ?? '').get('w') ?? '') !== '';
@@ -75,9 +80,19 @@ const render = async (): Promise<void> => {
     g.classList.toggle('active', g.querySelector('a.active') !== null);
   }
   app.innerHTML = '<p class="muted">加载中…</p>';
-  const c = await view(app);
-  if (gen !== renderGen) { c?.(); return; }
-  cleanup = c;
+  // 兜底壳（P1-7 belt+suspenders）：视图自身未收口的加载失败也不许永久
+  // 「加载中…」——失败面+重试；代际过期的失败直接丢弃，不覆盖新渲染。
+  try {
+    const c = await view(app);
+    if (gen !== renderGen) { c?.(); return; }
+    cleanup = c;
+  } catch (e) {
+    if (gen !== renderGen) return;
+    app.innerHTML = `<div class="panel"><p>视图加载失败：${esc(e instanceof Error ? e.message : String(e))}</p>` +
+      `<button class="mini" id="app-retry">重试</button></div>`;
+    app.querySelector('#app-retry')?.addEventListener('click', () => void render());
+    return;
+  }
   void refreshSideQueue();
 };
 
@@ -175,14 +190,8 @@ void boot();
 
 // TOAST_LEVELS / TOAST_TEXT / ToastLevel 已收编进 events-meta.ts（与 LIVE
 // EVENTS 白名单、feed 配色同源——事件元数据单一事实源，勿在此复制第二份）。
-
-const toast = (msg: string, level: ToastLevel = 'info'): void => {
-  const el = document.createElement('div');
-  el.className = `toast ${level}`;
-  el.textContent = level === 'urgent' ? `🔴 ${msg}` : level === 'ok' ? `✓ ${msg}` : msg;
-  document.body.appendChild(el);
-  setTimeout(() => el.remove(), level === 'urgent' ? 6000 : level === 'ok' ? 4500 : 3000);
-};
+// toast 实现单一在 ui.ts（R7-F1 P2-11：原本地版 🔴/✓ 前缀与时长语义已并入
+// 共享版，此处直接引用——main/settings/feedback 三处调用面同一份）。
 
 void api; // api 命名空间由各视图引用；此处引用防 tree-shake 误删类型
 } // 手机门牌分支的桌面侧收尾（2026-09-30 手机 Web 弃用）

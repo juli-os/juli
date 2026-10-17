@@ -2,10 +2,9 @@
 // 宽松 JSON 解析。分发表（engine.stepHandlers）指向各能力模块。
 
 import { asString, truncate } from '../../../platform/shared/json.ts'
-import { asRecord, type JsonRecord } from '@juli-os/artifacts'
-import { rfc3339, type Clock } from '@juli-os/artifacts';
+import { type JsonRecord } from '@juli-os/artifacts'
+import { type Clock } from '@juli-os/artifacts';
 import { type Step, type Workflow } from '@juli-os/ledger';
-import { originalEmail } from '@juli-os/ledger';
 import type { LifecycleStore } from '@juli-os/ledger';
 import type { ArtifactPort, LlmPort } from '../../../contracts/ports.ts';
 

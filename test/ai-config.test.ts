@@ -9,7 +9,7 @@ import {
 } from '../src/platform/config/schema.ts';
 
 const baseCfg = (over: Record<string, unknown> = {}): Parameters<typeof resolveAiConfig>[0] =>
-  configSchema.parse(over) as Parameters<typeof resolveAiConfig>[0];
+  configSchema.parse(over);
 
 describe('resolveAiConfig（统一 AI 段解析）', () => {
   it('空 ai 段 = 旧散键直通（存量部署零迁移）', () => {

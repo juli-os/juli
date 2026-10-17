@@ -217,7 +217,7 @@ export const makeLifecycle = (o: {
         const parentIds = Array.isArray(pt['feedback_record_ids'])
           ? (pt['feedback_record_ids'] as unknown[]).filter((x): x is string => typeof x === 'string')
           : [];
-        const parentId1 = typeof pt['feedback_record_id'] === 'string' ? pt['feedback_record_id'] as string : '';
+        const parentId1 = typeof pt['feedback_record_id'] === 'string' ? pt['feedback_record_id'] : '';
         const ownIds = Array.isArray(input['feedback_record_ids'])
           ? (input['feedback_record_ids'] as unknown[]).filter((x): x is string => typeof x === 'string')
           : [];

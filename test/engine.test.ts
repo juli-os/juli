@@ -202,7 +202,7 @@ describe('闸门语义', () => {
     expect(w.store.getWorkflow(wfId)!.status).toBe('cancelled');
     const steps = w.store.stepsForWorkflow(wfId);
     expect(steps[1]!.status).toBe('cancelled');
-    for (const s of steps.slice(2)) expect(s!.status).toBe('cancelled');
+    for (const s of steps.slice(2)) expect(s.status).toBe('cancelled');
     expect(steps[0]!.status).toBe('completed');
     const events = w.store.listEvents(100).map((e) => e.type);
     expect(events).toContain('gate_resolved');
@@ -412,7 +412,7 @@ steps:
     kind: send
     title: 发送
 `;
-  const w = makeEngine({ templates: { skippy: parseTemplate(SKIPPY_YAML) } });
+  const _w = makeEngine({ templates: { skippy: parseTemplate(SKIPPY_YAML) } });
 
   it('needs_reply=true → agent 正常执行（skippy 模板无闸门，when 为真直通）', async () => {
     const w = makeEngine({ templates: { skippy: parseTemplate(SKIPPY_YAML) } });
@@ -527,7 +527,7 @@ describe('route_fallback jev 兜底腿（2026-09-23 用户口令，影子先行�
 
   it('shadow：判定留痕但派发仍落默认会话', async () => {
     const w = mk(gw('shadow', 'memory-cli', 0.9));
-    const wf = await w.engine.startTask('t', { brief: 'b', session: 'acme' });
+    const _wf = await w.engine.startTask('t', { brief: 'b', session: 'acme' });
     await until(() => w.dispatched.length > 0);
     expect(w.dispatched[0]?.session).toBe('juli-reply'); // 不生效
     const types = typesOf(w);
@@ -548,7 +548,7 @@ describe('route_fallback jev 兜底腿（2026-09-23 用户口令，影子先行�
 
   it('on 但答案非声明会话 → 拒绝留痕，照旧落默认', async () => {
     const w = mk(gw('on', 'made-up-session', 0.99));
-    const wf = await w.engine.startTask('t', { brief: 'b', session: 'acme' });
+    const _wf = await w.engine.startTask('t', { brief: 'b', session: 'acme' });
     await until(() => w.dispatched.length > 0);
     expect(w.dispatched[0]?.session).toBe('juli-reply');
     expect(typesOf(w)).toContain('route_judgment_rejected');
@@ -578,7 +578,7 @@ describe('route_fallback jev 兜底腿（2026-09-23 用户口令，影子先行�
 
   it('on 但低置信 → 拒绝留痕', async () => {
     const w = mk(gw('on', 'memory-cli', 0.4));
-    const wf = await w.engine.startTask('t', { brief: 'b', session: 'acme' });
+    const _wf = await w.engine.startTask('t', { brief: 'b', session: 'acme' });
     await until(() => w.dispatched.length > 0);
     expect(w.dispatched[0]?.session).toBe('juli-reply');
     expect(typesOf(w)).toContain('route_judgment_rejected');
@@ -586,7 +586,7 @@ describe('route_fallback jev 兜底腿（2026-09-23 用户口令，影子先行�
 
   it('无网关（缺省）→ 原行为零变化', async () => {
     const w = makeEngine({ routing, resolveSession: (s: string) => (s === 'acme' ? 'juli-reply' : s) });
-    const wf = await w.engine.startTask('t', { brief: 'b', session: 'acme' });
+    const _wf = await w.engine.startTask('t', { brief: 'b', session: 'acme' });
     await until(() => w.dispatched.length > 0);
     expect(w.dispatched[0]?.session).toBe('juli-reply');
     expect(typesOf(w)).toContain('route_fallback');

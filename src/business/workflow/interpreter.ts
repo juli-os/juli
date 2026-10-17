@@ -95,7 +95,7 @@ export const makeInterpreter = (o: {
     // 步骤仍可落定自身，但什么都不许越过它。
     const w0 = store.getWorkflow(workflowId);
     if (!w0 || w0.status !== 'running') return;
-    let st = store.currentStep(workflowId);
+    const st = store.currentStep(workflowId);
     if (!st) {
       // nodes 模式:节点间空档 = 等下一次动作追加,不是完成。但链尾悬空
       // （全终态且无 send 步）必须留痕——静默等待正是 wf_e4013364bc8d 的

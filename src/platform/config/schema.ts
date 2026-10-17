@@ -266,6 +266,13 @@ export const configSchema = z.object({
     })
     .default({}),
 
+  // 路由兜底落点（2026-10-16 从 email.default_session 搬家升顶）：所有进件
+  // 渠道（chat/feedback/email/villa）路由判定链的最后一腿。default session 是
+  // 路由域概念，email 是第一个进件渠道的历史包袱——概念升级后键没搬家，
+  // 造成「chat 开单却读邮件键」的错位（演示实例派发秒败事故）。email 段同名
+  // 键降级为 legacy 回退（见 effectiveDefaultSession），存量部署零迁移。
+  default_session: z.string().default(''),
+
   // feedback 渠道路由声明（2026-09-21）：页面前缀 → 会话。确定性匹配，无 LLM；
   // 无命中回落 default_session（「永远兜底」→「缺路由键才兜底」）。
   feedback_routing: z
@@ -368,6 +375,16 @@ export const configSchema = z.object({
 });
 
 export type Config = Readonly<z.infer<typeof configSchema>>;
+
+/** 路由兜底落点的单一取值点（2026-10-16 搬家）：顶层 default_session 为正位，
+ * email.default_session 为 legacy 回退（保住存量部署零迁移）。runtime 装配与
+ * boot 断言都吃这里，禁止各处自行读 email 键。legacy=true 供 boot 提示迁移。 */
+export const effectiveDefaultSession = (
+  config: Pick<Config, 'default_session' | 'email'>,
+): { session: string; legacy: boolean } =>
+  config.default_session !== ''
+    ? { session: config.default_session, legacy: false }
+    : { session: config.email.default_session, legacy: config.email.default_session !== '' };
 
 /** 环境变量覆盖表：JULI_* 优先，MAKRO_* 兜底（迁移期双认）。 */
 const envOverrides = (env: Readonly<Record<string, string | undefined>>): Partial<Record<string, unknown>> => {

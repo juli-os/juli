@@ -6,10 +6,10 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
 import type { Runtime } from '../../runtime.ts';
-import { readBody, makeShareAuth, type AppEnv } from '../helpers.ts';
+import { bodyStr, readBody, makeShareAuth, type AppEnv } from '../helpers.ts';
 
 export const registerArtifactsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
-  const { shareTtlSec: SHARE_TTL_SEC, shareSign, shareVerify } = makeShareAuth(rt);
+  const { shareTtlSec: SHARE_TTL_SEC, shareSign } = makeShareAuth(rt);
   const artifactMime = (name: string): string => {
     const ext = name.split('.').pop()?.toLowerCase() ?? '';
     const map: Record<string, string> = {
@@ -176,7 +176,7 @@ export const registerArtifactsRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
   // 签名链（LAN 内可用），绝不让分享按钮无链可出。
   app.post('/api/artifact/share', async (c) => {
     const body = await readBody(c);
-    const id = typeof body['id'] === 'string' ? body['id'] : '';
+    const id = bodyStr(body, 'id');
     if (id === '') return c.json({ error: 'id required' }, 400);
     const row = rt.store.db.prepare('SELECT key, deleted_at FROM artifacts WHERE id = ?')
       .get(id) as Record<string, string | null> | undefined;

@@ -333,7 +333,7 @@ if (isCliEntry) (async () => {
       if (/^\d{1,2}:\d{2}$/.test(at)) {
         const [h, m] = at.split(':').map(Number);
         const d = new Date();
-        d.setHours(h!, m!, 0, 0);
+        d.setHours(h!, m, 0, 0);
         if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);
         sendAt = d.toISOString();
       } else {
@@ -433,7 +433,6 @@ if (isCliEntry) (async () => {
     console.log(`审计单 ${wf}`);
     console.log(`  标题: ${w.title} | 状态: ${w.status} | 轮次: round=${w.meta['round'] ?? 1}`);
     console.log(`  客户/发起: ${w.meta['from'] ?? '(内部)'} | 建立: ${w.created_at.slice(0, 16)}`);
-    let totalMs = 0;
     for (const s of d.steps) {
       console.log(`  [${s.seq}] ${s.kind} ${s.status} ${s.title}`);
       const out = s.output ?? {};
@@ -668,7 +667,7 @@ if (isCliEntry) (async () => {
         const r = saveConfigFile({ home: homedir(), dataDir: dataDirEnv === '' ? undefined : dataDirEnv }, { ai: patch });
         if (r.ok) {
           mark('ai 段写入', true, `${cfgPath}（${Object.keys(patch).join('+')}）`);
-          cfgRaw = { ...cfgRaw, ai: { ...((cfgRaw['ai'] as Record<string, unknown>) ?? {}), ...patch } };
+          cfgRaw = { ...cfgRaw, ai: { ...((cfgRaw['ai']) ?? {}), ...patch } };
           aiNow = resolveAiConfig(configSchema.parse(cfgRaw), process.env);
         } else {
           mark('ai 段写入', false, r.error);

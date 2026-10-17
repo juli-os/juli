@@ -2,14 +2,12 @@
 // 分层重构（2026-09-23）：自 app.ts 按资源族拆出，路由注册体逐字保留。
 
 import type { Hono, Context } from 'hono';
-import { resolve } from 'node:path';
 import { stepToGo, workflowToGo } from '../../platform/shared/goShape.ts';
 import { type StepKind } from '@juli-os/ledger';
 import type { Runtime } from '../../runtime.ts';
 import type { JsonRecord } from '@juli-os/artifacts'
-import { clampInt, readBody, type AppEnv } from '../helpers.ts';
-import { asString } from '../../platform/shared/json.ts';
-import { costContextOf } from '../../business/workflow/costContext.ts';
+import { bodyStr, clampInt, readBody, type AppEnv } from '../helpers.ts';
+import { usageAggOf } from '../../business/workflow/costContext.ts';
 
 export const registerLifecycleRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
 
@@ -70,35 +68,23 @@ export const registerLifecycleRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
     // 用户批注修正（闸门 24da83）：一个 tmux session 串多单——全窗会混入
     // 等待期/别单回合。按本单各 agent 步 [started, completed] 区间并集计数
     // （tmux 会话串行跑任务卡：步窗口内该会话的回合即本单）；无步区间
-    // （异常/极老单）退化为 [created, updated] 全窗。→ costContextOf 单一实现。
-    // 计费时点修复（wf_be61c3a55842）：传全量 steps + 在途单最后活动时刻
-    // ——approve 后回流执行段（organic 回合）并入计费窗口。
-    const { sessions, effWindows } = costContextOf(
-      w, rt.store.stepsForWorkflow(w.id), rt.store.lastEventAt('workflow', w.id));
-    let promptStats = { count: 0, inputTokens: 0, outputTokens: 0 };
-    if (sessions.length > 0 && effWindows.length > 0) {
-      for (const s of sessions) {
-        const p = rt.usage.perSessionWindows(s, effWindows);
-        promptStats = {
-          count: promptStats.count + p.count,
-          inputTokens: promptStats.inputTokens + p.inputTokens,
-          outputTokens: promptStats.outputTokens + p.outputTokens,
-        };
-      }
-    }
+    // （异常/极老单）退化为 [created, updated] 全窗。→ costContextOf 单一
+    // 实现，经 usageAggOf 聚合（计费时点修复 wf_be61c3a55842 亦在其中：
+    // approve 后回流执行段并入计费窗口）。
+    const agg = usageAggOf(rt.store, rt.usage, w);
     return c.json({
       workflow: workflowToGo(w),
       steps: rt.store.stepsForWorkflow(w.id).map(stepToGo),
       case_file: rt.store.loadCaseFile(w.id),
-      promptStats,
+      promptStats: { count: agg.prompts, inputTokens: agg.inputTokens, outputTokens: agg.outputTokens },
       // API 等效价格（wf_535149a174fe）：同口径（sessions × effWindows）行级
       // 用量代入 bigmodel 价目三价计价；不在价目的模型只显用量不出价。
-      usageCost: rt.usage.sessionWindowsPriced(sessions, effWindows),
+      usageCost: agg.priced,
     });
   });
 
   // 每单费用聚合（wf_6a74fc4a23e4 用户定案）：Flow Dashboard 层面的费用分析。
-  // 范围内 workflows 逐单复用详情口径（costContextOf × sessionWindowsPriced），
+  // 范围内 workflows 逐单复用详情口径（usageAggOf 单一事实源），
   // 聚合 overall / 价位分桶 / 逐单明细（散点+下钻）。¥0（无归属/无 CC 用量）
   // 单显式计数不隐藏；已取消单计入（也真实花了钱）；不在价目的单进
   // unpricedOrders 只列名。days=0 表示全部（默认 30 天）。
@@ -124,8 +110,7 @@ export const registerLifecycleRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
     let zeroCost = 0;
     let pricingRetrievedAt = '';
     for (const w of inRange) {
-      const ctx = costContextOf(w, rt.store.stepsForWorkflow(w.id), rt.store.lastEventAt('workflow', w.id));
-      const uc = rt.usage.sessionWindowsPriced(ctx.sessions, ctx.effWindows);
+      const uc = usageAggOf(rt.store, rt.usage, w).priced;
       if (uc.pricingRetrievedAt > pricingRetrievedAt) pricingRetrievedAt = uc.pricingRetrievedAt;
       // 无计费用量（纯闸门/llm 单）或纯免费档=真 ¥0；纯无价目单（成本未知≠0）
       // 不计 zeroCost、不入桶，只进 unpricedOrders 显式列名。
@@ -245,9 +230,7 @@ const stepAction = (action: 'approve' | 'deny' | 'resolve' | 'retry') =>
   // ---- 引擎动作路由的公共壳 -----------------------------------------------------
   // 读 body → 调引擎（:id 参数 + body）→ {ok:true}（或 fn 返回的 JSON）；
   // 引擎抛错 → 400 透传中文消息。五段 try/catch 样板收口成一处。
-
-  const bodyStr = (body: JsonRecord, key: string, fallback = ''): string =>
-    typeof body[key] === 'string' ? body[key] as string : fallback;
+  // bodyStr 已升 http/helpers.ts 共享（R8 批3）。
 
   const engineAction = (fn: (id: string, body: JsonRecord) => Promise<JsonRecord | void>) =>
     async (c: Context): Promise<Response> => {
@@ -367,8 +350,8 @@ const stepAction = (action: 'approve' | 'deny' | 'resolve' | 'retry') =>
 
   app.post('/api/lifecycle/workflows/:id/assign', async (c) => {
     const body = await readBody(c);
-    const session = typeof body['session'] === 'string' ? body['session'] : '';
-    const by = typeof body['by'] === 'string' ? body['by'] : 'operator';
+    const session = bodyStr(body, 'session');
+    const by = bodyStr(body, 'by', 'operator');
     try {
       await rt.engine.assignSession(c.req.param('id'), session, by);
       return c.json({ ok: true });
@@ -454,9 +437,9 @@ const stepAction = (action: 'approve' | 'deny' | 'resolve' | 'retry') =>
   });
   app.post('/api/lifecycle/workflows2', async (c) => {
     const body = await readBody(c);
-    const title = typeof body['title'] === 'string' ? body['title'] : '';
+    const title = bodyStr(body, 'title');
     if (title === '') return c.json({ workflows: listWorkflowsGo(c.req.query()) });
-    const w = rt.store.createWorkflow({ kind: typeof body['kind'] === 'string' ? body['kind'] : 'adhoc', title });
+    const w = rt.store.createWorkflow({ kind: bodyStr(body, 'kind', 'adhoc'), title });
     return c.json({ workflow: { id: w.id, kind: w.kind, title: w.title, status: w.status, created_at: w.createdAt, updated_at: w.updatedAt } });
   });
 };

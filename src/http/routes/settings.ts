@@ -12,7 +12,7 @@ import { parseJudgmentConfig } from '@juli-os/routing';
 import { JUDGMENT_SCENARIOS } from '@juli-os/routing';
 import type { Runtime } from '../../runtime.ts';
 import type { JsonRecord } from '@juli-os/artifacts'
-import { readBody, type AppEnv } from '../helpers.ts';
+import { bodyStr, readBody, type AppEnv } from '../helpers.ts';
 
 /** judgment.json 读盘（缺文件=null；坏 JSON=null 的口径与引擎 loadJudgmentConfig 一致）。 */
 const readJudgmentRaw = (p: string): Record<string, unknown> | null => {
@@ -87,7 +87,9 @@ export const registerSettingsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => 
 
   app.post('/api/ai/check', async (c) => {
     const body = await readBody(c);
-    const asString = (k: string): string => (typeof body[k] === 'string' ? (body[k] as string) : '');
+    // str() 收口（R8 批3）：原内联 body 版清洗与 bodyStr 同形（静默空串）——
+    // 并入共享实现，语义逐字不变。
+    const asString = (k: string): string => bodyStr(body, k);
     const cur = resolveAiConfig(rt.config, process.env);
     const provider = asString('provider') === 'openai' || asString('provider') === 'anthropic'
       ? (asString('provider') as 'openai' | 'anthropic')
@@ -135,7 +137,7 @@ export const registerSettingsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => 
     }
     const p = join(rt.config.data_dir, 'judgment.json');
     const current = readJudgmentRaw(p) ?? {};
-    const merged = mergeConfigPatch(current, patch as Record<string, unknown>);
+    const merged = mergeConfigPatch(current, patch);
     // 首建必须有 provider（纯 scenarios 片段无处挂）。
     if (current['provider'] === undefined && merged['provider'] === undefined) {
       return c.json({ error: 'provider required（首次创建 judgment.json 必须声明提供方）' }, 400);

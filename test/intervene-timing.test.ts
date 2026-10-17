@@ -8,7 +8,7 @@ import { stepToGo } from '../src/platform/shared/goShape.ts';
 import { fixedClock, makeClock, makeEmail, seqIds } from './helpers.ts';
 import { createEngine, type Engine, type EngineDeps } from '../src/business/workflow/engine.ts';
 import { parseTemplate } from '../src/business/templates/template.ts';
-import { ok, type Result } from '@juli-os/artifacts';
+import { ok } from '@juli-os/artifacts';
 import type { LlmPort, MailerPort, PusherPort } from '../src/contracts/ports.ts';
 
 const NODES_YAML = `key: adhoc-nodes

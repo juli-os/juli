@@ -74,7 +74,7 @@ describe('needsClaudeReplay / resetClaudeIngest（含十四跑 R1 P1-2 冷却）
     const dir = mkdtempSync(join(tmpdir(), 'juli-usage-replay-'));
     try {
       const dbPath = join(dir, 'usage.db');
-      let fakeNow = new Date('2026-10-05T00:00:00.000Z');
+      const fakeNow = new Date('2026-10-05T00:00:00.000Z');
       const store = createUsageStore(dbPath, () => fakeNow);
       const db = new DatabaseSync(dbPath);
       // 无映射（claude_sessions 0 行）：即使全空也不触发

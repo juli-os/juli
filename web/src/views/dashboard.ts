@@ -7,6 +7,7 @@ import { subscribeEvents } from '../sse.ts';
 import { esc } from '../esc.ts';
 import { colHref, entityAnchor } from '../anchors.ts';
 import { statusDot, statusChip, statCard, panelHead } from '../ui.ts';
+import { askText } from '../dialog.ts';
 import { EVENT_CLASS, isHumanEvent, STATE_CHANGING_EVENTS } from '../events-meta.ts';
 import { KANBAN_ARCHIVE_KEY, KANBAN_WAITING_KEY, currentStepOf } from '../statuses.ts';
 import { buildTaskCards, countByColumn, taskColumnOf } from '../task-model.ts';
@@ -74,13 +75,27 @@ export const dashboardView = async (el: HTMLElement): Promise<() => void> => {
     // 任务读模型的输入面）+ task-map：统计卡换【任务口径】——与看板列同一
     // 读法（task-model.buildTaskCards + taskColumnOf），「进行中 N」两处数字
     // 物理同源；run 形状经 map 兼容既有消费面（闸门发件人/最近流水表）。
-    const [wfsRes, evsRes, waitRes, allRes, taskRes] = await Promise.all([
-      api.get<{ workflows: GoWf[] }>('/api/lifecycle/workflows2?limit=100'),
-      api.get<{ events: LedgerEvent[] }>('/api/lifecycle/events?limit=30'),
-      api.get<{ steps: GateRow[] }>('/api/lifecycle/steps?status=waiting_human&limit=20'),
-      api.get<{ steps: StepRow[] }>('/api/lifecycle/steps?limit=200'),
-      api.get<TaskMap>('/api/lifecycle/task-map'),
-    ]);
+    // 拉取失败（P1-7）：显性失败面+重试——此前=永久「加载中…」（本视图无
+    // 轮询定时器，服务重启/隧道断开后不重导航永不恢复）。
+    let data: [{ workflows: GoWf[] }, { events: LedgerEvent[] }, { steps: GateRow[] }, { steps: StepRow[] }, TaskMap];
+    try {
+      data = await Promise.all([
+        api.get<{ workflows: GoWf[] }>('/api/lifecycle/workflows2?limit=100'),
+        api.get<{ events: LedgerEvent[] }>('/api/lifecycle/events?limit=30'),
+        api.get<{ steps: GateRow[] }>('/api/lifecycle/steps?status=waiting_human&limit=20'),
+        api.get<{ steps: StepRow[] }>('/api/lifecycle/steps?limit=200'),
+        api.get<TaskMap>('/api/lifecycle/task-map'),
+      ]);
+    } catch (e) {
+      el.innerHTML = `
+        <section class="panel">
+          <p>加载失败：${esc(e instanceof Error ? e.message : String(e))}</p>
+          <button class="mini" id="retry">重试</button>
+        </section>`;
+      el.querySelector('#retry')?.addEventListener('click', () => void load());
+      return;
+    }
+    const [wfsRes, evsRes, waitRes, allRes, taskRes] = data;
     const goWfs = wfsRes.workflows;
     // 最近流水沿用产品裁决：已取消不回流总览（走看板归档折叠区）。
     const wfs: Workflow[] = goWfs.filter((g) => g.status !== 'cancelled').map((g) => ({
@@ -146,7 +161,7 @@ export const dashboardView = async (el: HTMLElement): Promise<() => void> => {
               // 旧残缺版（只认标题）曾让 delivery=email 的闸门在总览被直批。
               const send = isSendGate(g.step, (byWf.get(wid) ?? []).map((r) => r.step));
               const checks = Array.isArray(g.step.input?.['checks'])
-                ? (g.step.input!['checks'] as { name: string; status: string }[]) : [];
+                ? (g.step.input['checks'] as { name: string; status: string }[]) : [];
               // 移动端 hero（板 06）：首闸展开为审核主卡——收件人/检查行/不可撤销
               // 提示 + 拇指区宽钮；桌面隐藏（板 01 行式呈现）。
               const mob = i === 0 ? `
@@ -195,7 +210,7 @@ export const dashboardView = async (el: HTMLElement): Promise<() => void> => {
         </section>
       </div>`;
 
-    const feed = el.querySelector('#feed') as HTMLElement | null;
+    const feed = el.querySelector<HTMLElement>('#feed');
     if (feed !== null) feed.scrollTop = feed.scrollHeight;
 
     // 点穿：行/详情 → 流水详情；拒绝/批准就地动作。锚点（发件人/状态等
@@ -217,7 +232,7 @@ export const dashboardView = async (el: HTMLElement): Promise<() => void> => {
 
     // 发单快捷条（js-261006-s0msv9 用户裁定：发单高频，主页直达）——带草稿
     // 跳 #/chat 预填聚焦；对话逻辑仍只活在 chat 视图一处，不复制。
-    const qc = el.querySelector('#qc-input') as HTMLInputElement | null;
+    const qc = el.querySelector<HTMLInputElement>('#qc-input');
     if (qc !== null) {
       qc.value = qcDraft;
       qc.addEventListener('input', () => { qcDraft = qc.value; });
@@ -235,14 +250,23 @@ export const dashboardView = async (el: HTMLElement): Promise<() => void> => {
     const id = btn.dataset.id ?? '';
     const action = btn.dataset.act === 'deny' ? 'deny' : 'approve';
     if (action === 'approve' && btn.dataset.send === '1') {
-      const row = btn.closest('.gq-row') as HTMLElement | null;
+      const row = btn.closest<HTMLElement>('.gq-row');
       const w = row?.dataset.w ?? '';
       if (w !== '') location.hash = `/lifecycle?w=${w}`;
       return;
     }
+    // 拒绝=整单作废（不可逆）：与流水详情同款必填理由防呆（P1-8）——空理由
+    // 不发 POST，note 随 body 审计留痕。弹层期间背景 inert（dialog 家族），
+    // 无双击面，在途禁用移到弹层之后。
+    let note = '';
+    if (action === 'deny') {
+      const r = await askText({ title: '拒绝理由（必填——整单作废，审计留痕）' });
+      if (r === null || r.trim() === '') return;
+      note = r.trim();
+    }
     btn.disabled = true;
     try {
-      await api.post(`/api/lifecycle/steps/${id}/${action}`, { by: 'operator' });
+      await api.post(`/api/lifecycle/steps/${id}/${action}`, { note, by: 'operator' });
       await load();
     } catch (e) {
       btn.disabled = false;
@@ -260,7 +284,7 @@ export const dashboardView = async (el: HTMLElement): Promise<() => void> => {
       reloadTimer = setTimeout(() => { void load(); }, 600);
       return;
     }
-    const feed = el.querySelector('#feed') as HTMLElement | null;
+    const feed = el.querySelector<HTMLElement>('#feed');
     if (isHumanEvent(type)) {
       // 不在重载表的人类事件（如 email_sent）：就地补一行，下次重载与服务端对账。
       const ts = data !== null && typeof data === 'object' && typeof (data as { ts?: unknown }).ts === 'string'

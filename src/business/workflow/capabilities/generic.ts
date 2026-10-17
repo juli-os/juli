@@ -2,12 +2,9 @@
 // 灵活性模型：结构=模板，per-step 逻辑=prompt/system，数据流=步骤 id 键控输出。
 
 import { asString, truncate } from '../../../platform/shared/json.ts'
-import { asRecord, type JsonRecord } from '@juli-os/artifacts'
-import { rfc3339, type Clock } from '@juli-os/artifacts';
-import { type Step, type Workflow } from '@juli-os/ledger';
-import { originalEmail } from '@juli-os/ledger';
+import { type JsonRecord } from '@juli-os/artifacts'
+import { rfc3339 } from '@juli-os/artifacts';
 import type { LifecycleStore } from '@juli-os/ledger';
-import type { LlmPort } from '../../../contracts/ports.ts';
 import { parseLoose, type StepCtx } from './common.ts';
 
 /** 流上下文：meta + 已结算步骤（按模板 id 与 stepN 双键）+ Now。 */

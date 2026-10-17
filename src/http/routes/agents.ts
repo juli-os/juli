@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { cloneBaseOf } from '../../platform/shared/sessionClone.ts';
 import type { Runtime } from '../../runtime.ts';
-import { clampInt, readBody, type AppEnv } from '../helpers.ts';
+import { bodyStr, clampInt, readBody, type AppEnv } from '../helpers.ts';
 
 export const registerAgentsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
   // ---- agent 结算上报（tmux hook / 外部执行器回调的服务端路径）----------------
@@ -16,11 +16,11 @@ export const registerAgentsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
     async (c: Context): Promise<Response> => {
       const session = c.req.param('session') ?? '';
       const body = await readBody(c);
-      const status = typeof body['status'] === 'string' ? body['status'] : 'ok';
-      const finalMessage = typeof body['final_message'] === 'string' ? body['final_message'] : '';
-      const output = typeof body['output'] === 'string' ? body['output'] : '';
-      const text = typeof body['text'] === 'string' ? body['text'] : '';
-      const event = typeof body['event'] === 'string' ? body['event'] : 'hook';
+      const status = bodyStr(body, 'status', 'ok');
+      const finalMessage = bodyStr(body, 'final_message');
+      const output = bodyStr(body, 'output');
+      const text = bodyStr(body, 'text');
+      const event = bodyStr(body, 'event', 'hook');
       if (session === '') return c.json({ error: 'session required' }, 400);
       try {
         if (kind === 'stopped') await rt.engine.onAgentStopped(session, status, finalMessage);
@@ -42,7 +42,7 @@ export const registerAgentsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
     if (session === '') return c.json({ error: 'session required' }, 400);
     // noteAwaiting 持工作流锁（问询闸挂闸段）——hook 路径 fire-and-forget，
     // 绝不让 pane 采集/等锁阻塞 HTTP 响应；异常吞掉（尽力而为信号）。
-    void rt.engine.noteAwaiting(session, typeof body['message'] === 'string' ? body['message'] : '').catch(() => undefined);
+    void rt.engine.noteAwaiting(session, bodyStr(body, 'message')).catch(() => undefined);
     return c.json({ ok: true });
   });
 
@@ -54,7 +54,7 @@ export const registerAgentsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
   app.post('/api/agents/:session/claude-session', async (c) => {
     const session = c.req.param('session') ?? '';
     const body = await readBody(c);
-    const claudeId = typeof body['claude_session_id'] === 'string' ? body['claude_session_id'] : '';
+    const claudeId = bodyStr(body, 'claude_session_id');
     if (session === '' || claudeId === '') return c.json({ error: 'session and claude_session_id required' }, 400);
     rt.usage.recordClaudeSessionPrecise(claudeId, session);
     return c.json({ ok: true });
@@ -63,11 +63,11 @@ export const registerAgentsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
   app.post('/api/agents/:session/skill-used', async (c) => {
     const session = c.req.param('session') ?? '';
     const body = await readBody(c);
-    const skill = typeof body['skill'] === 'string' ? body['skill'] : '';
+    const skill = bodyStr(body, 'skill');
     if (session === '' || skill === '') return c.json({ error: 'session and skill required' }, 400);
     rt.store.appendEvent('agent', session, 'skill_used', {
       skill,
-      tool: typeof body['tool_name'] === 'string' ? body['tool_name'] : '',
+      tool: bodyStr(body, 'tool_name'),
     });
     return c.json({ ok: true });
   });
@@ -177,7 +177,7 @@ export const registerAgentsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
 
   app.post('/api/sessions', async (c) => {
     const body = await readBody(c);
-    const name = typeof body['name'] === 'string' ? body['name'] : '';
+    const name = bodyStr(body, 'name');
     const cwd = typeof body['cwd'] === 'string' ? body['cwd'] : undefined;
     if (name === '') return c.json({ error: 'name required' }, 400);
     // 绑定会话守卫（2026-09-20 P2 预建旁路；先于 tmux 可用性判断，与
@@ -229,7 +229,7 @@ export const registerAgentsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
     }
     if (!rt.tmux) return c.json({ error: 'tmux not available' }, 503);
     const body = await readBody(c);
-    const text = typeof body['text'] === 'string' ? body['text'] : '';
+    const text = bodyStr(body, 'text');
     if (text === '') return c.json({ error: 'text required' }, 400);
     const res = await rt.tmux.sendText(c.req.param('name') ?? '', text);
     return res.ok ? c.json({ ok: true }) : c.json({ error: res.error.message }, 400);

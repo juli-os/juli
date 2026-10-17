@@ -25,6 +25,12 @@ export const readBody = async (c: Context): Promise<JsonRecord> => {
   }
 };
 
+/** body 字符串字段提取（R8 批3 收口）：字符串原样，非字符串/缺省 → fallback。
+ * 原先 ~50 处 `typeof body['x'] === 'string' ? body['x'] : …` 内联散布 9 个
+ * 路由文件——lifecycle 的本件实现升为共享，机械替换同形调用点。 */
+export const bodyStr = (body: JsonRecord, key: string, fallback = ''): string =>
+  typeof body[key] === 'string' ? body[key] : fallback;
+
 /** 工件分享链接签名（HMAC(服务密码, id|exp)）：收件人免密取件、限时失效，
  * 密码本体永不出现在 URL（替代 Go 时代的 OSS presign；无 OSS 时的诚实形态）。 */
 export const makeShareAuth = (rt: { readonly config: { readonly password: string } }) => {

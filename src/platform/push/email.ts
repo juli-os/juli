@@ -6,6 +6,7 @@
 // （与 pushAll 的 .catch(() => undefined) 同语义，只是收口在自己这层）。
 
 import type { MailerPort, PusherPort } from '../../contracts/ports.ts';
+import { normalizeEmail } from '../shared/email.ts';
 
 // 类型经端口反取（与「pipeline 定义 port 类型」的既有依赖语义一致）——
 // push 不直连 ledger，围栏白名单维持 [pipeline, shared]。
@@ -72,8 +73,8 @@ export const createEmailNotifier = (deps: EmailNotifyDeps): PusherPort => {
       if (toList.length === 0) return; // 未配收件人 = 静默跳过（等同未启用）
       // 自址断根（2026-09-21）：先取原始名单判空，再剔除自身地址——全中则
       // 整封不发（发了必落回被轮询的 INBOX），混合名单只摘掉自己那份。
-      const self = deps.selfAddress?.trim().toLowerCase() ?? '';
-      const isSelf = (a: string): boolean => self !== '' && a.trim().toLowerCase() === self;
+      const self = normalizeEmail(deps.selfAddress ?? '');
+      const isSelf = (a: string): boolean => self !== '' && normalizeEmail(a) === self;
       const filtered = toList.filter((a) => !isSelf(a));
       if (filtered.length === 0) {
         log(`[notify-email] ${subject}: 收件人即被轮询邮箱自身，跳过发信（自回环断根；告警走设备推送/站内）`);

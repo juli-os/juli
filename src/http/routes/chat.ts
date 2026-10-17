@@ -9,7 +9,7 @@ import { homedir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { toWireFrame } from '../../platform/ws/wirehubs.ts';
 import type { Runtime } from '../../runtime.ts';
-import { clampInt, readBody, type AppEnv } from '../helpers.ts';
+import { bodyStr, clampInt, readBody, type AppEnv } from '../helpers.ts';
 
 export const registerChatRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
   // ---- 编排器（/api/chat）+ 语音通话 + 快照 --------------------------------------
@@ -24,7 +24,7 @@ export const registerChatRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
   app.post('/api/chat', async (c) => {
     if (!rt.orchestrator) return c.json({ error: 'orchestrator not configured (missing llm key)' }, 503);
     const body = await readBody(c);
-    const input = typeof body['input'] === 'string' ? body['input'] : '';
+    const input = bodyStr(body, 'input');
     if (input.trim() === '') return c.json({ error: 'input required' }, 400);
     const events: unknown[] = [];
     // 通话激活 → 走语音状态机（模式前缀/plan 暂存/确认短语）。
@@ -50,7 +50,7 @@ export const registerChatRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
 
   app.post('/api/chat/call', async (c) => {
     const body = await readBody(c);
-    const mode = typeof body['mode'] === 'string' ? body['mode'] : 'plan';
+    const mode = bodyStr(body, 'mode', 'plan');
     const call = rt.openVoiceCall(mode as 'chat' | 'plan' | 'query');
     if (!call) return c.json({ error: 'orchestrator not configured (missing llm key)' }, 503);
     return c.json({ ok: true, mode: call.mode });
@@ -142,7 +142,7 @@ export const registerChatRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
     // P2），开着通话先拒。
     if (rt.voiceCall) return c.json({ error: 'voice call active — end it first' }, 409);
     const body = await readBody(c);
-    let input = typeof body['input'] === 'string' ? body['input'] : '';
+    let input = bodyStr(body, 'input');
     if (input.trim() === '') return c.json({ error: 'input required' }, 400);
     // 附件注入（wf_3310501a9fe4）：清单+服务端路径并入 prompt——LLM/后续
     // agent 按路径读取；开单时该文本随 brief 保留，材料不丢线。
@@ -189,7 +189,7 @@ export const registerChatRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
     if (rt.voiceCall) return c.json({ error: 'voice call active — end it first' }, 409);
     // 计划卡「本单免批」勾选（2026-10-07）：客户端 control 面，LLM 计划块
     // 里写什么都不认——只有 confirm body 的人为勾选生效。
-    const body = await readBody(c).catch(() => ({}) as Record<string, unknown>);
+    const body = (await readBody(c).catch(() => ({}))) as Record<string, unknown>;
     const r = await rt.chatIntake.confirm({ autoApprove: body['auto_approve'] === true });
     mirrorChatEvents(r.events);
     return c.json({ events: r.events, runId: r.runId });
@@ -197,7 +197,7 @@ export const registerChatRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
 
   app.post('/api/chat/intake/deny', async (c) => {
     if (!rt.chatIntake) return c.json({ error: 'chat intake not configured (missing llm key)' }, 503);
-    const r: { events: unknown[] } = rt.chatIntake.deny() as { events: unknown[] };
+    const r: { events: unknown[] } = rt.chatIntake.deny();
     mirrorChatEvents(r.events);
     return c.json({ events: r.events });
   });

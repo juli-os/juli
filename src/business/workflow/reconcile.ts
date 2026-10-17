@@ -6,7 +6,7 @@ import type { Logger } from '../../platform/events/bus.ts';
 import type { LifecycleStore } from '@juli-os/ledger';
 import { isActiveStepStatus, isSettledStepStatus } from '../../contracts/statuses.ts';
 import { asString } from '../../platform/shared/json.ts'
-import type { JsonValue } from '@juli-os/artifacts'
+import type { JsonRecord, JsonValue } from '@juli-os/artifacts'
 import { gateDelivery } from '../send/sendSeed.ts';
 import { agentLiveSessionOf } from './capabilities/index.ts';
 import { briefDeclaresApply, feedbackRecordIdOf, hasLiveGate } from './support.ts';
@@ -64,9 +64,19 @@ export const makeReconcile = (o: {
         plan: brief,
         output: asString(last.output['output']),
       };
-      for (const k of ['deliverables', 'manifest', 'body_ref', 'envelope', 'session'] as const) {
+      for (const k of ['deliverables', 'manifest', 'body_ref', 'session'] as const) {
         const v = last.output[k];
-        if (v !== undefined && v !== null) seed[k] = v as JsonValue;
+        if (v !== undefined && v !== null) seed[k] = v;
+      }
+      // envelope 按键合并、回填锚优先（wf_16454623bf49/wf_7c9c9eeb51e1 同语义，
+      // 与 agentSettle/steps 两处申报优先合并对齐）：循环若照搬 envelope 键，
+      // swept 剥离版会整包顶掉上面声明的确定性锚——refs 是 agent 自报（缺键
+      // 补空数组），approve 回流「拍板=状态翻转」（feedbackRefsOf）缺失或指
+      // 错。锚键优先、swept 只补线程提示键；非 object（契约外形状）锚原样保留。
+      const sweptEnvelope = last.output['envelope'];
+      if (sweptEnvelope !== undefined && sweptEnvelope !== null
+        && typeof sweptEnvelope === 'object' && !Array.isArray(sweptEnvelope)) {
+        seed['envelope'] = { ...(sweptEnvelope as JsonRecord), feedback_refs: [recordId] };
       }
       store.insertStepsAt(w.id, last.seq, [{ kind: 'gate', title: '确认闸门', input: seed }]);
       const gate = store.stepsForWorkflow(w.id)[steps.length] ?? null;

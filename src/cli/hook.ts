@@ -77,7 +77,7 @@ export const runHook = async (argv: readonly string[]): Promise<void> => {
       // 后的 process.exit(0) 截杀（精确登记竞态丢失）；鉴权走 Bearer header
       // （headers 与兄弟请求一致），token 不进 URL。失败/超时静默——hook
       // 整体绝不阻塞 agent。
-      const cp = parseHookStdin(await readStdin()) as { session_id?: string } | null;
+      const cp = parseHookStdin(await readStdin());
       if (typeof cp?.session_id === 'string' && cp.session_id !== '') {
         const cs = new AbortController();
         const cst = setTimeout(() => cs.abort(), 3000);
@@ -116,7 +116,7 @@ export const runHook = async (argv: readonly string[]): Promise<void> => {
       return fail(`unknown verb ${verb}`);
   }
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 3000);
+  setTimeout(() => controller.abort(), 3000);
   fetch(`${base}${path}`, {
     method: 'POST',
     headers,

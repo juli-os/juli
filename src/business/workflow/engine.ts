@@ -314,7 +314,7 @@ export const createEngine = (deps: EngineDeps): Engine => {
     if (w.status === 'queued') {
       const st = store.currentStep(workflowId);
       const sess = st !== null && st.status === 'pending' && st.kind === 'agent'
-        && typeof st.input['session'] === 'string' ? (st.input['session'] as string).trim() : '';
+        && typeof st.input['session'] === 'string' ? (st.input['session']).trim() : '';
       const avail = deps.availableSessions ?? [];
       if (sess !== '' && avail.length > 0) {
         // 占用=已派发在跑的单（running）——同会话排队的兄弟单不算占（否则

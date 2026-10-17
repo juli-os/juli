@@ -488,7 +488,7 @@ export const chatView = async (el: HTMLElement): Promise<void> => {
     busy = true;
     status.textContent = '开单中…';
     try {
-      const autoAp = (planSlot.querySelector('#c-autoap') as HTMLInputElement | null)?.checked === true;
+      const autoAp = planSlot.querySelector<HTMLInputElement>('#c-autoap')?.checked === true;
       const r = await api.post<{ events: readonly IntakeEvent[]; runId: string | null }>('/api/chat/intake/confirm', {
         auto_approve: autoAp,
       });
@@ -527,7 +527,7 @@ export const chatView = async (el: HTMLElement): Promise<void> => {
   // 写穿透，重进/刷新即回放——与 iOS restoreTranscript 同语义。
   for (const m of transcript) renderMsg(m.role, m.text, m.atts);
 
-  const clearBtn = el.querySelector('#c-clear') as HTMLButtonElement | null;
+  const clearBtn = el.querySelector<HTMLButtonElement>('#c-clear');
   if (clearBtn !== null) {
     clearBtn.addEventListener('click', () => {
       if (!window.confirm('清空本浏览器的对话历史？（服务端与其它设备不受影响）')) return;

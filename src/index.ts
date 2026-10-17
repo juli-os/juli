@@ -41,10 +41,10 @@ if (tlsEnabled) {
     ? { cert: readFileSync(config.tls_cert_path), key: readFileSync(config.tls_key_path) }
     : null;
   const { cert, key } = trusted ?? ensureSelfSignedCert(config.data_dir, config.listen_host);
-  const httpsServer = createHttpsServer({ cert, key }, requestListener);
+  const httpsServer = createHttpsServer({ cert, key }, (req, res) => { void requestListener(req, res); });
   httpsServer.listen(tlsPort, config.listen_host, () =>
     onListen('TLS（iOS 公网入口）', 'https', tlsPort, httpsServer));
-  const plainServer = createHttpServer(requestListener);
+  const plainServer = createHttpServer((req, res) => { void requestListener(req, res); });
   plainServer.listen(config.listen_port, config.listen_host, () =>
     onListen('API + Web 壳 + SSE + WS（LAN/Web）', 'http', config.listen_port, plainServer));
   servers.push(httpsServer, plainServer);

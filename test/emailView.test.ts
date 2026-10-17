@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { composeTextBody, renderEmailHtml, SIGNATURE_TEXT, stripSignature } from '../src/business/send/emailView.ts';
+import { composeTextBody, renderEmailHtml, SIGNATURE_TEXT } from '../src/business/send/emailView.ts';
 
 describe('落款所有权：引擎拼装，LLM 残留剥除', () => {
   it('composeTextBody：正文 + 引擎落款，文字一字不变', () => {

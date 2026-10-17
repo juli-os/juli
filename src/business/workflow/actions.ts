@@ -163,7 +163,7 @@ export const makeGateActions = (o: {
           // 模板钉死的会话（那次写入曾让僵尸扫描致盲，它读 input.session）。
           const first = steps[0];
           if (first && first.kind === 'triage') {
-            let session = asString(first.output['session']);
+            const session = asString(first.output['session']);
             let plan = asString(first.output['summary']);
             const planFromGate = asString(st.input['plan']);
             if (planFromGate !== '' && plan === '') plan = planFromGate;

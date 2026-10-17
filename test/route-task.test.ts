@@ -27,7 +27,7 @@ const fakeJudgment = (outcome: JudgmentOutcome | null): { gw: JudgmentGateway; a
     asked: asked as unknown as number,
     gw: {
       threshold: () => 0.7,
-      async ask() { (asked as unknown as { n: number }).n++; return outcome; },
+      async ask() { (asked).n++; return outcome; },
     },
   };
 };

@@ -47,7 +47,7 @@ const fakeStartTask = (id = 'wf_chat_1'): { calls: { title: string; brief: strin
 
 const toolDeps = (over: Partial<ChatToolDeps> = {}): ChatToolDeps => ({
   lookupCustomer: async (q) => [{ email: `${q}@acme.de`, displayName: 'Casey', company: 'Acme', workflows: 3, lastContactAt: '2026-09-01' }],
-  listTasks: (_scope, limit) => Array.from({ length: Math.min(limit, 2) }, (_, k) => ({ id: `wf_${k}`, title: `单${k}`, status: 'running', updatedAt: '2026-09-28' })),
+  listTasks: (_scope, limit, _q) => Array.from({ length: Math.min(limit, 2) }, (_, k) => ({ id: `wf_${k}`, title: `单${k}`, status: 'running', updatedAt: '2026-09-28' })),
   getTask: async (wfId) => wfId === 'wf_known000001'
     ? {
         id: wfId, title: '已知单', status: 'waiting_human', kind: 'adhoc',
@@ -349,9 +349,13 @@ describe('chatTools 白名单', () => {
     }
   });
 
-  it('lookup_customer 空查询 → []；list_tasks 收敛 limit 并透传 scope', async () => {
+  it('lookup_customer 空查询 → []；list_tasks 收敛 limit（100 窗）并透传 scope/q', async () => {
+    const seen: string[] = [];
     const deps = toolDeps({
-      listTasks: (scope, limit) => [{ id: `${scope}:${limit}`, title: 'x', status: 'running', updatedAt: '' }],
+      listTasks: (scope, limit, q) => {
+        seen.push(`${scope}|${limit}|${q}`);
+        return [{ id: `${scope}:${limit}:${q}`, title: 'x', status: 'running', updatedAt: '' }];
+      },
     });
     const tools = makeChatTools(deps);
     const lookup = tools.find((t) => t.name === 'lookup_customer')!;
@@ -362,9 +366,14 @@ describe('chatTools 白名单', () => {
     };
     expect(await val(lookup.execute({ query: '   ' }))).toBe('[]');
     expect(await val(lookup.execute({ query: 'casey' }))).toContain('acme.de');
-    expect(await val(list.execute({ scope: 'recent', limit: 999 }))).toContain('"recent:20"');
-    expect(await val(list.execute({ scope: 'inflight', limit: 0 }))).toContain('"inflight:1"');
-    expect(await val(list.execute({ scope: 'bogus' }))).toContain('"inflight:10"');
+    // 收敛窗（2026-10-14 用户裁定「找单子只能找 20 太少」）：999→100、
+    // 0→1、缺省→20。
+    expect(await val(list.execute({ scope: 'recent', limit: 999 }))).toContain('"recent:100:"');
+    expect(await val(list.execute({ scope: 'inflight', limit: 0 }))).toContain('"inflight:1:"');
+    expect(await val(list.execute({ scope: 'bogus' }))).toContain('"inflight:20:"');
+    // q 关键词透传（trim 后；缺省=空串不过滤）。
+    expect(await val(list.execute({ scope: 'recent', q: ' 税收 ' }))).toContain('"recent:20:税收"');
+    expect(seen[seen.length - 1]).toBe('recent|20|税收');
   });
 
   it('get_task：命中回全息、未命中 found:false、空参拒；list_sessions/service_info 直通', async () => {
@@ -405,6 +414,7 @@ describe('HTTP /api/chat/intake/*', () => {
     registerChatRoutes(app, rt);
     return app;
   };
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- 测试 JSON 探针：data=JSON.parse 动态形态，下游数十处临时断言消费，精确建型需给全部 expect 补窄化（零安全增益 churn）。
   const j = async (app: Hono<AppEnv>, method: string, path: string, body?: unknown): Promise<{ status: number; data: any }> => {
     const res = await app.request(path, {
       method,
@@ -495,7 +505,7 @@ describe('chat 线落点注入引擎级（十一跑 P1-1）', () => {
     await intake.turn('出材料');
     const r = await intake.confirm();
     expect(r.runId).not.toBeNull();
-    const step = w.store.stepsForWorkflow(r.runId!)![0]!;
+    const step = w.store.stepsForWorkflow(r.runId!)[0]!;
     // 不钉：首步无 session 无 session_pinned（与 HTTP 线 fail-open 同款口径）。
     expect(step.input['session']).toBeUndefined();
     expect(step.input['session_pinned']).toBeUndefined();
@@ -514,7 +524,7 @@ describe('chat 线落点注入引擎级（十一跑 P1-1）', () => {
     await intake.turn('出材料');
     const r = await intake.confirm();
     expect(r.runId).not.toBeNull();
-    const step = w.store.stepsForWorkflow(r.runId!)![0]!;
+    const step = w.store.stepsForWorkflow(r.runId!)[0]!;
     // 机器判定不随 input.session 注入播种——计划卡落点是展示预测，真判定
     // 在派发时刻（engine steps 三无腿，本测试世界无 taskRoute 缝=走 default）。
     expect(step.input['session']).toBeUndefined();

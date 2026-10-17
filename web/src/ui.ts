@@ -96,21 +96,27 @@ export const topbar = (_activeTab: string, live = false): string => `
 
 /** 左侧导航栏（2026-10-07）：五组常驻平铺，组名小标 + 页名直列——无下拉无
  * 悬停浮层，当前页永远点亮。沿用 id="nav" 与 .nav-group 类名，main.ts 的
- * active 切换与组高亮选择器（#nav a / #nav .nav-group）零改动。 */
+ * active 切换与组高亮选择器（#nav a / #nav .nav-group）零改动。
+ * 2026-10-14：core 组（单子 · 路由）置顶强化（side-group--core：大字重+
+ * 橘组名+底分割线），其余组为辅助节——左栏不再全平级。左栏顶部常驻
+ * 「＋ 开单」主按钮（开合逻辑在 orderfab.ts，document 委托）。 */
 export const sidebar = (activeTab: string): string => `
+  <button id="side-order-btn" title="随时开一张单（不打断当前页）">＋ 开单</button>
   <div class="side-q"><div class="side-q-h">在办单子</div><div id="side-q-items"><span class="muted side-q-empty">加载中…</span></div></div>
   <nav id="nav" aria-label="主导航">${NAV_GROUPS.map((g) => {
     const active = g.items.some(([, route]) => route === activeTab);
-    return `<div class="nav-group side-group${active ? ' active' : ''}"><div class="side-glabel">${esc(g.label)}</div>${g.items.map(([label, route]) =>
+    return `<div class="nav-group side-group${g.core === true ? ' side-group--core' : ''}${active ? ' active' : ''}"><div class="side-glabel">${esc(g.label)}</div>${g.items.map(([label, route]) =>
       `<a href="#${route}"${route === activeTab ? ' class="active"' : ''}>${esc(label)}</a>`).join('')}</div>`;
   }).join('')}</nav>`;
 
-/** 全局 toast（共享版，样式沿用 style.css 的 .toast 分级）：urgent 6s / 其余 3s。
- * 文案原样 textContent（防 XSS）；✓/🔴 前缀由调用方自带。 */
+/** 全局 toast（单一实现，R7-F1 P2-11 三收一：main.ts/settings.ts 本地版已
+ * 删，全仓只此一份）：样式沿用 style.css 的 .toast 分级（z-index 1000 在
+ * 弹层 overlay 之上）；🔴/✓ 前缀由此处统一自带——调用方不得手写前缀（防
+ * 双前缀）；时长 urgent 6s / ok 4.5s / info 3s。文案原样 textContent（防 XSS）。 */
 export const toast = (msg: string, level: 'ok' | 'info' | 'urgent' = 'info'): void => {
   const el = document.createElement('div');
   el.className = `toast ${level}`;
-  el.textContent = msg;
+  el.textContent = level === 'urgent' ? `🔴 ${msg}` : level === 'ok' ? `✓ ${msg}` : msg;
   document.body.appendChild(el);
-  setTimeout(() => el.remove(), level === 'urgent' ? 6000 : 3000);
+  setTimeout(() => el.remove(), level === 'urgent' ? 6000 : level === 'ok' ? 4500 : 3000);
 };

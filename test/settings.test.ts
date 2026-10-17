@@ -126,6 +126,7 @@ const cfg = configSchema.parse({
 const rt = createRuntime(cfg, { home });
 const app = createHttpApp(rt);
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- 测试 JSON 探针：data=JSON.parse 动态形态，下游数十处临时断言消费，精确建型需给全部 expect 补窄化（零安全增益 churn）。
 const j = async (method: string, path: string, body?: unknown): Promise<{ status: number; data: any }> => {
   const res = await app.request(path, {
     method,
@@ -251,6 +252,7 @@ describe('HTTP /api/settings', () => {
       configSchema.parse({ data_dir: dir2, password: 'pw-masked', ai: { api_key: 'sk-real', model: 'old-model' } }),
       { home: home2 },
     );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 同上：settings PUT 探针（下游 expect 直接点访问）。
     const put2 = async (patch: unknown): Promise<{ status: number; data: any }> => {
       const res = await createHttpApp(rt2).request('/api/settings', {
         method: 'PUT',

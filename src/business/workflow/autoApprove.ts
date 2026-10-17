@@ -14,7 +14,6 @@
 
 import { gateDelivery } from '../send/sendSeed.ts';
 import { WORKFLOW_STATUSES } from '../../contracts/statuses.ts';
-import type { JsonRecord } from '@juli-os/artifacts'
 import type { LifecycleStore } from '@juli-os/ledger';
 import type { Logger } from '../../platform/events/bus.ts';
 import { type Workflow } from '@juli-os/ledger';
@@ -85,21 +84,21 @@ export const matchAutoApprove = (cfg: AutoApproveConfig, ctx: AutoApproveCtx): A
   return null;
 };
 
-const TERMINAL = new Set(WORKFLOW_STATUSES.filter((s) => s.terminal).map((s) => s.key as string));
+const TERMINAL = new Set(WORKFLOW_STATUSES.filter((s) => s.terminal).map((s) => s.key));
 
 /** 单子级免批的等价规则（include_send=false——外发邮件仍等人）。 */
 const PER_ORDER_RULE: AutoApproveRule = { id: '本单免批', includeSend: false };
 
 const ctxOf = (w: Workflow, gate: Step): AutoApproveCtx => {
-  const input = (gate.input ?? {}) as JsonRecord;
-  const assigned = typeof w.meta?.['assigned_session'] === 'string' ? (w.meta['assigned_session'] as string) : '';
+  const input = (gate.input ?? {});
+  const assigned = typeof w.meta?.['assigned_session'] === 'string' ? (w.meta['assigned_session']) : '';
   const q = input['question_options'];
   const session = (w.session ?? '') !== '' ? (w.session ?? '') : assigned;
   return {
     kind: w.kind,
     title: w.title,
     session,
-    sender: typeof w.meta?.['from'] === 'string' ? (w.meta['from'] as string) : '',
+    sender: typeof w.meta?.['from'] === 'string' ? (w.meta['from']) : '',
     delivery: gateDelivery(input),
     isQuestion: Array.isArray(q) && q.length > 0,
   };

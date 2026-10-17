@@ -8,7 +8,7 @@ const nonEmpty = (v: unknown): unknown =>
   v === null || v === undefined || v === '' ? undefined : v;
 
 const nonEmptyObject = (v: unknown): unknown =>
-  v !== null && typeof v === 'object' && Object.keys(v as object).length > 0 ? v : undefined;
+  v !== null && typeof v === 'object' && Object.keys(v).length > 0 ? v : undefined;
 
 /** Workflow → Go/iOS 列表与详情共用的 snake_case 形状。 */
 export const workflowToGo = (

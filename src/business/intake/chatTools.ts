@@ -70,8 +70,10 @@ export interface ChatServiceInfo {
 export interface ChatToolDeps {
   /** 客户模糊查询（邮箱 / 姓名 / 公司名片段）。 */
   readonly lookupCustomer: (query: string) => Promise<readonly ChatCustomerRow[]>;
-  /** 任务清单：inflight=非终态在办；recent=最近全部（含终态）。 */
-  readonly listTasks: (scope: 'inflight' | 'recent', limit: number) => readonly ChatTaskRow[];
+  /** 任务清单：inflight=非终态在办；recent=最近全部（含终态）；q=标题/ID
+   * 关键词过滤（空串=不过滤）——recent+q 由 runtime 放深窗检索（「找单子」
+   * 要跨历史，不止最近一批）。 */
+  readonly listTasks: (scope: 'inflight' | 'recent', limit: number, q: string) => readonly ChatTaskRow[];
   /** 单子全息（不存在返回 null——工具层转 found:false 回给模型）。 */
   readonly getTask: (wfId: string) => Promise<ChatTaskDetail | null>;
   /** 会话清单（声明表 × 在办）。 */
@@ -83,9 +85,12 @@ export interface ChatToolDeps {
 /** 白名单唯一事实源：开单 loop 能看见的全部工具名。 */
 export const CHAT_TOOL_NAMES = ['lookup_customer', 'list_tasks', 'get_task', 'list_sessions', 'service_info'] as const;
 
+// 上限 100（2026-10-14 用户裁定「找单子只能找 20 太少」；首版 20 窗在多单
+// 月份连要跟进的上周单都罩不住）。行是小 JSON（id/标题/状态/时间），100 行
+// 仍在单回合预算内；更老的靠 q 关键词深窗检索，不靠拉更大清单。
 const clampLimit = (v: unknown): number => {
-  if (typeof v !== 'number' || !Number.isFinite(v)) return 10;
-  return Math.min(Math.max(Math.trunc(v), 1), 20);
+  if (typeof v !== 'number' || !Number.isFinite(v)) return 20;
+  return Math.min(Math.max(Math.trunc(v), 1), 100);
 };
 
 export const makeChatTools = (deps: ChatToolDeps): readonly Tool[] => [
@@ -109,15 +114,17 @@ export const makeChatTools = (deps: ChatToolDeps): readonly Tool[] => [
   },
   {
     name: 'list_tasks',
-    description: '查在办或最近的任务单（id / 标题 / 状态）。开单前看有没有重复或相关的单。',
+    description: '查任务单（id / 标题 / 状态）。scope=inflight 只看非终态在办；scope=recent 看最近的全部（含终态）。要找以前的老单子（跟进 / 查重 / 关联）时带 q 关键词按标题或单号搜——比拉最近清单可靠。',
     parameters: [
       { name: 'scope', type: 'string', description: 'inflight=非终态在办单；recent=最近全部（含终态）', required: true },
-      { name: 'limit', type: 'number', description: '最多返回条数（1-20，默认 10）', required: false },
+      { name: 'q', type: 'string', description: '关键词：按标题或单号（wf_ 片段）过滤，大小写不敏感；空=不过滤', required: false },
+      { name: 'limit', type: 'number', description: '最多返回条数（1-100，默认 20）', required: false },
     ],
     async execute(args) {
       const scope = args['scope'] === 'recent' ? 'recent' : 'inflight';
+      const q = typeof args['q'] === 'string' ? args['q'].trim() : '';
       try {
-        return ok(JSON.stringify(deps.listTasks(scope, clampLimit(args['limit']))));
+        return ok(JSON.stringify(deps.listTasks(scope, clampLimit(args['limit']), q)));
       } catch (e) {
         return err(new Error(`list_tasks: ${e instanceof Error ? e.message : String(e)}`));
       }

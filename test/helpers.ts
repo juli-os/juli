@@ -21,7 +21,7 @@ export const makeClock = (): { clock: Clock; advance: (ms: number) => void } => 
 
 export const fixedClock: Clock = { now: () => new Date('2026-09-07T08:00:00Z') };
 
-export const seqIds = (prefix = 'id'): IdGen => {
+export const seqIds = (_prefix = 'id'): IdGen => {
   let n = 0;
   return { newId: (p: string) => `${p}_${String(++n).padStart(4, '0')}` };
 };

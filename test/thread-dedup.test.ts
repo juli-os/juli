@@ -133,7 +133,7 @@ describe('Thread 进件匹配②：归一化主题 + 同发件人（30 天窗）
 
   it('超 30 天窗口：同主题同发件人也算新事', async () => {
     const w = makeWorld();
-    const root = await w.engine.startEmailWorkflow(makeEmail({
+    const _root = await w.engine.startEmailWorkflow(makeEmail({
       from: 'casey@example.com', subject: '季度对账', messageId: '<a@example.com>',
     }));
     w.advanceClock(31 * 86_400_000); // 窗外

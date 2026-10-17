@@ -119,7 +119,15 @@ describe('defaultHookSpecs 凭据内嵌契约', () => {
     expect(withPw.length).toBeGreaterThan(0);
     for (const s of withPw) {
       expect(s.command).toContain('JULI_PASSWORD=');
-      expect(s.command).toContain('"s3cret"');
+      // POSIX 单引号（agents 0.1.5 安全修复）：旧 JSON.stringify 双引号会让
+      // 密码/URL 值里的 $/反引号/$() 被 shell 展开当命令跑——断言跟随修复。
+      expect(s.command).toContain("'s3cret'");
+      expect(s.command).not.toContain('"s3cret"');
+    }
+    // 敌意字符面：$()/反引号原样落命令行（单引号包裹），不参与 shell 展开。
+    const hostile = defaultHookSpecs('/opt/h.js', 'p$w`x`$(boom)');
+    for (const s of hostile) {
+      expect(s.command).toContain("'p$w`x`$(boom)'");
     }
     const bare = defaultHookSpecs('/opt/h.js', '');
     for (const s of bare) expect(s.command).not.toContain('JULI_PASSWORD=');

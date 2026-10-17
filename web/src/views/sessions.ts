@@ -5,11 +5,36 @@
 // Cmd/Ctrl+C 复制选中、+V 粘贴进会话。
 // 断线语义（2026-09-20 裁决沿用）：政策性关闭（1008 绑定会话/1011/1000）
 // 停止重连显原因；只有网络断线才指数退避重连。
+// 2026-10-14（用户实报「Agent 页面回不到单子」）：会话名下非终态单在列表
+// 项与终端操作条双挂 tag，点 tag 走锚点契约（entityKind=run）直达单子详情
+// ——图=空间轴、单子=时间轴的回程跳。数据源=/api/lifecycle/workflows 按
+// status 等值过滤双拉，口径=非终态两态（queued/running，与忙闲面
+// sessionHasOpenWork 全表 COUNT 同覆盖）；waiting_human 是步态非单态，
+// 等人的步挂在 running 单上。
 
 import { api } from '../api.ts';
 import { esc } from './dashboard.ts';
+import { anchorHref } from '../anchors.ts';
+import { statusLabelOf, WORKFLOW_STATUSES } from '../statuses.ts';
+import { toast } from '../ui.ts';
 import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
+
+/** 在办单 tag 的最小数据面（/api/lifecycle/workflows 行子集）。 */
+interface WfLite {
+  readonly id: string;
+  readonly title: string;
+  readonly status: string;
+  readonly session?: string;
+}
+
+// 在办口径=非终态两态，从名单派生（手工状态清单是走查实证的漂移反模式，
+// statuses.ts 头纪律）；waiting_human 是步态非单态——账本 workflow.status
+// 永不为它，不得入清单。
+const OPEN_STATUSES = new Set(WORKFLOW_STATUSES.filter((d) => !d.terminal).map((d) => d.key));
+const WF_DOT: Readonly<Record<string, string>> = {
+  running: 'var(--c-blue)', queued: 'var(--c-faint)',
+};
 
 export const sessionsView = async (el: HTMLElement): Promise<(() => void) | void> => {
   el.innerHTML = `
@@ -26,6 +51,7 @@ export const sessionsView = async (el: HTMLElement): Promise<(() => void) | void
         <div class="ss-term-bar">
           <span class="ss-term-name" id="ss-term-name">未选中会话</span>
           <span class="ss-term-st" id="ss-term-st"></span>
+          <span class="ss-wfs" id="ss-term-wfs"></span>
           <span class="ss-term-hint">⌘C 复制选中 · ⌘V 粘贴</span>
         </div>
         <div class="ss-term-mount" id="term-mount"><p class="muted" style="padding:18px">← 从左侧选择一个会话，终端在这里直接展开。</p></div>
@@ -36,6 +62,7 @@ export const sessionsView = async (el: HTMLElement): Promise<(() => void) | void
   const mount = el.querySelector('#term-mount') as HTMLElement;
   const nameEl = el.querySelector('#ss-term-name') as HTMLElement;
   const stEl = el.querySelector('#ss-term-st') as HTMLElement;
+  const termWfs = el.querySelector('#ss-term-wfs') as HTMLElement;
 
   // ---- 终端生命周期（一次一个；换会话/离开页面即整体收口） ----------------
   let current = '';
@@ -88,6 +115,7 @@ export const sessionsView = async (el: HTMLElement): Promise<(() => void) | void
     mount.innerHTML = '';
     t.open(mount);
     t.focus();
+    renderTermWfs(); // 切会话即刷终端条的在办单 tag（不等 5s 轮询）
 
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const token = localStorage.getItem('juli_token') ?? '';
@@ -186,6 +214,10 @@ export const sessionsView = async (el: HTMLElement): Promise<(() => void) | void
 
   // ---- 会话列表（5s 慢轮询：名单与 agent 标签；活性由终端连接本身表达） ----
   let listTimer: ReturnType<typeof setInterval> | null = null;
+  // 初载与轮询失败的二态（P1-7）：从未成功过=显性失败面+重试（此前=永久
+  // 「加载中…」，每轮失败还是一次 unhandledrejection）；已有列表的轮询失败
+  // 保留旧列表（终端活性是本页活性信号），就地一条提示，成功重渲自动冲掉。
+  let listEverLoaded = false;
   // 深链聚焦的存活窗：列表轮询重建 innerHTML 冲掉高亮类——重绘后按名字回补。
   let focusName = '';
   let focusUntil = 0;
@@ -194,35 +226,116 @@ export const sessionsView = async (el: HTMLElement): Promise<(() => void) | void
     items.querySelector(`.ss-item[data-s="${CSS.escape(focusName)}"]`)?.classList.add('ss-focus');
   };
 
+  // ---- 在办单反查（2026-10-14）：session 字段反查非终态单，列表与终端条
+  // 双挂 tag。随列表轮询同频刷新；单子面不可达时 tag 静默退场（主功能无恙）。
+  let wfBySession = new Map<string, WfLite[]>();
+  const loadWorkflows = async (): Promise<void> => {
+    try {
+      // 双拉（R5：默认清单全状态混排 created_at DESC 截断，长跑单会被新终态
+      // 单挤出窗口——tag 恰在长跑单最需要时消失）。status 等值过滤各拉到
+      // 上限 500；两拉非同一事务快照，单子恰在两拉间迁移状态会同单双份
+      // ——合并建索引前按 id 去重（后写胜=running 拉在后，迁移后的新态）。
+      const [q, r] = await Promise.all([
+        api.get<{ readonly workflows: readonly WfLite[] }>('/api/lifecycle/workflows?status=queued&limit=500'),
+        api.get<{ readonly workflows: readonly WfLite[] }>('/api/lifecycle/workflows?status=running&limit=500'),
+      ]);
+      const rows = [...new Map([...q.workflows, ...r.workflows].map((x) => [x.id, x])).values()];
+      const m = new Map<string, WfLite[]>();
+      for (const x of rows) {
+        if (!OPEN_STATUSES.has(x.status) || x.session === undefined || x.session === '') continue;
+        m.set(x.session, [...(m.get(x.session) ?? []), x]);
+      }
+      wfBySession = m;
+    } catch { /* tag 是增强面——单子接口失联不阻塞会话/终端 */ }
+  };
+  const wfChip = (w: WfLite): string => {
+    const t = w.title.length > 22 ? `${w.title.slice(0, 22)}…` : w.title;
+    return `<a class="ss-wf-chip" href="#${anchorHref('run', w.id)}" title="${esc(w.title)} · ${esc(statusLabelOf(w.status))}">`
+      + `<span class="ss-wf-dot" style="background:${WF_DOT[w.status] ?? 'var(--c-faint)'}"></span>`
+      + `<span class="t">${esc(t)}</span></a>`;
+  };
+  const renderTermWfs = (): void => {
+    termWfs.innerHTML = (current === '' ? [] : wfBySession.get(current) ?? []).map(wfChip).join('');
+  };
+
   const loadList = async (): Promise<void> => {
     // /api/sessions 现为 Go/iOS 形状裸对象数组（name/active/working/agent…）。
-    const sessions = await api.get<{ name: string; agent: string }[]>('/api/sessions');
+    let sessions: { name: string; agent: string }[];
+    try {
+      [sessions] = await Promise.all([api.get<{ name: string; agent: string }[]>('/api/sessions'), loadWorkflows()]);
+    } catch (e) {
+      const msg = esc(e instanceof Error ? e.message : String(e));
+      if (!listEverLoaded) {
+        items.innerHTML = `<p class="muted" style="padding:10px">加载失败：${msg}</p>` +
+          `<button class="mini" id="ss-retry" style="margin:0 10px 10px">重试</button>`;
+        items.querySelector('#ss-retry')?.addEventListener('click', () => void loadList());
+        return;
+      }
+      if (items.querySelector('.ss-poll-err') === null) {
+        items.insertAdjacentHTML('afterbegin',
+          '<p class="muted ss-poll-err" style="padding:4px 10px 0">（列表刷新失败——显示上次状态，恢复后自动更新）</p>');
+      }
+      return;
+    }
+    listEverLoaded = true;
     items.innerHTML = sessions.length === 0
       ? '<p class="muted" style="padding:10px">无活动会话。</p>'
-      : sessions.map((s) => `
+      : sessions.map((s) => {
+        const wfs = wfBySession.get(s.name) ?? [];
+        return `
         <div class="ss-item${s.name === current ? ' active' : ''}" data-s="${esc(s.name)}" role="link" tabindex="0">
           <div class="ss-name">${esc(s.name)}</div>
           <div class="ss-sub">${esc(s.agent !== '' ? s.agent : 'tmux')}</div>
-        </div>`).join('');
+          ${wfs.length > 0 ? `<div class="ss-wfs">${wfs.map(wfChip).join('')}</div>` : ''}
+        </div>`;
+      }).join('');
     refocus();
+    // 选中动作（click 与 Enter 同路，P1-3）：点 chip=点链接走导航（锚点契约
+    // 回程单子），不算点卡片——closest 判源早退，取代逐 chip stopPropagation
+    // （刷新即重绑、监听器堆积）。
+    const pick = (item: HTMLElement, ev: Event): void => {
+      if ((ev.target as HTMLElement).closest('.ss-wf-chip') !== null) return;
+      if (item.dataset.s === current) { term?.focus(); return; }
+      current = item.dataset.s ?? '';
+      for (const x of items.querySelectorAll('.ss-item')) x.classList.toggle('active', (x as HTMLElement).dataset.s === current);
+      openTerminal();
+    };
     for (const item of items.querySelectorAll<HTMLElement>('.ss-item')) {
-      item.addEventListener('click', () => {
-        if (item.dataset.s === current) { term?.focus(); return; }
-        current = item.dataset.s ?? '';
-        for (const x of items.querySelectorAll('.ss-item')) x.classList.toggle('active', (x as HTMLElement).dataset.s === current);
-        openTerminal();
+      item.addEventListener('click', (ev) => pick(item, ev));
+      item.addEventListener('keydown', (ev) => {
+        if (ev.key !== 'Enter') return;
+        if ((ev.target as HTMLElement).closest('.ss-wf-chip') !== null) return;
+        pick(item, ev);
       });
     }
+    renderTermWfs();
   };
 
-  (el.querySelector('#new') as HTMLButtonElement).addEventListener('click', async () => {
-    const name = (el.querySelector('#new-name') as HTMLInputElement).value.trim();
-    if (name === '') return;
-    await api.post('/api/sessions', { name });
-    current = '';
-    await loadList();
-    const item = items.querySelector<HTMLElement>(`.ss-item[data-s="${CSS.escape(name)}"]`);
-    if (item) item.click();
+  (el.querySelector('#new') as HTMLButtonElement).addEventListener('click', () => {
+    void (async () => {
+    const nameInp = el.querySelector('#new-name') as HTMLInputElement;
+    const btn = el.querySelector('#new') as HTMLButtonElement;
+    const name = nameInp.value.trim();
+    // 空名不静默（P1-9）：提示+聚焦，点了要有反应。
+    if (name === '') {
+      nameInp.focus();
+      toast('先填会话名再点新建', 'urgent');
+      return;
+    }
+    btn.disabled = true; // 在途禁用：防重复点击=重复失败 POST
+    try {
+      await api.post('/api/sessions', { name });
+      nameInp.value = ''; // 成功即清（防旧名残留→重复点击撞重名）
+      current = '';
+      await loadList();
+      const item = items.querySelector<HTMLElement>(`.ss-item[data-s="${CSS.escape(name)}"]`);
+      if (item) item.click();
+    } catch (e) {
+      toast(`新建会话失败：${e instanceof Error ? e.message : String(e)}`, 'urgent');
+    } finally {
+      btn.disabled = false;
+    }
+    })();
   });
 
   listTimer = setInterval(() => { if (!document.hidden) void loadList(); }, 5000);

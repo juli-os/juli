@@ -84,7 +84,7 @@ const greetingCheck = (
 
 /** 正文里的 URL 提取（探活对象；mailto: 等非 http 一律不碰）。 */
 export const urlsIn = (body: string): string[] =>
-  [...body.matchAll(/https?:\/\/[^\s)>\]}"'，。、；]+/g)].map((m) => m[0]!).slice(0, 5);
+  [...body.matchAll(/https?:\/\/[^\s)>\]}"'，。、；]+/g)].map((m) => m[0]).slice(0, 5);
 
 /** URL 探活默认实现：HEAD + 3s 超时，任何异常/非 2xx 归 false（best-effort）。 */
 const defaultProbeUrl = async (url: string): Promise<boolean> => {

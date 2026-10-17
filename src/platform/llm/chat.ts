@@ -2,8 +2,8 @@
 // 的事实源已收编 npm 包 @juli-os/agents（10-10 影子清除）——本文件只留
 // Anthropic/OpenAI 两个协议实现（引擎装配面）。
 
-import { err, ok, toResult, type Result } from '@juli-os/artifacts';
-import type { ToolSchema, ToolCallRequest, ChatMessage, ChatResult, ChatLlmPort } from '@juli-os/agents';
+import { err, ok, toResult } from '@juli-os/artifacts';
+import type { ChatLlmPort } from '@juli-os/agents';
 
 
 type FetchImpl = (url: string, init: RequestInit) => Promise<Response>;
@@ -69,9 +69,13 @@ export const createAnthropicChat = (opts: ProviderOpts, doFetch: FetchImpl = def
     }), 'anthropic chat failed');
     if (!res.ok) return res;
     if (res.value.status !== 200) return err(await errorFrom(res.value));
-    const dataRes = await toResult(res.value.json() as Promise<Record<string, unknown>>, 'anthropic chat json');
+    // 三步收口照 providers.ts parseJsonResponse 先例：unknown → 非 null object 检查 → 才 cast
+    const dataRes = await toResult(res.value.json() as Promise<unknown>, 'anthropic chat json');
     if (!dataRes.ok) return dataRes;
-    const data = dataRes.value;
+    if (typeof dataRes.value !== 'object' || dataRes.value === null) {
+      return err(new Error('anthropic chat: non-object response'));
+    }
+    const data = dataRes.value as Record<string, unknown>;
     const content = Array.isArray(data['content']) ? data['content'] : [];
     let text = '';
     let thinking = '';
@@ -131,9 +135,14 @@ export const createOpenAiChat = (opts: ProviderOpts, doFetch: FetchImpl = defaul
     }), 'openai chat failed');
     if (!res.ok) return res;
     if (res.value.status !== 200) return err(await errorFrom(res.value));
-    const dataRes = await toResult(res.value.json() as Promise<Record<string, unknown>>, 'openai chat json');
+    // 三步收口照 providers.ts parseJsonResponse 先例：unknown → 非 null object 检查 → 才 cast
+    const dataRes = await toResult(res.value.json() as Promise<unknown>, 'openai chat json');
     if (!dataRes.ok) return dataRes;
-    const choice = (dataRes.value['choices'] as { message?: { content?: string; tool_calls?: { id?: string; function?: { name?: string; arguments?: string } }[] }; finish_reason?: string }[] | undefined)?.[0];
+    if (typeof dataRes.value !== 'object' || dataRes.value === null) {
+      return err(new Error('openai chat: non-object response'));
+    }
+    const data = dataRes.value as Record<string, unknown>;
+    const choice = (data['choices'] as { message?: { content?: string; tool_calls?: { id?: string; function?: { name?: string; arguments?: string } }[] }; finish_reason?: string }[] | undefined)?.[0];
     const msg = choice?.message;
     return ok({
       content: msg?.content ?? '',

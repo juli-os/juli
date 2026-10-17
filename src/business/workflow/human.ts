@@ -77,7 +77,7 @@ export const makeHumanActions = (o: {
     }
     const hist = Array.isArray(st.input['interventions']) ? st.input['interventions'] : [];
     store.setStepInput(st.id, {
-      interventions: [...hist, { text: t, by, at: rfc3339(now()) }] as unknown as JsonValue,
+      interventions: [...hist, { text: t, by, at: rfc3339(now()) }],
     });
     await o.agentSettle.recordActivity(session, 'intervene', `[${by}] ${t}`);
     store.appendEvent('step', st.id, 'step_intervened', {
@@ -117,7 +117,7 @@ export const makeHumanActions = (o: {
         if (patch.session !== undefined && patch.session.trim() !== '') input['session'] = patch.session;
         if (Object.keys(input).length > 0) {
           store.setStepInput(st.id, input);
-          o.journal.stepEvent(st, 'step_patch', input as JsonRecord);
+          o.journal.stepEvent(st, 'step_patch', input);
         }
       }
       // 清掉上次失败的 error 键（output 是合并写，不清则成功后仍显示旧错）。
@@ -158,7 +158,7 @@ export const makeHumanActions = (o: {
         throw new Error(`workflow ${st.workflowId} is ${w?.status ?? 'gone'} — start a new run instead`);
       }
       const before: Record<string, JsonValue> = {};
-      for (const k of Object.keys(clean)) before[k] = st.input[k] !== undefined ? (st.input[k] as JsonValue) : null;
+      for (const k of Object.keys(clean)) before[k] = st.input[k] !== undefined ? (st.input[k]) : null;
       // 冻结类（缺模板 key 渲染失败）步骤是 pending——补齐后重臂；失败类顺手
       // 清掉上次的错误输出与守卫标记（守卫清了 retry 才有资格再跑）。
       store.setStepInput(st.id, clean);
@@ -352,7 +352,7 @@ export const makeHumanActions = (o: {
       });
       if (lastAgent) {
         store.setStepOutput(lastAgent.id, {
-          handed_off: { to: target, domain, reason, by } as unknown as JsonRecord,
+          handed_off: { to: target, domain, reason, by },
         });
       }
       store.appendEvent('workflow', workflowId, 'route_content_handoff', {

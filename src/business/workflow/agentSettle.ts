@@ -5,7 +5,7 @@
 
 import { rfc3339 } from '@juli-os/artifacts';
 import { asString, truncate } from '../../platform/shared/json.ts'
-import type { JsonValue } from '@juli-os/artifacts'
+import type { JsonRecord, JsonValue } from '@juli-os/artifacts'
 import type { Logger } from '../../platform/events/bus.ts';
 import type { LifecycleStore } from '@juli-os/ledger';
 import { type Step, type Workflow } from '@juli-os/ledger';
@@ -178,7 +178,7 @@ export const makeAgentSettle = (o: {
           hasManifest = res.has_manifest;
           const patch: Record<string, JsonValue> = { deliverables };
           if (res.envelope !== null) patch['envelope'] = res.envelope as unknown as JsonValue;
-          if (res.warnings.length > 0) patch['contract_warnings'] = res.warnings as unknown as JsonValue;
+          if (res.warnings.length > 0) patch['contract_warnings'] = res.warnings;
           store.setStepOutput(st.id, patch);
         }
       }
@@ -236,7 +236,23 @@ export const makeAgentSettle = (o: {
         if (deliverables.length > 0) {
           seed['deliverables'] = deliverables;
           seed['manifest'] = hasManifest;
-          if (envelope !== null) seed['envelope'] = envelope;
+          // envelope 按键合并、申报优先（wf_16454623bf49/wf_7c9c9eeb51e1 两代
+          // 事故，与 openGate 携带侧 steps.ts 的合并对称）：agent 收工前 POST
+          // 挂闸时已申报 envelope{to,subject}（挂闸契约，lifecycle 前置校验对
+          // 任务流强制），落在 next.input；而 sweep 扫出的 envelope 经
+          // parseEnvelope 只剩线程提示键——整包顶掉会把申报冲掉，approve 播
+          // 种 to='' 必撞 no_recipient。申报在位（JSON object）时申报键优先、
+          // sweep 只补缺；无申报（回信流）维持 swept 整包原样。且本路径 settle
+          // 已把 deliverables 喂进 next.input，openGate 携带分支因「已带
+          // deliverables」恒不执行——两点正交，修一不闭二。
+          const declared = next.input['envelope'];
+          const declaredIsRecord =
+            declared !== null && typeof declared === 'object' && !Array.isArray(declared);
+          if (envelope !== null) {
+            seed['envelope'] = declaredIsRecord
+              ? { ...(envelope as JsonRecord), ...(declared as JsonRecord) }
+              : envelope;
+          }
         }
         const s = asString(st.output['session']) || asString(st.input['session']);
         if (s !== '') seed['session'] = s;

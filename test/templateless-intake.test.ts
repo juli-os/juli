@@ -5,11 +5,11 @@
 
 import { describe, expect, it } from 'vitest';
 import { createLedgerStore } from '@juli-os/ledger';
-import { createEngine, type Engine, type EngineDeps } from '../src/business/workflow/engine.ts';
+import { createEngine, type EngineDeps } from '../src/business/workflow/engine.ts';
 import { ok } from '@juli-os/artifacts';
 import { makeClock, makeEmail, seqIds, until } from './helpers.ts';
 import type { JsonRecord } from '@juli-os/artifacts'
-import type { LlmPort, MailerPort, PusherPort } from '../src/contracts/ports.ts';
+import type { MailerPort, PusherPort } from '../src/contracts/ports.ts';
 
 const makeEngineEmpty = (over: Partial<EngineDeps> = {}) => {
   const { clock, advance } = makeClock();

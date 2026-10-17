@@ -270,7 +270,7 @@ describe('提供方（约束②：cloud/local-api/cli 同形可换）', () => {
       fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
         captured = `${String(url)} ${String(init?.body)}`;
         return new Response(JSON.stringify({ model: 'jev-local', answers: { q: { type: 'choice', choice: 'acme', confidence: 0.8 } } }), { status: 200 });
-      }) as typeof fetch,
+      }),
     });
     const r = await j.ask('s', { q: { type: 'choice', instructions: 'x', criteria: {} } });
     expect(captured).toContain('http://127.0.0.1:9/judge');
@@ -304,7 +304,7 @@ describe('提供方（约束②：cloud/local-api/cli 同形可换）', () => {
     const { createJev } = await import('@juli-os/routing');
     const j = createJev({
       token: 't',
-      fetchImpl: (async () => new Response(JSON.stringify({ model: 'jev-latest', answers: { q: { type: 'noul', noul: 1 } }, usage: { input_tokens: 1, output_tokens: 1 } }), { status: 200 })) as typeof fetch,
+      fetchImpl: (async () => new Response(JSON.stringify({ model: 'jev-latest', answers: { q: { type: 'noul', noul: 1 } }, usage: { input_tokens: 1, output_tokens: 1 } }), { status: 200 })),
     });
     const r = await j.ask('s', { q: { type: 'noul', instructions: 'x' } });
     expect(r.model).toBe('jev-latest');

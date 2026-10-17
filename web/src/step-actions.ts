@@ -57,7 +57,7 @@ export const decideStepActions = <T extends ActionStepLike>(
     };
   }
   if (s.status === 'failed') {
-    const guard = typeof s.output?.['guard'] === 'string' ? s.output['guard'] as string : '';
+    const guard = typeof s.output?.['guard'] === 'string' ? s.output['guard'] : '';
     if (s.kind === 'send' && guard !== '') {
       return { branch: 'failed', send: false, actions: ['rework-send', 'amend'], guard, interveneSession: '' };
     }

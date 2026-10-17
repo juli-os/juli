@@ -15,7 +15,7 @@ import { esc } from './dashboard.ts';
 import { renderEml } from '../eml.ts';
 import { askText, askChecks, askConfirm, askSelect } from '../dialog.ts';
 import { entityAnchor } from '../anchors.ts';
-import { statusChip, kindChip, replySubject, toast, statCard } from '../ui.ts';
+import { statusChip, kindChip, replySubject, toast } from '../ui.ts';
 import { LIFECYCLE_FILTERS } from '../statuses.ts';
 import { checkChip, gateDeliveryOf, isSendGate, resolveRecipientOf } from '../gates.ts';
 import { decideStepActions } from '../step-actions.ts';
@@ -75,10 +75,22 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
   };
 
   const load = async (): Promise<void> => {
-    const [{ workflows, held_ids, hold_until }, taskRes] = await Promise.all([
-      api.get<{ workflows: Workflow[]; held_ids?: string[]; hold_until?: string }>('/api/lifecycle/workflows?limit=100'),
-      api.get<TaskMap>('/api/lifecycle/task-map'),
-    ]);
+    // 初载/重渲失败（P1-7）：显性失败面+重试——此前=永久「加载中…」（未选
+    // 中单子时 4s 轮询早退，恢复后也不自愈）。
+    let got: { workflows: Workflow[]; held_ids?: string[]; hold_until?: string };
+    let taskRes: TaskMap;
+    try {
+      [got, taskRes] = await Promise.all([
+        api.get<{ workflows: Workflow[]; held_ids?: string[]; hold_until?: string }>('/api/lifecycle/workflows?limit=100'),
+        api.get<TaskMap>('/api/lifecycle/task-map'),
+      ]);
+    } catch (e) {
+      list.innerHTML = `<p class="muted" style="padding:10px">加载失败：${esc(e instanceof Error ? e.message : String(e))}</p>` +
+        `<button class="mini" id="lf-retry" style="margin:0 10px 10px">重试</button>`;
+      list.querySelector('#lf-retry')?.addEventListener('click', () => void load());
+      return;
+    }
+    const { workflows, held_ids, hold_until } = got;
     tasks = taskRes;
     heldIds = new Set(held_ids ?? []);
     holdUntil = hold_until ?? '';
@@ -168,7 +180,7 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
     try {
       await fn();
     } catch (e) {
-      alert(humanError(e));
+      toast(humanError(e), 'urgent');
     } finally {
       await showDetail(selected);
       await load();
@@ -179,10 +191,20 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
     // 重渲染状态保持：已展开的 JSON 面板不折叠、滚动位置不丢（移动端审长
     // 正文后做动作，人不应被抛回页首）。
     const openIdx: number[] = [];
-    detail.querySelectorAll('details').forEach((d, i) => { if ((d as HTMLDetailsElement).open) openIdx.push(i); });
+    detail.querySelectorAll('details').forEach((d, i) => { if ((d).open) openIdx.push(i); });
     const scrollY = window.scrollY;
     detail.innerHTML = '<p class="muted">加载中…</p>';
-    const d = await api.get<{ workflow: Workflow; steps: Step[]; case_file: { decisions?: unknown[] }; usageCost?: UsageCost; promptStats?: { count: number; inputTokens: number; outputTokens: number } }>(`/api/lifecycle/workflows/${id}`);
+    // 详情拉取失败（P1-7）：失败面+重试——此前=永久「加载中…」（无 catch，
+    // 拒绝落入 unhandledrejection 仅 console 可见）。
+    let d: { workflow: Workflow; steps: Step[]; case_file: { decisions?: unknown[] }; usageCost?: UsageCost; promptStats?: { count: number; inputTokens: number; outputTokens: number } };
+    try {
+      d = await api.get<{ workflow: Workflow; steps: Step[]; case_file: { decisions?: unknown[] }; usageCost?: UsageCost; promptStats?: { count: number; inputTokens: number; outputTokens: number } }>(`/api/lifecycle/workflows/${id}`);
+    } catch (e) {
+      detail.innerHTML = `<p class="muted">加载失败：${esc(e instanceof Error ? e.message : String(e))}</p>` +
+        `<button class="mini" id="dt-retry">重试</button>`;
+      detail.querySelector('#dt-retry')?.addEventListener('click', () => void showDetail(id));
+      return;
+    }
     const { steps } = d;
     const w = d.workflow;
     // Peak-End 闭环横幅：流水完成且确有发出动作时，给"真的发出去了"的落点。
@@ -201,7 +223,7 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
     const sentArts: { id: string; name: string; view_role: string; sha256: string; summary?: string }[] = [];
     const deliverablesOf = (s: Step): { id: string; name: string; view_role: string; sha256: string; summary?: string }[] =>
       Array.isArray((s.input ?? {})['deliverables'])
-        ? ((s.input!)['deliverables'] as { id: string; name: string; view_role: string; sha256: string; summary?: string }[])
+        ? ((s.input)['deliverables'] as { id: string; name: string; view_role: string; sha256: string; summary?: string }[])
         : [];
     const pushDl = (dl: readonly { id: string; name: string; view_role: string; sha256: string; summary?: string }[]): void => {
       for (const d of dl) {
@@ -292,7 +314,7 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
       <details class="panel"><summary>步骤产出（JSON）</summary><pre>${esc(JSON.stringify(steps.map((s) => ({ seq: s.seq, status: s.status, output: s.output })), null, 2))}</pre></details>
       <details class="panel"><summary>案卷决策（JSON）</summary><pre>${esc(JSON.stringify(d.case_file?.decisions ?? [], null, 2))}</pre></details>`;
     detail.querySelectorAll('details').forEach((d2, i) => {
-      if (openIdx.includes(i)) (d2 as HTMLDetailsElement).open = true;
+      if (openIdx.includes(i)) (d2).open = true;
     });
     window.scrollTo(0, scrollY);
 
@@ -304,14 +326,17 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
       });
     }
     for (const btn of detail.querySelectorAll<HTMLButtonElement>('button[data-answer-custom]')) {
-      btn.addEventListener('click', async () => {
+      btn.addEventListener('click', () => {
+        void (async () => {
         const ans = await askText({ title: '自定义回答（原样发回 agent 会话）', multiline: true, placeholder: '例如：用方案 B，但别动 config 文件' });
         if (ans === null || ans.trim() === '') return;
         await runAction(btn, () => api.post(`/api/lifecycle/steps/${btn.dataset.answerCustom}/approve`, { note: ans.trim(), by: 'web' }));
+        })();
       });
     }
     for (const btn of detail.querySelectorAll<HTMLButtonElement>('button[data-action]')) {
-      btn.addEventListener('click', async () => {
+      btn.addEventListener('click', () => {
+        void (async () => {
         const action = btn.dataset.action ?? '';
         // 批准：后果陈述已在卡内（收件人/主题/正文/检查在确认键上方），
         // 不再弹 modal——闸门卡片是唯一审核表面。
@@ -336,12 +361,14 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
           if (okRetry === null) return;
         }
         await runAction(btn, () => api.post(`/api/lifecycle/steps/${btn.dataset.step}/${action}`, { note, by: 'web' }));
+        })();
       });
     }
     // 定时发送（板③ 决定行）：批准=决定已做，执行可定档（时差礼仪——凌晨
     // 不打扰客户）。默认明天 09:00；send_at 走引擎 approve 的既定参数。
     for (const btn of detail.querySelectorAll<HTMLButtonElement>('button[data-schedule]')) {
-      btn.addEventListener('click', async () => {
+      btn.addEventListener('click', () => {
+        void (async () => {
         const st = steps.find((x) => x.id === btn.dataset.schedule);
         if (st === undefined) return;
         const d = new Date();
@@ -353,10 +380,11 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
         if (when === null || when.trim() === '') return;
         const t = new Date(when.trim().replace(' ', 'T'));
         if (!Number.isFinite(t.getTime()) || t.getTime() <= Date.now()) {
-          alert('时刻不可解析或已过去——请用如 2026-09-17 09:00 的未来时刻。');
+          toast('时刻不可解析或已过去——请用如 2026-09-17 09:00 的未来时刻。', 'urgent');
           return;
         }
         await runAction(btn, () => api.post(`/api/lifecycle/steps/${btn.dataset.schedule}/approve`, { note: `定时发送 ${when.trim()}`, by: 'web', send_at: t.toISOString() }));
+        })();
       });
     }
     // deliverables 就地渲染（异步取件，不阻塞时间线骨架）。
@@ -369,17 +397,20 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
     }
     // 对齐修正：就地改理解——修正成为新工件，下游 agent 锚定人定稿版本。
     for (const btn of detail.querySelectorAll<HTMLButtonElement>('button[data-align]')) {
-      btn.addEventListener('click', async () => {
+      btn.addEventListener('click', () => {
+        void (async () => {
         const amendment = await askText({ title: '对齐修正——下游 agent 将以人定稿版本执行（优先级最高）', multiline: true, placeholder: '例如：第 3 条诉求理解偏了，应为……' });
         if (amendment === null || amendment.trim() === '') return;
         await runAction(btn, () => api.post(`/api/lifecycle/steps/${btn.dataset.align}/align`, { amendment, by: 'web' }));
+        })();
       });
     }
     // 统一干预（四件套，2026-09-28）：一个模态收齐 session/context/priority/
     // 时机——session 下拉（声明会话+活态，同干预重试的数据源）、context 多行、
     // priority 三选、时机三选（不动/立即派发/hold 到指定时刻）。留空=不动该维。
     for (const btn of detail.querySelectorAll<HTMLButtonElement>('button[data-override]')) {
-      btn.addEventListener('click', async () => {
+      btn.addEventListener('click', () => {
+        void (async () => {
         const wid = btn.dataset.override ?? '';
         let sessionOpts = '';
         try {
@@ -414,7 +445,7 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
         const close = (): void => wrap.remove();
         $('ov-cancel').addEventListener('click', close);
         wrap.addEventListener('click', (e) => { if (e.target === wrap) close(); });
-        $('ov-ok').addEventListener('click', async () => {
+        $('ov-ok').addEventListener('click', () => { void (async () => {
           const body: Record<string, unknown> = { by: 'web' };
           const sess = ($('ov-session') as HTMLSelectElement).value;
           const ctx = ($('ov-context') as HTMLTextAreaElement).value.trim();
@@ -425,16 +456,17 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
           if (timing.value === 'now') body['dispatch_now'] = true;
           if (timing.value === 'hold') {
             const hu = ($('ov-holduntil') as HTMLInputElement).value.trim();
-            if (Number.isNaN(Date.parse(hu.replace(' ', 'T')))) { alert('hold 时刻不可解析——请用 2026-09-28 18:00 格式'); return; }
+            if (Number.isNaN(Date.parse(hu.replace(' ', 'T')))) { toast('hold 时刻不可解析——请用 2026-09-28 18:00 格式', 'urgent'); return; }
             body['hold_until'] = new Date(hu.replace(' ', 'T')).toISOString();
           }
           close();
-          if (Object.keys(body).length === 1) { alert('没有填任何干预维度。'); return; }
+          if (Object.keys(body).length === 1) { toast('没有填任何干预维度。', 'urgent'); return; }
           try {
             await api.post(`/api/lifecycle/workflows/${wid}/override`, body);
             toast('干预已应用（派发时生效）', 'ok');
-          } catch (e) { alert('干预失败：' + (e instanceof Error ? e.message : String(e))); }
-        });
+          } catch (e) { toast('干预失败：' + (e instanceof Error ? e.message : String(e)), 'urgent'); }
+        })(); });
+        })();
       });
     }
     // hold 人工放行（2026-09-28 透明化配套）：窗口内立即派发。确认卡把
@@ -447,7 +479,8 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
       });
     }
     for (const btn of detail.querySelectorAll<HTMLButtonElement>('button[data-release]')) {
-      btn.addEventListener('click', async () => {
+      btn.addEventListener('click', () => {
+        void (async () => {
         const okgo = await askConfirm({
           title: '立即放行这条 HOLD 单？',
           rows: [
@@ -459,20 +492,24 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
         });
         if (okgo === null) return;
         await runAction(btn, () => api.post(`/api/lifecycle/workflows/${btn.dataset.release}/release-hold`, { by: 'web' }));
+        })();
       });
     }
     // 中止：running 单的人工取消出口（用户"不做了/重开"）——确认框后全 cancelled。
     for (const btn of detail.querySelectorAll<HTMLButtonElement>('button[data-force]')) {
-      btn.addEventListener('click', async () => {
+      btn.addEventListener('click', () => {
+        void (async () => {
         const note = await askText({ title: '中止这条流水？在跑的步与闸门将全部取消（审计留痕，不可恢复）', multiline: true, placeholder: '原因（可空）' });
         if (note === null) return;
         await runAction(btn, () => api.post(`/api/lifecycle/workflows/${btn.dataset.force}/force-close`, { note, by: 'web' }));
+        })();
       });
     }
     // 跟进单（09-19）：同一任务再来一单 = 新独立 Task + relates_to 留链
     // （独立任务裁决的标准链路），不复活本单；原单任务卡可跳回。
     for (const btn of detail.querySelectorAll<HTMLButtonElement>('button[data-follow]')) {
-      btn.addEventListener('click', async () => {
+      btn.addEventListener('click', () => {
+        void (async () => {
         const note = await askText({ title: '跟进：同一任务的续单（挂靠本单留链）', multiline: true, placeholder: '这次要做什么/有什么变化（可空 = 同原任务）' });
         if (note === null) return;
         try {
@@ -483,14 +520,16 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
           });
           location.hash = `/lifecycle?w=${r.workflow.id}`;
         } catch (e) {
-          alert('跟进单创建失败：' + (e instanceof Error ? e.message : String(e)));
+          toast('跟进单创建失败：' + (e instanceof Error ? e.message : String(e)), 'urgent');
         }
+        })();
       });
     }
     // 收口：failed 尸体人工结案（下游 cancelled，审计全留）。终态不可逆——
     // 确认卡先陈述后果，备注同卡收集（信任修复 2026-09-22）。
     for (const btn of detail.querySelectorAll<HTMLButtonElement>('button[data-close]')) {
-      btn.addEventListener('click', async () => {
+      btn.addEventListener('click', () => {
+        void (async () => {
         const note = await askConfirm({
           title: '收口这条流水？',
           rows: [
@@ -502,12 +541,14 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
         });
         if (note === null) return;
         await runAction(btn, () => api.post(`/api/lifecycle/workflows/${btn.dataset.close}/close`, { note, by: 'web' }));
+        })();
       });
     }
     // 完成：running 单的人工结算收口——自动结算（发送+会话收尾）之外的人工
     // 立即出口（2026-09-14）。结算立即终态不可逆，确认卡陈述后果。
     for (const btn of detail.querySelectorAll<HTMLButtonElement>('button[data-settle]')) {
-      btn.addEventListener('click', async () => {
+      btn.addEventListener('click', () => {
+        void (async () => {
         const note = await askConfirm({
           title: '完成并结算这条流水？',
           rows: [
@@ -519,13 +560,15 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
         });
         if (note === null) return;
         await runAction(btn, () => api.post(`/api/lifecycle/workflows/${btn.dataset.settle}/settle`, { note, by: 'web' }));
+        })();
       });
     }
     // 驳回回修：二选一——执行层回修（feedback 注入前一步重做）或方向修正
     // （feedback 进下次理解的任务卡顶格，重新理解后走新执行）。都必填：
     // 空驳回让重修变成重掷骰子（0913 PPT v3 事故）。
     for (const btn of detail.querySelectorAll<HTMLButtonElement>('button[data-rework]')) {
-      btn.addEventListener('click', async () => {
+      btn.addEventListener('click', () => {
+        void (async () => {
         const kind = await askChecks('驳回类型——你要修正的是哪一层?', [
           { id: '回修', label: '执行错了：方向对，做法/产物要改（feedback 注入重做同一工序）' },
           { id: '方向修正', label: '方向错了：诉求/形态本身要变（重新理解，feedback 是新输入）' },
@@ -537,7 +580,7 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
           multiline: true,
         });
         if (feedback === null || feedback.trim() === '') {
-          alert('修改意见必填——空驳回无法指导重修。');
+          toast('修改意见必填——空驳回无法指导重修。', 'urgent');
           return;
         }
         if (isDirection) {
@@ -553,22 +596,26 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
         } else {
           await runAction(btn, () => api.post(`/api/lifecycle/steps/${btn.dataset.rework}/rework`, { feedback, by: 'web' }));
         }
+        })();
       });
     }
     // 插话纠偏（一等端点）：投递+留痕一体——step input 干预史/时间线/事件
     // 三处可查，不再是无账本的裸 send-keys。
     for (const btn of detail.querySelectorAll<HTMLButtonElement>('button[data-intervene2]')) {
-      btn.addEventListener('click', async () => {
+      btn.addEventListener('click', () => {
+        void (async () => {
         const text = await askText({ title: `插话给 @${btn.dataset.sess}（claude 将在本轮后读取；紧急打断请进会话终端）`, multiline: true, placeholder: '例如：跳过 XX，只做 YY；注意别动 ZZ 文件' });
         if (text === null || text.trim() === '') return;
         await runAction(btn, () => api.post(`/api/lifecycle/steps/${btn.dataset.intervene2}/intervene`, { text, by: 'web' }));
+        })();
       });
     }
     // 干预重试：改指令/改会话再重跑（agent/verify/llm 失败步）。改派会话走
     // 下拉选择（2026-09-28 用户口令「list 选择，不是自己填写」）——声明表
     // 是合法路由目标全集，手填要记名字还易踩近匹配绑定守卫。
     for (const btn of detail.querySelectorAll<HTMLButtonElement>('button[data-intervene]')) {
-      btn.addEventListener('click', async () => {
+      btn.addEventListener('click', () => {
+        void (async () => {
         const sid = btn.dataset.intervene ?? '';
         const st = steps.find((x) => x.id === sid);
         if (!st) return;
@@ -599,12 +646,14 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
         if (plan.trim() !== '' && plan !== plan0) patch['plan'] = plan;
         if (session !== '' && session !== cur) patch['session'] = session;
         await runAction(btn, () => api.post(`/api/lifecycle/steps/${sid}/retry`, { by: 'web', ...patch }));
+        })();
       });
     }
     // 补料：缺 input 冻死/守卫拒发的合法修正窗口。候选值由引擎从关联单推导
     // 预填——人的记忆不进防线，人只裁断不当检索器。补齐后该步自动重跑。
     for (const btn of detail.querySelectorAll<HTMLButtonElement>('button[data-amend]')) {
-      btn.addEventListener('click', async () => {
+      btn.addEventListener('click', () => {
+        void (async () => {
         const sid = btn.dataset.amend ?? '';
         let hints = '';
         try {
@@ -626,13 +675,15 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
           if (eq <= 0) continue;
           patch[t.slice(0, eq).trim()] = t.slice(eq + 1).trim();
         }
-        if (Object.keys(patch).length === 0) { alert('没有可识别的 key=value 行。'); return; }
+        if (Object.keys(patch).length === 0) { toast('没有可识别的 key=value 行。', 'urgent'); return; }
         await runAction(btn, () => api.post(`/api/lifecycle/steps/${sid}/amend`, { patch, by: 'web' }));
+        })();
       });
     }
     // 打回补正（send 守卫拒发）：agent 带 feedback 重做正文，修正内容重新过闸。
     for (const btn of detail.querySelectorAll<HTMLButtonElement>('button[data-rework-send]')) {
-      btn.addEventListener('click', async () => {
+      btn.addEventListener('click', () => {
+        void (async () => {
         const feedback = await askText({
           title: '打回补正——哪里不对，怎么改？（agent 补正后重新过闸，批准后才发）',
           multiline: true,
@@ -640,12 +691,14 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
         });
         if (feedback === null || feedback.trim() === '') return;
         await runAction(btn, () => api.post(`/api/lifecycle/steps/${btn.dataset.reworkSend}/rework-send`, { feedback, by: 'web' }));
+        })();
       });
     }
     // 单步取消：pending/waiting_human 步的人工出口（不整单作废）——原因可空
     // 但审计留痕；取消 = null 时不动作。
     for (const btn of detail.querySelectorAll<HTMLButtonElement>('button[data-cancel]')) {
-      btn.addEventListener('click', async () => {
+      btn.addEventListener('click', () => {
+        void (async () => {
         const note = await askText({
           title: '取消此步？仅取消该步骤，不影响其他步骤（原因可空，审计留痕）',
           multiline: true,
@@ -653,6 +706,7 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
         });
         if (note === null) return;
         await runAction(btn, () => api.post(`/api/lifecycle/steps/${btn.dataset.cancel}/cancel`, { note, by: 'web' }));
+        })();
       });
     }
   };
@@ -675,8 +729,8 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
   const taskCard = (w: Workflow): string => {
     const ti = (w.meta?.['template_input'] ?? {}) as Record<string, unknown>;
     const brief = typeof ti['brief'] === 'string' && ti['brief'] !== '' ? ti['brief'] : '';
-    const rel = typeof w.meta?.['related_workflow'] === 'string' ? w.meta['related_workflow'] as string : '';
-    const relUnknown = typeof w.meta?.['relates_to_unknown'] === 'string' ? w.meta['relates_to_unknown'] as string : '';
+    const rel = typeof w.meta?.['related_workflow'] === 'string' ? w.meta['related_workflow'] : '';
+    const relUnknown = typeof w.meta?.['relates_to_unknown'] === 'string' ? w.meta['relates_to_unknown'] : '';
     if (brief === '' && rel === '' && relUnknown === '') return '';
     return `<div class="task-card panel" style="margin-bottom:12px;padding:12px 14px">
       ${rel !== '' ? `<div style="font-size:12px;margin-bottom:6px">↳ 挂靠：<a href="#/lifecycle?w=${esc(rel)}" style="color:var(--brand)">${esc(rel)}</a></div>` : ''}
@@ -783,7 +837,7 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
   /** 步骤时长（板 02 时长列，mono）：started→completed；未完→now。 */
   const stepDur = (s: Step): string => {
     const rec = s as unknown as Record<string, unknown>;
-    const st = typeof rec['started_at'] === 'string' ? rec['started_at'] as string : '';
+    const st = typeof rec['started_at'] === 'string' ? rec['started_at'] : '';
     if (st === '') return '';
     const start = new Date(st).getTime();
     const endRaw = rec['completed_at'];
@@ -805,6 +859,7 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
     const meta = w.meta ?? {};
     // 信封（申报单）先解析：任务流收件人/主题/抄送都在这里申报（envelope.to
     // 是 wf_505578377218 事故后的一等字段——人批卡看到的地址=发信地址）。
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- lint 聚合视图与 web 构建视图对 Step.input 解析不一致：去断言则 tsconfig.web.json 编译 TS2339（实测），以构建视图为准。
     const env = (i['envelope'] ?? null) as { to?: string; subject?: string; in_reply_to_hint?: string; feedback_refs?: string[]; cc?: string[] } | null;
     const envTo = env !== null && typeof env.to === 'string' ? env.to.trim() : '';
     const envSubject = env !== null && typeof env.subject === 'string' ? env.subject.trim() : '';
@@ -825,7 +880,7 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
       ? replySubject(metaSubject)
       : isNodes && envSubject !== ''
         ? envSubject
-        : replySubject(typeof meta['subject'] === 'string' ? meta['subject'] : typeof i['subject'] === 'string' ? i['subject'] as string : '');
+        : replySubject(typeof meta['subject'] === 'string' ? meta['subject'] : typeof i['subject'] === 'string' ? i['subject'] : '');
     const subjIgnored = replyLocked && envSubject !== '' && envSubject !== subj ? envSubject : '';
     const dl = Array.isArray(i['deliverables'])
       ? (i['deliverables'] as { id: string; name: string; view_role: string; sha256: string; summary?: string }[])
@@ -989,7 +1044,8 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
   // 卡在"运行中"（2026-09-12 事故：后端已 completed，app 显示未完成）。
   let lastSel = '';
   let lastSig = '';
-  const timer = setInterval(async () => {
+  const timer = setInterval(() => {
+    void (async () => {
     if (selected === '' || document.hidden) return;
     try {
       const d = await api.get<{ workflow: Workflow; steps: Step[] }>(`/api/lifecycle/workflows/${selected}`);
@@ -1000,6 +1056,7 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
       await showDetail(selected); // 滚动/展开态由 showDetail 保持
       await load();
     } catch { /* 网络抖动跳过本轮 */ }
+    })();
   }, 4000);
   return () => { clearInterval(timer); document.removeEventListener('keydown', onKey); };
 };

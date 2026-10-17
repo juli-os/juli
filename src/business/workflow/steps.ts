@@ -8,15 +8,15 @@ import type { JsonRecord, JsonValue } from '@juli-os/artifacts'
 import type { Logger } from '../../platform/events/bus.ts';
 import type { LifecycleStore } from '@juli-os/ledger';
 import { appendReference } from '@juli-os/ledger';
-import { type Step, type Workflow } from '@juli-os/ledger';
+import { type Step } from '@juli-os/ledger';
 import type { StepCtx, StepHandler } from './capabilities/index.ts';
-import { agentSessionOf, agentLiveSessionOf, flowContext, planPrompt, renderFlowTemplate } from './capabilities/index.ts';
+import { agentSessionOf, flowContext, planPrompt, renderFlowTemplate } from './capabilities/index.ts';
 import {
   DEFAULT_REDLINE_WORDS, disclosureMissing, redlineHit, runSendChecks,
 } from '../send/sendChecks.ts';
 import { composeTextBody, renderEmailHtml, SIGNATURE_TEXT, stripSignature } from '../send/emailView.ts';
 import {
-  deliverablesBody, envelopeRefs, gateDelivery, isEffectDelivery, isSendGateDecision, resolveSendRecipient,
+  deliverablesBody, envelopeRefs, gateDelivery, isEffectDelivery, resolveSendRecipient,
 } from '../send/sendSeed.ts';
 import { anchorPlan, claimsAttachment, gateSummary } from './support.ts';
 import type { EngineDeps } from './engine.ts';
@@ -73,7 +73,20 @@ export const makeSteps = (o: {
       const dl = out['deliverables'];
       if (Array.isArray(dl) && !Array.isArray(st.input['deliverables'])) {
         const patch: Record<string, JsonValue> = { deliverables: dl };
-        if (out['envelope'] !== undefined) patch['envelope'] = out['envelope'];
+        // envelope 按键合并（wf_16454623bf49 两代事故）：任务流闸门定义时被
+        // 强制申报 envelope.to（无原始发件人不申报则闸门开不起来），而 sweep
+        // 产出的 envelope 经 parseEnvelope 只剩线程提示键——整包覆盖会把申报
+        // 冲掉，approve 播种 to='' 必撞 no_recipient。申报在位（JSON object）
+        // 时申报键优先、sweep 只补缺；无申报（回信流）维持整包原样。
+        const declared = st.input['envelope'];
+        const swept = out['envelope'];
+        const declaredIsRecord =
+          declared !== null && typeof declared === 'object' && !Array.isArray(declared);
+        if (swept !== undefined) {
+          patch['envelope'] = declaredIsRecord
+            ? { ...(swept as JsonRecord), ...(declared as JsonRecord) }
+            : swept;
+        }
         st0.setStepInput(st.id, patch);
       }
     }
@@ -424,9 +437,14 @@ export const makeSteps = (o: {
       }
     }
     if (session === '' || plan.trim() === '') {
-      // 断点七诊断：报错必须带上本步 input 键位——上游播种断链（键位不一致）
-      // 与本步配置缺失在报错层面无法区分，keys 列表让定位不用翻库。
-      const diag = `missing plan/session input（上游播种检查：本步 input.keys=[${Object.keys(st.input).join(',')}]}）`;
+      // 断点七诊断：报错必须带上本步 input 键位——keys 列表让定位不用翻库。
+      // 拆根（2026-10-16 演示实例派发秒败事故）：session 缺=配置问题
+      // （default_session 空，boot 装配行也应有 [routing] 显性报错），plan 缺=
+      // 播种断链（下方有确定性自愈路径）——两种病两种话，混一句会把排查
+      // 带偏（当时把「缺路由兜底」误导向「上游播种断链」追了半天）。
+      const diag = session === ''
+        ? `路由无落点：default_session 未配置（顶层 default_session / legacy email.default_session 均空）——本步 input.keys=[${Object.keys(st.input).join(',')}]`
+        : `missing plan input（上游播种检查：本步 input.keys=[${Object.keys(st.input).join(',')}]}）`;
       // 确定性自愈（断点十一②）：session 有着落而 plan 空、且本步无 prompt 兜底
       // ——上游播种断链的确定形态，不需要人裁：从紧邻上游步（steps[seq-2]）的
       // input.plan/prompt 取值重臂一次，留 step_self_heal 审计事件；output 打
@@ -732,8 +750,9 @@ export const makeSteps = (o: {
     // （reply-review.html 外泄事故）。宣称与实物一致：正文写"见附件"就
     // 必须真附；0913 事故：正文说见附件但只发了正文。
     const dl = Array.isArray(st.input['deliverables']) ? st.input['deliverables'] as { id: string; name: string; view_role: string }[] : [];
+    // name 一并复核（R8 批2）：agent 申报缺 name 时 undefined 会直进 SMTP 附件名。
     const attachmentRefs = dl.filter((x) =>
-      typeof x.id === 'string' && (x.view_role === 'attachment' || x.view_role === 'data'));
+      typeof x.id === 'string' && typeof x.name === 'string' && (x.view_role === 'attachment' || x.view_role === 'data'));
     const attachments: { name: string; bytes: Buffer }[] = [];
     if (attachmentRefs.length > 0 && deps.artifacts?.getContent) {
       for (const ref of attachmentRefs) {
@@ -801,7 +820,7 @@ export const makeSteps = (o: {
     const messageId = res.value.messageId;
     st0.setStepOutput(st.id, {
       to, message_id: messageId, sent_at: rfc3339(now()),
-      ...(cc.length > 0 ? { cc: cc as unknown as JsonValue } : {}),
+      ...(cc.length > 0 ? { cc: cc } : {}),
       ...(bodyVia !== '' ? { body_via: bodyVia } : {}),
     });
     st0.appendEvent('workflow', st.workflowId, 'email_sent', {

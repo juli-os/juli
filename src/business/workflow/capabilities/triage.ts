@@ -5,13 +5,10 @@
 // 答案+LLM 瘦身只写 summary/session；判定失败/低置信=原 LLM 全量抽取
 // （fail-open 平凡——jev 挂了不许挂进件）。
 
-import { asString, truncate } from '../../../platform/shared/json.ts'
-import { asRecord, type JsonRecord } from '@juli-os/artifacts'
-import { rfc3339, type Clock } from '@juli-os/artifacts';
-import { type Step, type Workflow } from '@juli-os/ledger';
+import { asString } from '../../../platform/shared/json.ts'
+import { type JsonRecord } from '@juli-os/artifacts'
+import { type Workflow } from '@juli-os/ledger';
 import { originalEmail } from '@juli-os/ledger';
-import type { LifecycleStore } from '@juli-os/ledger';
-import type { LlmPort } from '../../../contracts/ports.ts';
 import { type JudgmentGateway } from '@juli-os/routing';
 import { parseLoose, type StepCtx } from './common.ts';
 
@@ -93,8 +90,8 @@ export const runTriage = async (ctx: StepCtx, routing: {
   } else if (outcome !== null && outcome.mode === 'on') {
     if (applied) {
       ctx.stepEvent(st, 'triage_judgment_applied', {
-        category: jCat!.answer ?? '', category_confidence: jCat!.confidence ?? 0,
-        needs_reply: jRep!.answer ?? '', needs_reply_confidence: jRep!.confidence ?? 0,
+        category: jCat.answer ?? '', category_confidence: jCat.confidence ?? 0,
+        needs_reply: jRep.answer ?? '', needs_reply_confidence: jRep.confidence ?? 0,
         provider: outcome.provider, ...usageOf(outcome),
       });
     } else {
@@ -126,11 +123,11 @@ export const runTriage = async (ctx: StepCtx, routing: {
   const project = routing.defaultProject || legacyProjectOf(w);
 
   // 分类/回复：on 采纳时取判定答案（引擎已校验），否则取 LLM 抽取。
-  const category = applied ? jCat!.answer! : asString(out['category']);
+  const category = applied ? jCat.answer : asString(out['category']);
   const needsReplyRaw = out['needs_reply'];
   const llmNeedsReply = needsReplyRaw === null || needsReplyRaw === undefined
     ? true : needsReplyRaw !== false;
-  const needsReply = applied ? jRep!.answer === 'true' : llmNeedsReply;
+  const needsReply = applied ? jRep.answer === 'true' : llmNeedsReply;
 
   // shadow 对账（判定完成后落账）：jev×LLM 同题对答案+一致旗——影子期的
   // 核心产出。LLM 抛错时本事件不落（步已 failed，判定侧证据在 applied/

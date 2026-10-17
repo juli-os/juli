@@ -1,7 +1,6 @@
 // 认证端口：本地密码（单操作员）与 PocketBase token（多用户）是两个实现。
 // 中间件按顺序尝试：任一实现确认身份即放行；都拒绝 → 401。
 
-import { timingSafeEqual } from 'node:crypto';
 import { safeEqual } from '../shared/secure.ts';
 import { ok, toResult, type Result } from '@juli-os/artifacts';
 
@@ -45,9 +44,14 @@ export const createPbAuthenticator = (deps: {
       ), 'pb auth failed');
       if (!res.ok) return res;
       if (!res.value.ok) return { ok: false, error: new Error(`pb http ${res.value.status}`) };
-      const data = await toResult(res.value.json() as Promise<Record<string, unknown>>, 'pb json');
+      // 三步收口照 providers.ts parseJsonResponse 先例（R8 批2）：API 返 200+
+      // JSON null 时，直接 cast 会让下游 data['record'] 抛 TypeError。
+      const data = await toResult(res.value.json() as Promise<unknown>, 'pb json');
       if (!data.ok) return data;
-      const record = data.value['record'] as { id?: string; email?: string } | undefined;
+      if (typeof data.value !== 'object' || data.value === null) {
+        return { ok: false, error: new Error('pb: non-object response') };
+      }
+      const record = (data.value as Record<string, unknown>)['record'] as { id?: string; email?: string } | undefined;
       if (!record?.id) return { ok: false, error: new Error('pb: no user in response') };
       return ok({ id: record.id, email: record.email ?? '', role: 'operator' });
     },

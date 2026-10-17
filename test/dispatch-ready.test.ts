@@ -41,7 +41,6 @@ const makeTmux = (
 };
 
 const READY = ['✳ Nesting… (stop hooks…)\n\n❯'];
-const SHELL = ['last login: …\nuser@mac ~ %'];
 
 describe('createProvisioningDispatch（就绪派发）', () => {
   it('agent 已就绪 → 直接派发，零额外动作', async () => {
@@ -97,7 +96,7 @@ describe('createProvisioningDispatch（就绪派发）', () => {
         if (args[0] === 'send-keys') keys.push(args.join(' '));
         return base.tmux.exec(args);
       },
-    } as unknown as TmuxClient;
+    };
     const dispatch = createProvisioningDispatch({
       tmux, pollMs: 1, sleep: async () => undefined,
     });

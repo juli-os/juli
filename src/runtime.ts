@@ -6,12 +6,13 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import type { Config } from './platform/config/schema.ts';
-import { resolveAiConfig, resolveSecret, danglingFeedbackRoutes, mergeConfigPatch, type AiResolved } from './platform/config/schema.ts';
+import { resolveAiConfig, resolveSecret, danglingFeedbackRoutes, mergeConfigPatch, effectiveDefaultSession, type AiResolved } from './platform/config/schema.ts';
 import { consoleLogger, createBus, type Logger } from './platform/events/bus.ts';
 import { createLedgerStore, type LifecycleStore } from '@juli-os/ledger';
 import type { JsonRecord } from '@juli-os/artifacts'
 import { createUsageStore, type UsageStore } from '@juli-os/ledger';
 import { createAnthropicChat, createOpenAiChat } from './platform/llm/chat.ts';
+import { sessionBirthOf, transcriptMappable } from './platform/llm/transcripts.ts';
 import { type ChatLlmPort } from '@juli-os/agents';
 import { createOrchestrator, registerDefaultCommands, registerSkillCommands, type Orchestrator } from '@juli-os/agents';
 import { makeAllTools } from '@juli-os/agents';
@@ -19,8 +20,7 @@ import type { InboundChannel } from './contracts/channels.ts';
 import { createChatHub, type ChatHub } from './platform/ws/chathub.ts';
 import { createSkillRegistry } from '@juli-os/agents';
 import { createVoiceCall, voiceGateHook, type VoiceCall, type CallMode, type VoiceEvent } from '@juli-os/agents';
-import { startSnapshotLoop, recoverFromSnapshot, takeSnapshot } from '@juli-os/agents';
-import type { SessionHealer } from '@juli-os/agents';
+import { recoverFromSnapshot, takeSnapshot } from '@juli-os/agents';
 import { attachPtyHub } from './platform/ws/ptyhub.ts';
 import { attachChatWireWs, attachSnapshotWireWs } from './platform/ws/wirehubs.ts';
 import { createCompositeAuthenticator, createLocalAuthenticator, createPbAuthenticator, type Authenticator } from './platform/auth/authenticator.ts';
@@ -30,8 +30,9 @@ import { compileChannelPolicy } from './contracts/authz.ts';
 import { loadTemplates, pipelinesDir, saveTemplateFile, deleteTemplateFile, readTemplateFile } from './business/templates/registry.ts';
 import { createChatIntake, type ChatIntake } from './business/intake/chatIntake.ts';
 import { makeChatTools } from './business/intake/chatTools.ts';
+import { getTaskOf, listTasksOf } from './business/intake/chatTasks.ts';
 import { autoApproveSweep, projectAutoApprove, type AutoApproveConfig } from './business/workflow/autoApprove.ts';
-import { costContextOf } from './business/workflow/costContext.ts';
+import { makeGradeAlert, makeTaskTier } from './business/workflow/judgmentScenarios.ts';
 import { VERSION } from './contracts/version.ts';
 import { err, ok } from '@juli-os/artifacts';
 import { WORKFLOW_STATUSES } from './contracts/statuses.ts';
@@ -39,7 +40,6 @@ import { createJudgmentGateway, createJudgeFromConfig, loadJudgmentConfig } from
 import { routeTask, routeTaskMenu, type TaskLanding } from '@juli-os/routing';
 import type { Template } from './business/templates/template.ts';
 import type { PusherPort } from './contracts/ports.ts';
-import { type Step, type Workflow } from '@juli-os/ledger';
 import { createAnthropicProvider, createOpenAiProvider } from './platform/llm/providers.ts';
 import { createSmtpMailer } from './platform/email/smtp.ts';
 import { createMailSource, type MailSource } from './platform/email/source.ts';
@@ -56,7 +56,6 @@ import { createDevicePusher, createEmailNotifier, combinePushers, withAlertGrade
 // ——私仓扩展位单一入口；开源投影以同形桩替换（export/overlay/）。
 import { wireBusiness, wireFeedbackIntake, startBusinessTimers, type BusinessParts, type BusinessIntake } from './runtime.business.ts';
 import type { PartyDirectory } from './business/party/party.ts';
-import { truncate } from './platform/shared/json.ts'
 import { fileURLToPath } from 'node:url';
 
 /** 进程起点（service_info 的 startedAt / uptime 近似——模块加载即记）。 */
@@ -457,23 +456,19 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
   const voiceCallMode = (): CallMode => voiceState.call?.mode ?? 'plan';
   const snapshotFile = join(dataDir, 'sessions_snapshot.json');
   const snapshotDeps = {
-    tmux: tmux!,
+    tmux: tmux,
     file: snapshotFile,
     log: (m: string) => log.info(m),
   };
-  const healer: SessionHealer = {
-    async healSession(session) {
-      if (!tmux) return false;
-      const snap = takeSnapshot;
-      void snap;
-      const n = await recoverFromSnapshot({ ...snapshotDeps }).catch(() => 0);
-      return n >= 0 && (await tmux.hasSession(session));
-    },
-  };
   if (orchestrator !== null) {
     // 派发门：通话激活时拦截派发类工具（hooks 铁腕位）。
-    orchestrator.hooks.on('before_tool_call', (p) =>
-      voiceGateHook(voiceCallActive, voiceCallMode)(p as never) as never);
+    // 窄 adapter：voiceGateHook 声明的返回形状 type: string 比 HookPayload 的
+    // HookType 宽（实现恒回传 p 或 {...p, block, blockReason}），这里显式以
+    // p 为底合并回传——替代原先的 as never 双转（R8 批2）。
+    orchestrator.hooks.on('before_tool_call', (p) => {
+      const gated = voiceGateHook(voiceCallActive, voiceCallMode)(p);
+      return { ...p, ...gated, type: p.type };
+    });
   }
 
   // ---- 未来渠道挂载点：teams/slack/feishu 适配器在此追加 ----
@@ -484,10 +479,12 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
   let loaded = loadTemplates(tplDir);
   const registry: Record<string, Template> = { ...loaded.templates };
 
-  const router = tmux && config.email.default_session !== ''
+  // 路由兜底（2026-10-16 搬家）：顶层 default_session 正位，email 段 legacy 回退。
+  const defaultLanding = effectiveDefaultSession(config);
+  const router = tmux && defaultLanding.session !== ''
     ? createSessionRouter({
       listSync: () => tmuxListSync(config.tmux_socket_path || undefined),
-      defaultSession: config.email.default_session, log: (m) => log.info(m),
+      defaultSession: defaultLanding.session, log: (m) => log.info(m),
     })
     : null;
 
@@ -506,41 +503,16 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
     log: (m) => log.info(m),
   });
   // alert_grade 挂钩（judgmentGateway 已在位）：true=照推，false=info 静默。
-  gradeAlert = async (title, body) => {
-    const outcome = await judgmentGateway.ask('alert_grade',
-      { title, body: body.slice(0, 300) },
-      {
-        severity: {
-          type: 'choice',
-          instructions: 'Grade this system alert for an operator: critical needs immediate action, warning should be seen soon, info is routine noise.',
-          criteria: {
-            critical: 'Failure/stuck/loss of customer-facing capability — act now.',
-            warning: 'Degraded but self-healing or bounded — check soon.',
-            info: 'Routine/status noise — no action needed.',
-          },
-        },
-      });
-    if (outcome === null) return true;
-    store.appendEvent('judgment', `alert_grade:${title.slice(0, 24)}`, 'judgment_made', {
-      scenario: 'alert_grade', mode: outcome.mode, provider: outcome.provider,
-      ok: outcome.ok === true, answer: outcome.answer ?? '', confidence: outcome.confidence ?? 0,
-      threshold: outcome.threshold, error: outcome.error ?? '',
-      model: outcome.model ?? '', input_tokens: outcome.inputTokens ?? 0,
-      output_tokens: outcome.outputTokens ?? 0, duration_ms: outcome.durationMs ?? 0,
-    });
-    if (outcome.mode === 'on' && outcome.ok && outcome.answer === 'info'
-        && (outcome.confidence ?? 0) >= outcome.threshold) {
-      log.info(`[judgment] alert_grade 降噪：${title}（info@${(outcome.confidence ?? 0).toFixed(2)}）`);
-      return false;
-    }
-    return true;
-  };
+  // 判定本体（choice 判据全文/judgment_made 留痕/采用闸）在
+  // business/workflow/judgmentScenarios——runtime 只注入网关+账本+日志
+  // （R8 批4 刀1 下放，语义逐字保持）。
+  gradeAlert = makeGradeAlert({ judgment: judgmentGateway, store, log });
 
   // ---- 路由装配（0930「所有的都走路由」）：引擎进件与任务路由（routeTask）
   // 共用同一份 routing 视图 + 忙闲谓词（sessionHasOpenWork 新定义：排队/在跑
   // /等批准都算忙）——两个入口一个家，input 层不重复装配。----
   const taskRouting = {
-    defaultSession: config.email.default_session,
+    defaultSession: defaultLanding.session,
     defaultProject: config.email.default_project,
     boundAgents: config.email.bound_agents,
     agents: config.agents,
@@ -556,36 +528,10 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
       availableSessions: router ? router.available() : undefined,
     });
 
-  /** 任务档位判定（task_tier 场景，2026-10-12）：进件无键路径的难度分类。
-   * 采用口径与 routeTask 的 menuHit 同构（mode=on + ok + answer + 置信度
-   * ≥阈值），shadow 期只记账不采用；判不准 = standard（成本纪律：花便宜
-   * 的钱）。判定留痕 judgment 流（gradeAlert 同款）——shadow 期的观察面。 */
-  const taskTier = async (title: string, brief: string): Promise<'high' | null> => {
-    const outcome = await judgmentGateway.ask('task_tier',
-      { title, brief: brief.slice(0, 600) },
-      {
-        tier: {
-          type: 'choice',
-          instructions: 'Does this task need the high-intelligence model tier, or is the standard tier enough? The high tier costs several times more — default to standard unless the task clearly demands depth.',
-          criteria: {
-            standard: 'Routine, well-scoped work: content edits, translations, data lookups and simple reports, formatting, scripts with clear specs, straightforward fixes. The standard model handles these reliably and much cheaper.',
-            high: 'Genuinely hard work: multi-file architecture changes with subtle interactions, debugging with unclear cause, novel design decisions with trade-offs, security-sensitive changes, cross-system integration with hidden failure modes, heavy reasoning over images or unstructured data.',
-          },
-        },
-      });
-    if (outcome === null) return null;
-    try {
-      store.appendEvent('judgment', `task_tier:${title.slice(0, 24)}`, 'judgment_made', {
-        scenario: 'task_tier', mode: outcome.mode, provider: outcome.provider,
-        ok: outcome.ok === true, answer: outcome.answer ?? '', confidence: outcome.confidence ?? 0,
-        threshold: outcome.threshold, error: outcome.error ?? '',
-        model: outcome.model ?? '', input_tokens: outcome.inputTokens ?? 0,
-        output_tokens: outcome.outputTokens ?? 0, duration_ms: outcome.durationMs ?? 0,
-      });
-    } catch { /* 留痕失败不阻断档位判定 */ }
-    if (!outcome.ok || outcome.mode !== 'on' || outcome.answer !== 'high') return null;
-    return (outcome.confidence ?? 0) >= outcome.threshold ? 'high' : null;
-  };
+  /** 任务档位判定（task_tier 场景，2026-10-12）：进件无键路径的难度分类，
+   * 判不准 = standard（成本纪律）——判定本体（判据全文/留痕/采用闸）在
+   * business/workflow/judgmentScenarios（R8 批4 刀1 下放），此处只接线。 */
+  const taskTier = makeTaskTier({ judgment: judgmentGateway, store, log });
 
   /** 命名孪生查找：session+'-hi' 在声明表且 high 才算孪生（无孪生不升档——
    * 改道落点必须真实存在，与 zod 硬规则③互为读写两侧）。 */
@@ -728,48 +674,24 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
   let chatIntake: ChatIntake | null = null;
   if (llm !== null) {
     const terminalStatuses = new Set(
-      WORKFLOW_STATUSES.filter((s) => s.terminal).map((s) => s.key as string),
+      WORKFLOW_STATUSES.filter((s) => s.terminal).map((s) => s.key),
     );
     chatIntake = createChatIntake({
       llm: makeChatLlm(),
       model: ai.model,
       tools: makeChatTools({
         lookupCustomer: business.lookupCustomer,
-        listTasks: (scope, limit) => store.listWorkflows(scope === 'inflight' ? 50 : limit)
-          .filter((w) => scope !== 'inflight' || !terminalStatuses.has(w.status))
-          .slice(0, limit)
-          .map((w) => ({ id: w.id, title: w.title, status: w.status, updatedAt: w.updatedAt })),
-        // 单子全息（2026-10-07 白名单扩容）：costContextOf 同口径归属——
-        // 与详情 usageCost/cost-stats/统计归属率四方同源，防口径漂移。
-        getTask: async (wfId) => {
-          const w = store.getWorkflow(wfId);
-          if (!w) return null;
-          const steps = store.stepsForWorkflow(w.id);
-          // 计费时点修复（wf_be61c3a55842）：全量 steps + 最后活动时刻——
-          // approve 后回流执行段并入计费窗口。
-          const ctx = costContextOf(w, steps, store.lastEventAt('workflow', w.id));
-          let prompts = 0;
-          for (const sess of ctx.sessions) prompts += usage.perSessionWindows(sess, ctx.effWindows).count;
-          const priced = usage.sessionWindowsPriced(ctx.sessions, ctx.effWindows);
-          // 无价目纪律（b5148a9 同款）：纯无价目单成本未知≠0，出 null 不猜价。
-          const costCny = priced.unpricedModels.length > 0 && priced.totalCny.total <= 0
-            ? null : Math.round(priced.totalCny.total * 100) / 100;
-          const waiting = steps.find((st) => st.status === 'waiting_human');
-          return {
-            id: w.id, title: w.title, status: w.status, kind: w.kind,
-            createdAt: w.createdAt, updatedAt: w.updatedAt, session: w.session ?? '',
-            steps: steps.map((st) => ({ seq: st.seq, kind: st.kind, title: st.title, status: st.status, updatedAt: st.updatedAt })),
-            waitingOn: waiting !== undefined ? waiting.title : '',
-            deliverables: artifactLedger.list(w.id).map((a) => ({ name: a.name, role: a.role })),
-            prompts, costCny,
-          };
-        },
+        // list_tasks/get_task 账本读模型（R8 批4 刀2 下放）：检索窗口规则与
+        // usageAggOf 计价聚合在 business/intake/chatTasks——runtime 只注入
+        // store/usage/artifacts，语义逐字保持。
+        listTasks: listTasksOf({ store, usage, artifacts: artifactLedger }),
+        getTask: getTaskOf({ store, usage, artifacts: artifactLedger }),
         // 会话清单：声明表 × 在办分布（在办=非终态，含排队/闸门，0930 忙闲口径）。
         listSessions: () => {
           const inflight = new Map<string, number>();
           for (const w of store.listWorkflows(200)) {
             if (terminalStatuses.has(w.status)) continue;
-            const assigned = typeof w.meta?.['assigned_session'] === 'string' ? (w.meta['assigned_session'] as string) : '';
+            const assigned = typeof w.meta?.['assigned_session'] === 'string' ? (w.meta['assigned_session']) : '';
             for (const sess of [w.session ?? '', assigned]) {
               if (sess !== '') inflight.set(sess, (inflight.get(sess) ?? 0) + 1);
             }
@@ -848,7 +770,6 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
 
   // ---- 周期任务 ----
   let timers: NodeJS.Timeout[] = [];
-  let imapPollAt: string | null = null;
   // Settings 热改键的内存落点（config 本体冻结——改这里，不改 config）。
   let retentionDays = config.ledger_retention_days;
   const hotApplied: Record<string, unknown> = {};
@@ -1046,7 +967,7 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
 
     liveOverrides(): JsonRecord {
       const out: JsonRecord = {};
-      for (const [k, v] of Object.entries(hotApplied)) setDotted(out as Record<string, unknown>, k, v);
+      for (const [k, v] of Object.entries(hotApplied)) setDotted(out, k, v);
       return out;
     },
 
@@ -1136,18 +1057,13 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
               const projects = join(config.claude_dir || join(process.env['HOME'] ?? '', '.claude'), 'projects');
               const det = await tmux.listSessionsDetailed();
               if (det.ok) {
-                // 十四跑 R1（P2-2）：scan 只映射「mtime 新于会话存活起点」的
-                // transcript——live 会话 cwd 项目目录下的全部 .jsonl 整目录映射
-                // 会把人用 CC 同仓的旧 transcript 划给 agent（人机混仓污染）。
-                // created 取不到（exec 失败/老 tmux）保守回落旧行为（全映射）。
+                // 人机混仓防线规则本体（出生点解析 + mtime 门，事故语境注释）
+                // 已抽 platform/llm/transcripts 纯函数（R8 批4 刀3）——此处只
+                // 留 IO 接线：created 取不到（exec 失败/老 tmux）保守回落旧行为。
                 const createdOf = new Map<string, number>();
                 const cr = await tmux.exec(['list-sessions', '-F', '#{session_name}\t#{session_created}']);
                 if (cr.ok) {
-                  for (const line of cr.value.split('\n')) {
-                    const [nm, ts] = line.split('\t');
-                    const t = Number(ts);
-                    if (nm && Number.isFinite(t) && t > 0) createdOf.set(nm.trim(), t * 1000);
-                  }
+                  for (const [nm, ms] of sessionBirthOf(cr.value)) createdOf.set(nm, ms);
                 }
                 for (const si of det.value) {
                   const cwd = si.path;
@@ -1159,7 +1075,7 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
                     if (f.endsWith('.jsonl')) {
                       if (bornMs !== undefined) {
                         try {
-                          if (statSync(join(dir, f)).mtimeMs <= bornMs) continue; // 会话出生前的旧 transcript 不映射
+                          if (!transcriptMappable(statSync(join(dir, f)).mtimeMs, bornMs)) continue; // 会话出生前的旧 transcript 不映射
                         } catch { continue; }
                       }
                       usage.recordClaudeSession(f.replace('.jsonl', ''), si.name, join(dir, f), cwd);

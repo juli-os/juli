@@ -59,7 +59,7 @@ describe('warmup 行为契约（假 tmux）', () => {
     const tmux = fakeTmux({
       hasSession: async () => true,
       newSession: async () => { booted = false; return { ok: true as const, value: undefined }; },
-      exec: async (args: readonly string[]) =>
+      exec: async (_args: readonly string[]) =>
         ({ ok: true as const, value: booted ? 'node' : 'zsh' }),
       capturePane: async () => ({ ok: true as const, value: booted ? readyPane : shellPane }),
       sendText: async (_n: string, text: string) => {

@@ -6,7 +6,7 @@ import {
   inboxDedupKey, parseFullMessage, withDedupe, type InboxMessage,
 } from '../src/platform/email/inbox.ts';
 
-const rawMail = (over: Record<string, string> = {}, body = '正文内容'): Buffer =>
+const rawMail = (_over: Record<string, string> = {}, body = '正文内容'): Buffer =>
   Buffer.from(
     [
       `From: Boss <boss@example.com>`,

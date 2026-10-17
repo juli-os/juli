@@ -180,6 +180,35 @@ describe('引擎级：feedback 单链尾自愈补闸（2026-09-21 深夜事故�
     expect(gate.input['output']).toBe('历史汇报');
     expect(w.store.listEvents(500).map((e) => e.type)).toContain('feedback_gate_backfilled');
   });
+
+  it('启动回填：sweep 剥离版 envelope 不顶掉回填锚 feedback_refs（锚优先、线程提示补缺）', async () => {
+    // R6-R1 P2-1：回填是 envelope 搬移的第三通道。已结算步 output 里的
+    // envelope 是 sweep 剥离版（agentSettle.ts sweep 收编所写，refs 是 agent
+    // 自报、缺键补空数组）——整包顶掉种子字面量声明的确定性锚 [recordId]，
+    // approve 回流「拍板=状态翻转」（actions.ts feedbackRefsOf）缺失或指错，
+    // feedback 单滞留面板。与 agentSettle/steps 两处申报优先合并同语义：
+    // 锚键优先、swept 只补缺。
+    const w = makeEngine();
+    const wf = w.store.createWorkflow({
+      kind: 'adhoc', title: '[feedback] stuck', status: 'running',
+      meta: { template_input: { brief: FB_BRIEF, feedback_record_id: 'rec3' } },
+    });
+    const step = w.store.createStep({ workflowId: wf.id, seq: 1, kind: 'agent', title: '理解与接单' });
+    w.store.setStepInput(step.id, { plan: FB_BRIEF });
+    w.store.setStepOutput(step.id, {
+      session: 'juli-reply', output: '历史汇报',
+      envelope: { in_reply_to_hint: '<thread-3@example.com>', feedback_refs: [] },
+    });
+    w.store.setStepStatus(step.id, 'completed');
+    await w.engine.reconcileStartup();
+    await w.engine.advance(wf.id);
+    const gate = w.store.stepsForWorkflow(wf.id)[1]!;
+    expect(gate.kind).toBe('gate');
+    expect(gate.input['envelope']).toEqual({
+      feedback_refs: ['rec3'], // 锚赢：agent 自报空数组不得顶掉身份键
+      in_reply_to_hint: '<thread-3@example.com>', // sweep 剥离版只补线程提示键
+    });
+  });
 });
 
 describe('引擎级：apply 链自动收口（证据=Makro 工件 / feedback 回挂）', () => {
