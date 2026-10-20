@@ -2,7 +2,7 @@
 // 赖以生存的不变量（唯一 id、已知 kind、必填 title）。
 
 import { describe, expect, it } from 'vitest';
-import { parseTemplate, tryParseTemplate } from '../src/business/templates/template.ts';
+import { parseDur, parseTemplate, tryParseTemplate } from '../src/business/templates/template.ts';
 import { EMAIL_REPLY_YAML, VIDEO_PROD_YAML } from '../src/business/templates/defaultTemplates.ts';
 
 describe('parseTemplate', () => {
@@ -45,8 +45,7 @@ describe('parseTemplate', () => {
 });
 
 describe('parseDur（Go 风格时长解析）', () => {
-  it('复合式逐段累加；非法/空整体判 0（回落默认）', async () => {
-    const { parseDur } = await import('../src/business/templates/template.ts');
+  it('复合式逐段累加；非法/空整体判 0（回落默认）', () => {
     expect(parseDur('5m')).toBe(300_000);
     expect(parseDur('1h30m')).toBe(5_400_000);
     expect(parseDur('90s')).toBe(90_000);

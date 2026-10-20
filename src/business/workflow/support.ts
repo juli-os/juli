@@ -4,7 +4,7 @@
 import { asString } from '../../platform/shared/json.ts'
 import { type Step, type Workflow } from '@juli-os/ledger';
 import { isLiveNodeStatus } from '../../contracts/statuses.ts';
-import type { JsonRecord } from '@juli-os/artifacts'
+import { asRecord, type JsonRecord } from '@juli-os/artifacts';
 
 export const DEFAULT_ZOMBIE_TIMEOUT_MS = 5 * 60_000;
 export const DEFAULT_MAX_ZOMBIE_ATTEMPTS = 3;
@@ -46,19 +46,14 @@ export const claimsAttachment = (body: string): boolean =>
   ATTACHMENT_CLAIM.test(body) && ATTACHMENT_CLAIM.test(body.replace(QUOTED_RECEIPT, ''));
 
 /** feedback 单锚（template_input.feedback_record_id）：进件单的身份键。 */
-export const feedbackRecordIdOf = (w: Workflow): string => {
-  const ti = w.meta['template_input'];
-  return ti !== null && typeof ti === 'object' && !Array.isArray(ti)
-    ? asString((ti as JsonRecord)['feedback_record_id']) : '';
-};
+export const feedbackRecordIdOf = (w: Workflow): string =>
+  asString(asRecord(w.meta['template_input'])['feedback_record_id']);
 
 /** 闸门信封申报的 feedback 记录 id 列表（agent 自挂与自愈补挂的确认闸都写
  * envelope.feedback_refs）。approve 回流的「拍板=状态翻转」指令以此判定
  * 本闸是否 feedback 闸——非 feedback 闸零影响。 */
 export const feedbackRefsOf = (input: JsonRecord): readonly string[] => {
-  const env = input['envelope'];
-  const refs = env !== null && typeof env === 'object' && !Array.isArray(env)
-    ? (env as JsonRecord)['feedback_refs'] : null;
+  const refs = asRecord(input['envelope'])['feedback_refs'];
   return Array.isArray(refs) ? refs.filter((x): x is string => typeof x === 'string' && x.trim() !== '') : [];
 };
 

@@ -16,8 +16,7 @@ import { gateDelivery } from '../send/sendSeed.ts';
 import { WORKFLOW_STATUSES } from '../../contracts/statuses.ts';
 import type { LifecycleStore } from '@juli-os/ledger';
 import type { Logger } from '../../platform/events/bus.ts';
-import { type Workflow } from '@juli-os/ledger';
-import { type Step } from '@juli-os/ledger';
+import { type Workflow, type Step } from '@juli-os/ledger';
 
 export interface AutoApproveRule {
   readonly id: string;

@@ -8,7 +8,7 @@ import { dirname } from 'node:path';
 import { z } from 'zod';
 import { createReadFile } from '../shared/fsutil.ts';
 
-export const authzModeSchema = z.enum(['allowlist', 'open']);
+const authzModeSchema = z.enum(['allowlist', 'open']);
 
 export const configSchema = z.object({
   llm_provider: z.enum(['anthropic', 'openai']).default('anthropic'),
@@ -386,37 +386,44 @@ export const effectiveDefaultSession = (
     ? { session: config.default_session, legacy: false }
     : { session: config.email.default_session, legacy: config.email.default_session !== '' };
 
-/** 环境变量覆盖表：JULI_* 优先，MAKRO_* 兜底（迁移期双认）。 */
-const envOverrides = (env: Readonly<Record<string, string | undefined>>): Partial<Record<string, unknown>> => {
-  const get = (...names: string[]): string | undefined => {
+/** 环境取值器（envOverrides 与 resolveAiConfig 共用同一语义）：按名序取
+ *  首个命中，undefined 与空串均作未设（部署 env 清键 = 留空常见形态）。 */
+const envGetter = (
+  env: Readonly<Record<string, string | undefined>>,
+): ((...names: string[]) => string | undefined) =>
+  (...names) => {
     for (const n of names) {
       const v = env[n];
       if (v !== undefined && v !== '') return v;
     }
     return undefined;
   };
+
+/** 环境变量覆盖表：JULI_* 优先，MAKRO_* 兜底（迁移期双认）。 */
+const envOverrides = (env: Readonly<Record<string, string | undefined>>): Partial<Record<string, unknown>> => {
+  const get = envGetter(env);
   const list = (v: string | undefined): readonly string[] | undefined =>
     v === undefined ? undefined : v.split(',').map((s) => s.trim()).filter(Boolean);
+  const port = (v: string | undefined): number | undefined => (v === undefined ? undefined : Number(v));
+  const flag = (v: string | undefined): boolean | undefined => (v === undefined ? undefined : v === 'true');
   return {
     llm_provider: get('JULI_LLM_PROVIDER', 'MAKRO_LLM_PROVIDER'),
     llm_model: get('JULI_LLM_MODEL', 'MAKRO_LLM_MODEL'),
     llm_base_url: get('JULI_LLM_BASE_URL', 'MAKRO_LLM_BASE_URL'),
     data_dir: get('JULI_DATA_DIR', 'MAKRO_DATA_DIR'),
     listen_host: get('JULI_LISTEN_HOST'),
-    listen_port: get('JULI_LISTEN_PORT', 'PORT') ? Number(get('JULI_LISTEN_PORT', 'PORT')) : undefined,
+    listen_port: port(get('JULI_LISTEN_PORT', 'PORT')),
     password: get('JULI_PASSWORD', 'MAKRO_PASSWORD'),
-    email_enabled: get('JULI_EMAIL_ENABLED', 'MAKRO_EMAIL_ENABLED')
-      ? get('JULI_EMAIL_ENABLED', 'MAKRO_EMAIL_ENABLED') === 'true'
-      : undefined,
+    email_enabled: flag(get('JULI_EMAIL_ENABLED', 'MAKRO_EMAIL_ENABLED')),
     email_authz_mode: get('JULI_EMAIL_AUTHZ_MODE', 'MAKRO_EMAIL_AUTHZ_MODE'),
     email_authz_allow: list(get('JULI_EMAIL_AUTHZ_ALLOW', 'MAKRO_EMAIL_AUTHZ_ALLOW')),
     email_authz_deny: list(get('JULI_EMAIL_AUTHZ_DENY', 'MAKRO_EMAIL_AUTHZ_DENY')),
-    tls_enabled: get('JULI_TLS_ENABLED') ? get('JULI_TLS_ENABLED') === 'true' : undefined,
-    tls_port: get('JULI_TLS_PORT') ? Number(get('JULI_TLS_PORT')) : undefined,
+    tls_enabled: flag(get('JULI_TLS_ENABLED')),
+    tls_port: port(get('JULI_TLS_PORT')),
   };
 };
 
-export interface LoadConfigDeps {
+interface LoadConfigDeps {
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly home: string;
   readonly readFile?: (path: string) => string | null;
@@ -449,7 +456,7 @@ export const SECRET_SENTINEL = '__MASKED__';
 /** 敏感键（点路径）：字面量掩码；`keychain:<svc>` 是指针不是秘密，保持可见。
  * s3.access_key_id 同掩码（2026-09-22 信任修复）：云厂商 AK 半公开也不是
  * 明文摆设置页的理由——LTAI 前缀直指阿里云主账号身份。 */
-export const SECRET_PATHS: readonly string[] = [
+const SECRET_PATHS: readonly string[] = [
   'password',
   'ai.api_key',
   'secrets.llm_api_key', 'secrets.acp_api_key', 'secrets.s3_secret_key',
@@ -500,7 +507,7 @@ export const mergeConfigPatch = (
   return merge(current, patch) as Record<string, unknown>;
 };
 
-export interface SaveConfigDeps {
+interface SaveConfigDeps {
   readonly home: string;
   /** JULI_DATA_DIR 置位形态（docker）：配置写进数据卷。 */
   readonly dataDir?: string;
@@ -508,7 +515,7 @@ export interface SaveConfigDeps {
   readonly writeFile?: (path: string, content: string) => void;
 }
 
-export type SaveConfigResult = { readonly ok: true } | { readonly ok: false; readonly error: string };
+type SaveConfigResult = { readonly ok: true } | { readonly ok: false; readonly error: string };
 
 /** 写回 config.json：读现有文件 → 深合并 patch（哨兵剔除）→ zod 校验 → 原子落盘。
  *  校验不过 = 文件一个字节不动。落盘写 merged 而非 parse 结果——不物化默认值、
@@ -609,13 +616,7 @@ export const resolveAiConfig = (
   config: Pick<Config, 'ai' | 'llm_provider' | 'llm_model' | 'llm_base_url' | 'secrets'>,
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): AiResolved => {
-  const pick = (...names: string[]): string | undefined => {
-    for (const n of names) {
-      const v = env[n];
-      if (v !== undefined && v !== '') return v;
-    }
-    return undefined;
-  };
+  const pick = envGetter(env);
   const providerRaw = pick('JULI_AI_PROVIDER') ?? config.ai.provider;
   const provider: 'anthropic' | 'openai' =
     providerRaw === 'openai' || (providerRaw === '' && config.llm_provider === 'openai')

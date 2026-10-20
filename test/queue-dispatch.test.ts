@@ -13,24 +13,21 @@ import { ok } from '@juli-os/artifacts';
 import type { MailerPort, PusherPort } from '../src/contracts/ports.ts';
 
 const makeWorld = (over: Partial<EngineDeps> = {}, sharedStore?: ReturnType<typeof createLedgerStore>) => {
-  const { clock, advance } = makeClock();
+  const { clock } = makeClock();
   const store = sharedStore ?? createLedgerStore(':memory:', { clock, ids: seqIds() });
-  const gatePushes: string[] = [];
-  const dispatched: { source: string; session: string; text: string }[] = [];
   const engine = createEngine({
     store,
     llm: null,
     model: 't',
     routing: { defaultSession: 'juli-reply', defaultProject: 'p' },
     dispatch: {
-      async dispatch(source, session, text) {
-        dispatched.push({ source, session, text });
+      async dispatch() {
         return ok(undefined);
       },
     },
     syncDispatch: null,
     pusher: {
-      async gateWaiting() { gatePushes.push('gate'); },
+      async gateWaiting() {},
       async workflowDone() {},
       async workflowFailed() {},
     } satisfies PusherPort,
@@ -48,7 +45,7 @@ const makeWorld = (over: Partial<EngineDeps> = {}, sharedStore?: ReturnType<type
     authz: { mode: 'allowlist', allow: ['*@example.com'], deny: [] },
     ...over,
   } satisfies EngineDeps);
-  return { engine, store, gatePushes, dispatched, advanceClock: advance };
+  return { engine, store };
 };
 
 const drain = async (): Promise<void> => { await new Promise((r) => setTimeout(r, 10)); };
@@ -106,10 +103,10 @@ describe('收单台', () => {
   it('⑤ 重启落库:queued 行按 created_at 升序重排(先到先跑)', async () => {
     const w = makeWorld();
     // 每张单播种一个 pending 首步(裸单会被零步骤守卫打成 failed——那是另一个守卫的活)
-    const seed = (title: string): { id: string; store: typeof w.store } => {
+    const seed = (title: string): { id: string } => {
       const wf = w.store.createWorkflow({ kind: 'adhoc', title, status: 'queued' });
       w.store.createStep({ workflowId: wf.id, seq: 1, kind: 'agent', title: '首步', input: { plan: `做${title}`, session: 'juli-reply' } });
-      return { id: wf.id, store: w.store };
+      return { id: wf.id };
     };
     const a = seed('A');
     const b = seed('B');

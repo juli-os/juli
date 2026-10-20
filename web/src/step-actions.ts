@@ -28,7 +28,7 @@ export interface StepActionDecision {
   readonly actions: readonly StepActionId[];
   /** failed+send：内容守卫名（非空=守卫拒发形态，盲重试不出现）。 */
   readonly guard: string;
-  /** running-agent：插话目标会话（空=无会话可插话，动词集为空）。 */
+  /** running-agent：插话目标会话（空=无会话可插话，视图据此隐藏动词）。 */
   readonly interveneSession: string;
 }
 

@@ -157,7 +157,7 @@ export const makeGateActions = (o: {
       if (next) {
         // 按【下一个步的 kind】（而非位置）播种——阶梯布局是每模板的数据，
         // 闸门可能坐在任何 seq。
-        if (next.kind === 'agent' || next.kind === 'verify') {
+        if (AGENT_STEP_KINDS.includes(next.kind)) {
           // 邮件时代语义：steps[0] 是 triage，其 output 携带路由记录。模板流
           // 携带自己的结构配置，所以只合并真正存在的值——绝不许空串盖掉
           // 模板钉死的会话（那次写入曾让僵尸扫描致盲，它读 input.session）。

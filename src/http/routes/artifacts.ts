@@ -2,6 +2,7 @@
 // 分层重构（2026-09-23）：自 app.ts 按资源族拆出，路由注册体逐字保留。
 
 import type { Hono } from 'hono';
+import type { ArtifactRow } from '@juli-os/artifacts';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
@@ -52,8 +53,11 @@ export const registerArtifactsRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
       if (r['deleted_at'] !== null) tombstonedKeys.add(key);
       ledgerIdByKey.set(key, String(r['id'] ?? ''));
     }
-    const juliRoot = join(rt.config.data_dir, 'artifacts-store');
+    const roots = artifactRoots();
+    const juliRoot = roots[1] ?? '';
     const pushFile = (session: string, file: string, rawName: string): void => {
+      // juli 存储文件名带毫秒时间戳前缀（<ts>-<name>）——显示与检索用剥离后的名字
+      const name = rawName.replace(/^\d{13}-/, '');
       // juli 工件树（artifacts-store）以 key = 相对路径入账：cases/ 子树里
       // 已墓碑或账本外的孤儿文件一律跳过（legacy makro 库无账本，不过滤）。
       let ledgerId = '';
@@ -65,19 +69,16 @@ export const registerArtifactsRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
           // 断点十五（2026-09-20）：sweep 收编的申报单（reply.json/manifest.json）
           // 是内部对账面不是人视图交付物——cases/ 子树里按剥离后名字跳过，
           // 不在手机/桌面工件列表里怼原始 JSON。
-          const bare = rawName.replace(/^\d{13}-/, '');
-          if (bare === 'reply.json' || bare === 'manifest.json') return;
+          if (name === 'reply.json' || name === 'manifest.json') return;
         }
         ledgerId = ledgerIdByKey.get(rel) ?? '';
       }
       try {
         const st = statSync(file);
-        // juli 存储文件名带毫秒时间戳前缀（<ts>-<name>）——显示与检索用剥离后的名字
-        const name = rawName.replace(/^\d{13}-/, '');
         out.push({ session, file, name, mtime: Math.floor(st.mtimeMs / 1000), size: st.size, ledgerId });
       } catch { /* 竞态文件消失 */ }
     };
-    for (const root of artifactRoots()) {
+    for (const root of roots) {
       if (!existsSync(root)) continue;
       for (const top of readdirSync(root, { withFileTypes: true })) {
         if (!top.isDirectory() || top.name === 'customers' || top.name.startsWith('.')) continue;
@@ -196,20 +197,18 @@ export const registerArtifactsRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
   });
 
   // 案件证据链（工件账本投影，Go Artifact 字段逐字）。
-  const goArtifact = (a: Record<string, unknown>, session: string): Record<string, unknown> => {
-    const meta = (a['meta'] ?? {}) as Record<string, unknown>;
-    const key = String(a['key'] ?? '');
+  const goArtifact = (a: ArtifactRow, session: string): Record<string, unknown> => {
     return {
-      id: a['id'], workflow_id: a['workflowId'], role: a['role'], name: a['name'],
-      seq: a['seq'], mime: a['mime'], bytes: a['bytes'], sha256: a['sha256'],
-      step_id: a['stepId'] || undefined, session: session || undefined,
+      id: a.id, workflow_id: a.workflowId, role: a.role, name: a.name,
+      seq: a.seq, mime: a.mime, bytes: a.bytes, sha256: a.sha256,
+      step_id: a.stepId || undefined, session: session || undefined,
       storage: {
-        backend: key === '' ? 'none' : rt.artifactSharing ? 's3' : 'disk',
-        key: key || undefined,
-        pending: meta['pending'] === true ? true : undefined,
+        backend: a.key === '' ? 'none' : rt.artifactSharing ? 's3' : 'disk',
+        key: a.key || undefined,
+        pending: a.meta['pending'] === true ? true : undefined,
       },
-      meta: Object.keys(meta).length > 0 ? meta : undefined,
-      created_at: a['createdAt'], deleted_at: a['deletedAt'] || undefined,
+      meta: Object.keys(a.meta).length > 0 ? a.meta : undefined,
+      created_at: a.createdAt, deleted_at: a.deletedAt || undefined,
     };
   };
 
@@ -217,7 +216,7 @@ export const registerArtifactsRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
     const wf = rt.store.getWorkflow(c.req.param('id'));
     const rows = rt.artifactLedger.list(c.req.param('id'), true);
     const session = wf?.session ?? '';
-    return c.json({ artifacts: rows.map((a) => goArtifact(a as unknown as Record<string, unknown>, session)) });
+    return c.json({ artifacts: rows.map((a) => goArtifact(a, session)) });
   });
 
   app.post('/api/lifecycle/workflows/:id/artifacts/purge', async (c) => {
@@ -262,6 +261,4 @@ export const registerArtifactsRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
       'content-disposition': `inline; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(String(row['name'] ?? 'artifact'))}`,
     });
   });
-
-  // 闸门队列（iOS GateQueue：step + workflow 摘要）。
 };

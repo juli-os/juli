@@ -130,7 +130,6 @@ describe('会话快照', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-    void sent;
   });
 
   it('恢复：消失的会话按快照重建并重发 agent 命令', async () => {

@@ -8,18 +8,24 @@ import { join, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { toWireFrame } from '../../platform/ws/wirehubs.ts';
+import { sanitizeConv } from '../../business/intake/chatIntakeRegistry.ts';
 import type { Runtime } from '../../runtime.ts';
 import { bodyStr, clampInt, readBody, type AppEnv } from '../helpers.ts';
 
 export const registerChatRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
   // ---- 编排器（/api/chat）+ 语音通话 + 快照 --------------------------------------
   // iOS 兼容：把本轮聊天事件镜像进 chatHub（/ws/chat 的 wire 帧由此流出）。
-  const mirrorChatEvents = (events: readonly unknown[]): void => {
-    for (const e of events) {
-      const f = toWireFrame((e ?? {}) as Record<string, unknown>);
-      if (f) rt.emitChat(f.type, f.data);
-    }
+  // conv 分线程（2026-10-17）：镜像必须落到发起回合的那条线程——
+  // mirrorChatEvents 一律带 conv，不带=main（旧单线程语义）。
+  const mirrorChatEvent = (e: unknown, conv: string): void => {
+    const f = toWireFrame((e ?? {}) as Record<string, unknown>);
+    if (f) rt.emitChat(f.type, f.data, conv);
   };
+  const mirrorChatEvents = (events: readonly unknown[], conv = 'main'): void => {
+    for (const e of events) mirrorChatEvent(e, conv);
+  };
+  const convOf = (c: { req: { query(key: string): string | undefined } }): string =>
+    sanitizeConv(c.req.query('conv'));
 
   app.post('/api/chat', async (c) => {
     if (!rt.orchestrator) return c.json({ error: 'orchestrator not configured (missing llm key)' }, 503);
@@ -40,7 +46,8 @@ export const registerChatRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
 
   app.get('/api/chat/history', (c) => {
     if (!rt.chatHub) return c.json({ history: [] });
-    return c.json({ history: rt.chatHub.replay() });
+    // conv 分线程：带 ?conv= 只回该线程帧；不带=全量（旧客户端兼容）。
+    return c.json({ history: rt.chatHub.replay(convOf(c)) });
   });
 
   app.post('/api/chat/cancel', (c) => {
@@ -137,13 +144,14 @@ export const registerChatRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
     });
 
   app.post('/api/chat/intake/turn', async (c) => {
-    if (!rt.chatIntake) return c.json({ error: 'chat intake not configured (missing llm key)' }, 503);
+    if (!rt.chatIntake) return c.json({ error: 'chat intake not configured (missing llm key)' }, 503);  // 快速失败面（main 桶在=注册表在）
     // 旧语音状态机与 intake loop 共用 chatHub 镜像——并存会串台（审查
     // P2），开着通话先拒。
     if (rt.voiceCall) return c.json({ error: 'voice call active — end it first' }, 409);
     const body = await readBody(c);
     let input = bodyStr(body, 'input');
     if (input.trim() === '') return c.json({ error: 'input required' }, 400);
+    const conv = convOf(c);
     // 附件注入（wf_3310501a9fe4）：清单+服务端路径并入 prompt——LLM/后续
     // agent 按路径读取；开单时该文本随 brief 保留，材料不丢线。
     // R1 P2-1：客户端回执不再全信——path 必须 resolve 后落在附件目录内
@@ -173,11 +181,10 @@ export const registerChatRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
     }
     // 实时镜像：LLM 多轮回合可达 30s+，事件逐帧进 chatHub（iOS 客户端
     // 靠 /ws/chat 帧渲染）——憋到回合结束才镜像=全程死机感（0929 实证）。
-    const mirrorLive = (e: unknown): void => {
-      const f = toWireFrame((e ?? {}) as Record<string, unknown>);
-      if (f) rt.emitChat(f.type, f.data);
-    };
-    const t = await rt.chatIntake.turn(input, {
+    const mirrorLive = (e: unknown): void => mirrorChatEvent(e, conv);
+    const intake = rt.chatIntakeFor(conv);
+    if (!intake) return c.json({ error: 'chat intake not configured (missing llm key)' }, 503);
+    const t = await intake.turn(input, {
       voice: body['voice'] === true,
       onEvent: mirrorLive,
     });
@@ -185,26 +192,30 @@ export const registerChatRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
   });
 
   app.post('/api/chat/intake/confirm', async (c) => {
-    if (!rt.chatIntake) return c.json({ error: 'chat intake not configured (missing llm key)' }, 503);
+    if (!rt.chatIntake) return c.json({ error: 'chat intake not configured (missing llm key)' }, 503);  // 快速失败面（main 桶在=注册表在）
     if (rt.voiceCall) return c.json({ error: 'voice call active — end it first' }, 409);
     // 计划卡「本单免批」勾选（2026-10-07）：客户端 control 面，LLM 计划块
     // 里写什么都不认——只有 confirm body 的人为勾选生效。
     const body = (await readBody(c).catch(() => ({}))) as Record<string, unknown>;
-    const r = await rt.chatIntake.confirm({ autoApprove: body['auto_approve'] === true });
-    mirrorChatEvents(r.events);
+    const intakeConfirm = rt.chatIntakeFor(convOf(c));
+    if (!intakeConfirm) return c.json({ error: 'chat intake not configured (missing llm key)' }, 503);
+    const r = await intakeConfirm.confirm({ autoApprove: body['auto_approve'] === true });
+    mirrorChatEvents(r.events, convOf(c));
     return c.json({ events: r.events, runId: r.runId });
   });
 
-  app.post('/api/chat/intake/deny', async (c) => {
-    if (!rt.chatIntake) return c.json({ error: 'chat intake not configured (missing llm key)' }, 503);
-    const r: { events: unknown[] } = rt.chatIntake.deny();
-    mirrorChatEvents(r.events);
+  app.post('/api/chat/intake/deny', (c) => {
+    const intakeDeny = rt.chatIntakeFor(convOf(c));
+    if (!intakeDeny) return c.json({ error: 'chat intake not configured (missing llm key)' }, 503);
+    const r: { events: unknown[] } = intakeDeny.deny();
+    mirrorChatEvents(r.events, convOf(c));
     return c.json({ events: r.events });
   });
 
   app.get('/api/chat/intake/state', (c) => {
-    if (!rt.chatIntake) return c.json({ phase: 'discuss', plan: null });
-    return c.json(rt.chatIntake.state());
+    const intakeState = rt.chatIntakeFor(convOf(c));
+    if (!intakeState) return c.json({ phase: 'discuss', plan: null });
+    return c.json(intakeState.state());
   });
 
 };

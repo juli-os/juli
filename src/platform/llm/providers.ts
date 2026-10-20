@@ -77,7 +77,7 @@ export const createOpenAiProvider = (opts: ProviderOpts): LlmPort => {
           'content-type': 'application/json',
           authorization: `Bearer ${opts.apiKey}`,
         },
-        body: JSON.stringify({ model: opts.model ?? '', max_tokens: req.maxTokens, messages }),
+        body: JSON.stringify({ model: req.model || opts.model || '', max_tokens: req.maxTokens, messages }),
         signal: req.signal ?? null,
       }), 'openai request failed');
       if (!res.ok) return res;

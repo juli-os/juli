@@ -72,16 +72,15 @@ describe('bootFor 模型分层引导', () => {
 // ---- startTask 路由规则 --------------------------------------------------------
 
 const makeHarness = (agents: readonly { session: string; cwd?: string; model_tier?: 'standard' | 'high' }[]) => {
-  const { clock, advance } = makeClock();
+  const { clock } = makeClock();
   const store = createLedgerStore(':memory:', { clock, ids: seqIds() });
-  const dispatched: { session: string }[] = [];
   const engine = createEngine({
     store, llm: null, model: 't',
     routing: {
       defaultSession: 'juli-reply', defaultProject: 'p',
       agents: agents.map((a) => ({ session: a.session, company: '', domain: '', cwd: a.cwd ?? '', model_tier: a.model_tier })),
     },
-    dispatch: { async dispatch(_s, session, _t) { dispatched.push({ session }); return ok(undefined); } },
+    dispatch: { async dispatch(_s, _session, _t) { return ok(undefined); } },
     syncDispatch: null,
     pusher: { async gateWaiting() {}, async workflowDone() {}, async workflowFailed() {} } satisfies PusherPort,
     mailer: { async send() { return ok({ messageId: '<x@j>' }); } } satisfies MailerPort,
@@ -90,7 +89,7 @@ const makeHarness = (agents: readonly { session: string; cwd?: string; model_tie
     rebuildAgent: null, zombieFingerprint: null, clock, ids: seqIds(), templates: {},
     authz: { mode: 'allowlist', allow: ['*@example.com'], deny: [] },
   } satisfies EngineDeps);
-  return { engine, store, dispatched, advanceClock: advance };
+  return { engine, store };
 };
 
 describe('startTask 模型分层路由', () => {

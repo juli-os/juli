@@ -12,7 +12,7 @@
 // 自路径的绝对行为（含 approve 播种链），本文件只锁两路径的相对一致。
 import { describe, expect, it } from 'vitest';
 import { makeEngine, makeEmail } from './helpers.ts';
-import type { JsonRecord } from '@juli-os/artifacts'
+import type { JsonRecord } from '@juli-os/artifacts';
 import type { ArtifactPort } from '../src/contracts/ports.ts';
 
 /** 三形状输入面：declared=闸门定义时申报（gate.input.envelope，undefined=

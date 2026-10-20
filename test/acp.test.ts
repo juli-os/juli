@@ -1,6 +1,6 @@
 // ACP 执行器契约测试：真子进程（Python 假 app-server）走完整 JSON-RPC
 // 协议——thread/start、turn/start → agentMessage → turn/completed，
-// 失败状态透传为 error，子进程死亡时在途调用立即失败不挂死。
+// 失败状态透传为 error。
 
 import { describe, expect, it } from 'vitest';
 import { join } from 'node:path';

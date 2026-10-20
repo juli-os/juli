@@ -1,4 +1,4 @@
-// 入站邮件契约测试：MIME 解析（正文兜底链/附件上限/无 Message-ID 身份）、
+// 入站邮件契约测试：MIME 解析（正文兜底链/无 Message-ID 身份）、
 // 去重中间件、宽松兜底。
 
 import { describe, expect, it } from 'vitest';
@@ -6,7 +6,7 @@ import {
   inboxDedupKey, parseFullMessage, withDedupe, type InboxMessage,
 } from '../src/platform/email/inbox.ts';
 
-const rawMail = (_over: Record<string, string> = {}, body = '正文内容'): Buffer =>
+const rawMail = (body = '正文内容'): Buffer =>
   Buffer.from(
     [
       `From: Boss <boss@example.com>`,

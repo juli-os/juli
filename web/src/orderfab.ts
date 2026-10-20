@@ -52,11 +52,12 @@ export const mountOrderDrawer = (): void => {
   };
   // 触发钮在左栏（ui.ts sidebar 渲染）——document 委托绑定，一次挂全周期。
   document.addEventListener('click', (e) => {
-    if ((e.target as HTMLElement).closest('#side-order-btn') === null) return;
+    const btn = e.target instanceof Element ? e.target.closest('#side-order-btn') : null;
+    if (!(btn instanceof HTMLElement)) return;
     if (drawer.classList.contains('open')) return;
     // 显式聚焦触发钮=opener 记录点（真实指针点击本就聚焦；防御合成调用路径），
     // 关闭时 trapFocus 释放器把焦点还到这里。
-    (e.target as HTMLElement).closest<HTMLElement>('#side-order-btn')?.focus();
+    btn.focus();
     releaseTrap = trapFocus(drawer);
     drawer.classList.add('open');
     setBackgroundInert(true);

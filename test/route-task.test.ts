@@ -21,16 +21,10 @@ const ROUTING = {
 };
 
 /** 剧本式假网关：ask 返回固定 outcome；off=null。 */
-const fakeJudgment = (outcome: JudgmentOutcome | null): { gw: JudgmentGateway; asked: number } => {
-  const asked = { n: 0 };
-  return {
-    asked: asked as unknown as number,
-    gw: {
-      threshold: () => 0.7,
-      async ask() { (asked).n++; return outcome; },
-    },
-  };
-};
+const fakeJudgment = (outcome: JudgmentOutcome | null): JudgmentGateway => ({
+  threshold: () => 0.7,
+  async ask() { return outcome; },
+});
 
 const onOutcome = (answer: string, confidence = 0.9, mode: 'on' | 'shadow' = 'on'): JudgmentOutcome => ({
   mode, ok: true, threshold: 0.7, answer, confidence, provider: 'fake',
@@ -54,28 +48,28 @@ describe('routeTaskMenu 候选纪律', () => {
 
 describe('routeTask 判定链', () => {
   it('jev on+过阈值+菜单内 → 采纳；shadow 不生效', async () => {
-    const a = await routeTask('官网文案修复', 'brief', deps({ judgment: fakeJudgment(onOutcome('acme')).gw }));
+    const a = await routeTask('官网文案修复', 'brief', deps({ judgment: fakeJudgment(onOutcome('acme')) }));
     expect(a).toMatchObject({ session: 'acme', via: 'jev', diverted: false });
-    const sh = await routeTask('官网文案修复', 'brief', deps({ judgment: fakeJudgment(onOutcome('acme', 0.9, 'shadow')).gw }));
+    const sh = await routeTask('官网文案修复', 'brief', deps({ judgment: fakeJudgment(onOutcome('acme', 0.9, 'shadow')) }));
     expect(sh).toMatchObject({ session: 'juli-reply', via: 'default' });
   });
 
   it('jev 低置信/菜单外答案/网关 off/抛错 → fail-open 落 default', async () => {
-    expect((await routeTask('t', 'b', deps({ judgment: fakeJudgment(onOutcome('acme', 0.3)).gw }))).session).toBe('juli-reply');
-    expect((await routeTask('t', 'b', deps({ judgment: fakeJudgment(onOutcome('ghost-session')).gw }))).session).toBe('juli-reply');
-    expect((await routeTask('t', 'b', deps({ judgment: fakeJudgment(null).gw }))).session).toBe('juli-reply');
+    expect((await routeTask('t', 'b', deps({ judgment: fakeJudgment(onOutcome('acme', 0.3)) }))).session).toBe('juli-reply');
+    expect((await routeTask('t', 'b', deps({ judgment: fakeJudgment(onOutcome('ghost-session')) }))).session).toBe('juli-reply');
+    expect((await routeTask('t', 'b', deps({ judgment: fakeJudgment(null) }))).session).toBe('juli-reply');
     expect((await routeTask('t', 'b', deps())).session).toBe('juli-reply'); // 无网关
   });
 
   it('理想落点忙 → 同公司空闲优先；全忙 → 落理想会话排队', async () => {
     // ideal=juli-reply（公司 juli）忙 → 同公司空闲声明会话 juli-dev 先于跨公司 acme。
     const busy = new Set(['juli-reply']);
-    const a = await routeTask('t', 'b', deps({ judgment: fakeJudgment(onOutcome('juli-reply')).gw, busySession: (s) => busy.has(s) }));
+    const a = await routeTask('t', 'b', deps({ judgment: fakeJudgment(onOutcome('juli-reply')), busySession: (s) => busy.has(s) }));
     expect(a).toMatchObject({ session: 'juli-dev', ideal: 'juli-reply', diverted: true, via: 'jev' });
     expect(a.note).toContain('diverted to');
     // 全忙 → 不硬塞别人，落理想会话排队。
     const allBusy = new Set(['acme', 'juli-reply', 'juli-dev']);
-    const q = await routeTask('t', 'b', deps({ judgment: fakeJudgment(onOutcome('acme')).gw, busySession: (s) => allBusy.has(s) }));
+    const q = await routeTask('t', 'b', deps({ judgment: fakeJudgment(onOutcome('acme')), busySession: (s) => allBusy.has(s) }));
     expect(q).toMatchObject({ session: 'acme', diverted: false });
     expect(q.note).toContain('queued');
   });
@@ -84,14 +78,14 @@ describe('routeTask 判定链', () => {
     // acme 忙、juli-reply 空闲 → 跨公司改道 juli-reply（与派发面 others 同集）。
     const busy = new Set(['acme']);
     const a = await routeTask('t', 'b', deps({
-      judgment: fakeJudgment(onOutcome('acme')).gw,
+      judgment: fakeJudgment(onOutcome('acme')),
       busySession: (s) => busy.has(s),
     }));
     expect(a).toMatchObject({ session: 'juli-reply', ideal: 'acme', diverted: true });
     // acme+juli-reply 都忙、juli-dev 声明但不在 tmux → 无可用候选 → 排队理想会话。
     const busy2 = new Set(['acme', 'juli-reply']);
     const q = await routeTask('t', 'b', deps({
-      judgment: fakeJudgment(onOutcome('acme')).gw,
+      judgment: fakeJudgment(onOutcome('acme')),
       busySession: (s) => busy2.has(s),
       availableSessions: ['juli-reply', 'acme'], // juli-dev 不在 tmux
     }));
@@ -109,20 +103,20 @@ describe('routeTask 判定链', () => {
     // acme 声明在菜单但不在 tmux——采纳会把落点钉进离线会话，派发面
     // resolveSession 静默兜回 default 且钉住跟着走。落 default 不采纳。
     const a = await routeTask('t', 'b', deps({
-      judgment: fakeJudgment(onOutcome('acme')).gw,
+      judgment: fakeJudgment(onOutcome('acme')),
       availableSessions: ['juli-reply', 'juli-dev'], // acme 离线
     }));
     expect(a).toMatchObject({ session: 'juli-reply', via: 'default', ideal: 'juli-reply', diverted: false });
     expect(a.note).toContain('offline');
     expect(a.note).toContain('acme');
     // 对照：同一答案、会话在线 → 照常采纳。
-    const b = await routeTask('t', 'b', deps({ judgment: fakeJudgment(onOutcome('acme')).gw }));
+    const b = await routeTask('t', 'b', deps({ judgment: fakeJudgment(onOutcome('acme')) }));
     expect(b).toMatchObject({ session: 'acme', via: 'jev' });
   });
 
   it('availableSessions 缺省（无 tmux 面）→ 不做活性校验，jev 采纳旧行为不变（十一跑 P2-3）', async () => {
     const a = await routeTask('t', 'b', deps({
-      judgment: fakeJudgment(onOutcome('acme')).gw,
+      judgment: fakeJudgment(onOutcome('acme')),
       availableSessions: undefined,
     }));
     expect(a).toMatchObject({ session: 'acme', via: 'jev' });

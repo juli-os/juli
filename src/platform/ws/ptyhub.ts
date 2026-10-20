@@ -42,6 +42,17 @@ export const attachPtyHub = (deps: PtyHubDeps): void => {
   });
 };
 
+/** ws close reason 硬上限 123 字节（RFC 6455 控制帧）：超限 ws.close 直接抛
+ * RangeError（ws 8.21.3 实证），而本文件两处 reason 含中文 + 客户端可控的
+ * 会话名——attach 失败消息带 19+ 字符会话名即越界（135 字节实测），抛点又都
+ * 在 void 丢弃的 async 里，不拦就是未处理 rejection，Node 默认直接退出进程。
+ * 只按字节回退截断：≤123 字节的原样透传，绝不改动现网不越界的原文。 */
+const closeReason = (s: string): string => {
+  let out = s;
+  while (Buffer.byteLength(out) > 123) out = out.slice(0, -1);
+  return out;
+};
+
 const serveSession = async (deps: PtyHubDeps, ws: WebSocket, session: string): Promise<void> => {
   const log = deps.log ?? (() => undefined);
   if (session.trim() === '') {
@@ -65,7 +76,7 @@ const serveSession = async (deps: PtyHubDeps, ws: WebSocket, session: string): P
   // 的注入面，无闸门、无账本，一律拒（1008）。只读观察走 /ws/snapshot。
   if ((deps.boundSessions ?? []).includes(session)) {
     log(`[ws] xterm 拒连绑定会话 ${session}（专用 agent 隔离：PTY 桥不开放，只读观察走 /ws/snapshot）`);
-    ws.close(1008, `会话 ${session} 是绑定会话（专用 agent 隔离）——PTY 桥不开放，只读观察走 /ws/snapshot`);
+    ws.close(1008, closeReason(`会话 ${session} 是绑定会话（专用 agent 隔离）——PTY 桥不开放，只读观察走 /ws/snapshot`));
     return;
   }
   let pty: PtySession | null = null;
@@ -92,7 +103,7 @@ const serveSession = async (deps: PtyHubDeps, ws: WebSocket, session: string): P
       return;
     }
     if (!res.ok) {
-      ws.close(1011, res.error.message.slice(0, 120));
+      ws.close(1011, closeReason(res.error.message.slice(0, 120)));
       return;
     }
     const me = res.value;
@@ -121,9 +132,11 @@ const serveSession = async (deps: PtyHubDeps, ws: WebSocket, session: string): P
     if (text.startsWith('{"type"')) {
       try {
         const v = JSON.parse(text) as { type?: string; cols?: number; rows?: number };
-        if (v.type === 'size' && (v.cols ?? 0) > 20 && (v.rows ?? 0) > 10) {
-          const nextCols = Math.min(400, Math.trunc(v.cols!));
-          const nextRows = Math.min(200, Math.trunc(v.rows!));
+        const inCols = v.cols ?? 0;
+        const inRows = v.rows ?? 0;
+        if (v.type === 'size' && inCols > 20 && inRows > 10) {
+          const nextCols = Math.min(400, Math.trunc(inCols));
+          const nextRows = Math.min(200, Math.trunc(inRows));
           if (nextCols !== cols) {
             cols = nextCols;
             rows = nextRows;

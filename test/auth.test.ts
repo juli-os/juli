@@ -45,7 +45,7 @@ describe('认证链', () => {
     const combo = createCompositeAuthenticator(impls);
     const okR = await combo.verify('pw-a');
     expect(okR.ok).toBe(true);
-    // 'pb-token' 会被第二个实现以 200 响应（fake fetch 不看 token）——组合器放行
+    // 'pb-token' 会被第二个实现以 200 响应——组合器放行
     const r2 = await combo.verify('pb-token');
     expect(r2.ok).toBe(true);
     expect((await combo.verify('nope')).ok).toBe(false); // 两实现都拒

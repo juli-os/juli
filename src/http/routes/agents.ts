@@ -94,10 +94,8 @@ export const registerAgentsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
   app.get('/api/skills', (c) => {
     const root = join(rt.config.claude_dir !== '' ? rt.config.claude_dir : join(homedir(), '.claude'), 'skills');
     const readDesc = (md: string): string => {
-      try {
-        const m = /^---\n([\s\S]*?)\n---/.exec(md);
-        return new RegExp('^description:\\s*(.+)$', 'm').exec(m?.[1] ?? '')?.[1]?.trim() ?? '';
-      } catch { return ''; }
+      const m = /^---\n([\s\S]*?)\n---/.exec(md);
+      return new RegExp('^description:\\s*(.+)$', 'm').exec(m?.[1] ?? '')?.[1]?.trim() ?? '';
     };
     const entries: Record<string, unknown>[] = [];
     if (existsSync(root)) {
@@ -328,7 +326,7 @@ export const registerAgentsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
       const base = cloneBaseOf(name);
       return base !== null && known.has(base) ? base : null;
     };
-    const names = [...new Set<string>([...declBy.keys(), ...bound.map((b) => b.session), ...live.keys()])];
+    const names = [...known];
     const nodes = names.map((name) => {
       const d = declBy.get(name);
       const b = bound.find((x) => x.session === name);

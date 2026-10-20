@@ -69,6 +69,7 @@ export const sessionsView = async (el: HTMLElement): Promise<(() => void) | void
   let term: Terminal | null = null;
   let ws: WebSocket | null = null;
   let ro: ResizeObserver | null = null;
+  let keydown: ((e: KeyboardEvent) => void) | null = null;
   let termGen = 0;              // 代际：切会话/重开时使旧 socket 的重连计划失效
   let resizeTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -91,6 +92,9 @@ export const sessionsView = async (el: HTMLElement): Promise<(() => void) | void
     termGen++;
     ro?.disconnect();
     ro = null;
+    // keydown 挂在常驻 mount 上，innerHTML='' 摘不掉——不显式移除则每次
+    // 换会话叠加一个旧监听（旧 t 已 dispose、ws 是共享变量，粘贴会被叠发）。
+    if (keydown !== null) { mount.removeEventListener('keydown', keydown, true); keydown = null; }
     ws?.close();
     ws = null;
     term?.dispose();
@@ -196,7 +200,7 @@ export const sessionsView = async (el: HTMLElement): Promise<(() => void) | void
 
     // 剪贴板（Makro 同款）：复制=有选中才拦截（无选中时 ⌘C 是终端 Ctrl+C 的
     // 事情，不抢）；粘贴=读剪贴板整段进会话。
-    mount.addEventListener('keydown', (e) => {
+    keydown = (e: KeyboardEvent): void => {
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) return;
       const k = e.key.toLowerCase();
@@ -209,7 +213,8 @@ export const sessionsView = async (el: HTMLElement): Promise<(() => void) | void
           if (text !== '' && ws !== null && ws.readyState === ws.OPEN) ws.send(text);
         }).catch(() => undefined);
       }
-    }, true);
+    };
+    mount.addEventListener('keydown', keydown, true);
   };
 
   // ---- 会话列表（5s 慢轮询：名单与 agent 标签；活性由终端连接本身表达） ----
@@ -297,7 +302,7 @@ export const sessionsView = async (el: HTMLElement): Promise<(() => void) | void
       if ((ev.target as HTMLElement).closest('.ss-wf-chip') !== null) return;
       if (item.dataset.s === current) { term?.focus(); return; }
       current = item.dataset.s ?? '';
-      for (const x of items.querySelectorAll('.ss-item')) x.classList.toggle('active', (x as HTMLElement).dataset.s === current);
+      for (const x of items.querySelectorAll<HTMLElement>('.ss-item')) x.classList.toggle('active', x.dataset.s === current);
       openTerminal();
     };
     for (const item of items.querySelectorAll<HTMLElement>('.ss-item')) {

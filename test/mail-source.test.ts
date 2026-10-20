@@ -27,12 +27,10 @@ interface Harness {
 
 const build = (opts: {
   readonly envelopes: readonly Env[];
-  /** 账本已摄取键（阶段一与 withDedupe 共用同一探针——与生产接线一致）。 */
-  readonly seenKeys?: Set<string>;
   /** 摄取出口；缺省记录 message_id（= 摄取成功）。 */
   readonly onMessage?: (m: InboxMessage, seen: Set<string>) => Promise<void>;
 }): Harness => {
-  const seen = opts.seenKeys ?? new Set<string>();
+  const seen = new Set<string>();
   const marked: number[][] = [];
   const ingested: string[] = [];
   const transport: ImapTransport = {

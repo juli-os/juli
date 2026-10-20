@@ -7,12 +7,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   createOrchestrator, createHookManager, createCommandRegistry, registerDefaultCommands,
-  createSessionAssessor,
+  createSessionAssessor, makeAllTools,
+  type ChatLlmPort, type ChatResult, type ToolCallRequest,
 } from '@juli-os/agents';
-import { makeAllTools } from '@juli-os/agents';
-import { createTmuxClient } from '@juli-os/agents';
 import { err, ok } from '@juli-os/artifacts';
-import { type ChatLlmPort, type ChatResult, type ToolCallRequest } from '@juli-os/agents';
 
 const collect = (): { events: ReturnType<typeof ev>[], emit: (e: ReturnType<typeof ev>) => void } => {
   const events: ReturnType<typeof ev>[] = [];
@@ -67,7 +65,6 @@ describe('tool-calling 循环', () => {
       const lastMessages = calls[1]!.messages;
       expect(lastMessages.at(-1)?.role).toBe('tool');
       expect(lastMessages.at(-1)?.toolResults?.[0]?.content).toContain('a.md');
-      void expect;
     } finally {
       cleanup();
     }
@@ -133,7 +130,6 @@ describe('tool-calling 循环', () => {
       const tr = events.find((e) => e.type === 'tool_result');
       expect(tr).toMatchObject({ content: '写入被守护者拦截' });
       expect(() => { void readX(join(dir, 'x.txt')); }).not.toThrow();
-      void readX;
     } finally {
       cleanup();
     }
@@ -188,8 +184,6 @@ describe('tmux 工具（mock 传输）', () => {
   it('send/read/wait 经 TmuxClient 端口执行', async () => {
     const { dir, cleanup } = await makeSession();
     try {
-      const tmux = createTmuxClient();
-      void tmux; // 真子进程不在这里起；用桩验证执行面。
       const stub = {
         hasSession: async () => true,
         listSessions: async () => ['agent-a', 'agent-b'],

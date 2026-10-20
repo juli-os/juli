@@ -59,9 +59,6 @@ export const stepStatusDef = (key: string): StatusDef | undefined =>
 /** 状态 → 中文标签：名单外原样返回 key（显示原文，不猜不译）。 */
 export const statusLabelOf = (key: string): string => workflowStatusDef(key)?.label ?? key;
 
-/** 状态 → 语义分组：名单外归「其他」。 */
-export const statusGroupOf = (key: string): string => workflowStatusDef(key)?.group ?? STATUS_GROUP_OTHER;
-
 /** 全状态中文释义表（workflow ∪ step；ui.ts STATUS_LABEL 由它派生——
  * 徽标/chip/图例不再有第二份手写清单）。 */
 export const ALL_STATUS_LABELS: Readonly<Record<string, string>> = Object.fromEntries(
@@ -93,12 +90,11 @@ export const KANBAN_ARCHIVE_KEY = 'archived';
  * - 已取消 = 归档折叠区（产品裁决：默认收起，不占列）；
  * - 名单外未知状态 → 「其他」列（显示原文，不隐藏）。 */
 export const kanbanColumnsFromStatuses = (statuses: readonly StatusDef[]): readonly KanbanColumn[] => {
-  const active = statuses.filter((s) => !s.terminal).map((s) => ({
+  const toCol = (s: StatusDef): KanbanColumn => ({
     key: s.key, label: s.label, status: s.key, cls: `kb-col-${s.key}`,
-  }));
-  const terminal = statuses.filter((s) => s.terminal && s.key !== 'cancelled').map((s) => ({
-    key: s.key, label: s.label, status: s.key, cls: `kb-col-${s.key}`,
-  }));
+  });
+  const active = statuses.filter((s) => !s.terminal).map(toCol);
+  const terminal = statuses.filter((s) => s.terminal && s.key !== 'cancelled').map(toCol);
   // 「等你决定」投影列插在排队中之后（板 03 第一视觉位）；名单无排队态时
   // 退到最前——投影列的存在不依赖名单顺序细节。
   const waitingCol: KanbanColumn = {

@@ -53,24 +53,62 @@ export type ChatIntakeStreamEvent = ChatIntakeEvent | OrchestratorEvent;
 
 const INTAKE_PLAN_RE = /```intake-plan\s*([\s\S]*?)\s*```/;
 
+/** 从任意文本里提取第一个平衡的 {...}（边界纪律：LLM 输出=外部数据，尾巴
+ * 带 `};`/换行废话等手抖属常态——2026-10-17「开单卡不弹」事故：严格
+ * JSON.parse 撞 `"}"};` 尾巴直接炸，catch 静默 null，计划无声丢弃、相位
+ * 永停 discuss，而 LLM 可见文本还在承诺「我按这个提议开单」）。 */
+const firstBalancedObject = (raw: string): Record<string, unknown> | null => {
+  const start = raw.indexOf('{');
+  if (start < 0) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < raw.length; i++) {
+    const ch = raw[i]!;
+    if (escaped) { escaped = false; continue; }
+    if (ch === '\\') { if (inString) escaped = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        try {
+          return JSON.parse(raw.slice(start, i + 1)) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+};
+
 export const extractIntakePlanBlock = (text: string): StagedIntakePlan | null => {
   const m = INTAKE_PLAN_RE.exec(text);
   if (!m) return null;
+  const raw = m[1]!.trim();
+  let v: Record<string, unknown> | null = null;
   try {
-    const v = JSON.parse(m[1]!.trim()) as Record<string, unknown>;
-    const title = typeof v['title'] === 'string' ? v['title'] : '';
-    const brief = typeof v['brief'] === 'string' ? v['brief'] : '';
-    if (title === '' || brief === '') return null;
-    return {
-      title,
-      summary: typeof v['summary'] === 'string' ? v['summary'] : '',
-      brief,
-      pinnedSession: typeof v['pinned_session'] === 'string' ? v['pinned_session'] : '',
-    };
+    v = JSON.parse(raw) as Record<string, unknown>;
   } catch {
-    return null;
+    v = firstBalancedObject(raw);
   }
+  if (v === null) return null;
+  const title = typeof v['title'] === 'string' ? v['title'] : '';
+  const brief = typeof v['brief'] === 'string' ? v['brief'] : '';
+  if (title === '' || brief === '') return null;
+  return {
+    title,
+    summary: typeof v['summary'] === 'string' ? v['summary'] : '',
+    brief,
+    pinnedSession: typeof v['pinned_session'] === 'string' ? v['pinned_session'] : '',
+  };
 };
+
+/** 计划块是否在场（与解析成败无关）——turn 侧用它区分「没提议」和「提议了
+ * 但 JSON 炸了」（后者必须显性告警，不能再无声吞）。 */
+export const hasIntakePlanBlock = (text: string): boolean => INTAKE_PLAN_RE.test(text);
 
 /** 摘要面剥掉计划块（朗读 / 回显不念 JSON）。 */
 export const stripIntakePlanBlock = (text: string): string =>
@@ -198,6 +236,11 @@ export const createChatIntake = (deps: ChatIntakeDeps): ChatIntake => {
       if (e.type === 'text' && e.content !== '') lastText = e.content;
     });
     const plan = extractIntakePlanBlock(lastText);
+    if (plan === null && hasIntakePlanBlock(lastText)) {
+      // 2026-10-17 事故形态：块在场但连宽容解析都救不回——显性告警，
+      // 绝不再无声吞（用户端表现=LLM 说要开单但卡永不出现）。
+      deps.log?.(`[chat-intake] ⚠ 计划块解析失败已丢弃（LLM JSON 严重变形）——用户需再发一轮触发重提议`);
+    }
     if (plan !== null) {
       // 落点（0930「所有的都走路由」）：钉住（用户点名的转述，校验过才认）
       // > 路由层判定（routeTask）> 无落点（default）。钉住不改道宁可排队

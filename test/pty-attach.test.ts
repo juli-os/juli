@@ -9,8 +9,7 @@
 //   本测试锁定两端都不再退。
 
 import { describe, expect, it } from 'vitest';
-import { TMUX_BIN } from '@juli-os/agents';
-import { tmuxAttachCommand } from '@juli-os/agents';
+import { TMUX_BIN, tmuxAttachCommand } from '@juli-os/agents';
 
 describe('tmuxAttachCommand', () => {
   it('有 socketPath → tmux 打头 + -S 随行（专属 server 上的会话才 attach 得到）', () => {

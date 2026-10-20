@@ -128,7 +128,7 @@ export const makeHumanActions = (o: {
       // 带了什么干预补丁，进事件账本——与 gate_rework/send_rework 同口径。
       o.journal.stepEvent(st, 'step_retry', {
         by,
-        ...(patch !== undefined ? { patch: patch as unknown as JsonRecord } : {}),
+        ...(patch !== undefined ? { patch: patch as JsonRecord } : {}),
       });
       // 推进 fire-and-forget（同闸门动作壳）：重臂的执行链不进 HTTP 等待。
       o.queue.continueWorkflow(st.workflowId);
@@ -227,7 +227,7 @@ export const makeHumanActions = (o: {
       const prev = steps[ai]!;
       const hist = Array.isArray(prev.input['feedback_history']) ? prev.input['feedback_history'] : [];
       store.setStepInput(prev.id, {
-        feedback, feedback_history: [...hist, feedback] as JsonValue[],
+        feedback, feedback_history: [...hist, feedback],
       });
       store.setStepStatus(prev.id, 'pending');
       // 中间步退回 pending：闸门重开 = 人审新版本（重开时 openGate 检测

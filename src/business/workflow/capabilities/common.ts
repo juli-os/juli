@@ -1,11 +1,9 @@
 // 能力处理函数的公共接缝：StepCtx（引擎注入的上下文）+ StepHandler 签名 +
 // 宽松 JSON 解析。分发表（engine.stepHandlers）指向各能力模块。
 
-import { asString, truncate } from '../../../platform/shared/json.ts'
-import { type JsonRecord } from '@juli-os/artifacts'
-import { type Clock } from '@juli-os/artifacts';
-import { type Step, type Workflow } from '@juli-os/ledger';
-import type { LifecycleStore } from '@juli-os/ledger';
+import { asString, truncate } from '../../../platform/shared/json.ts';
+import { type Clock, type JsonRecord } from '@juli-os/artifacts';
+import { type LifecycleStore, type Step, type Workflow } from '@juli-os/ledger';
 import type { ArtifactPort, LlmPort } from '../../../contracts/ports.ts';
 
 // ---- 引擎提供给能力处理函数的接缝 ---------------------------------------------

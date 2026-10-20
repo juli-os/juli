@@ -27,7 +27,7 @@ describe('gates：判型与引擎对齐', () => {
   ];
   for (const [name, input] of cases) {
     it(`gateDeliveryOf(${name}) === 引擎 gateDelivery`, () => {
-      expect(gateDeliveryOf(input as JsonRecord)).toBe(srcGateDelivery(input));
+      expect(gateDeliveryOf(input)).toBe(srcGateDelivery(input));
     });
   }
   it('isEffectDelivery 生效类二分：apply/artifact=true，email/空=false', () => {

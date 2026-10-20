@@ -7,7 +7,6 @@ import {
   createCliJudge, createJudgmentGateway, createJudgeFromConfig,
   createLocalApiJudge, loadJudgmentConfig, parseJudgmentConfig,
 } from '@juli-os/routing';
-import { ok } from '@juli-os/artifacts';
 
 describe('parseJudgmentConfig / loadJudgmentConfig', () => {
   it('provider 非法/非对象 → null（整体关）', () => {
@@ -308,6 +307,5 @@ describe('提供方（约束②：cloud/local-api/cli 同形可换）', () => {
     });
     const r = await j.ask('s', { q: { type: 'noul', instructions: 'x' } });
     expect(r.model).toBe('jev-latest');
-    void ok;
   });
 });

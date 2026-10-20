@@ -37,5 +37,4 @@ export const runShare = async (ctx: StepCtx): Promise<void> => {
     throw new Error(`all ${failed.length} uploads failed`);
   }
   store.setStepOutput(st.id, out as JsonRecord);
-  void st;
 };

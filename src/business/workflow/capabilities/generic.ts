@@ -2,8 +2,7 @@
 // 灵活性模型：结构=模板，per-step 逻辑=prompt/system，数据流=步骤 id 键控输出。
 
 import { asString, truncate } from '../../../platform/shared/json.ts'
-import { type JsonRecord } from '@juli-os/artifacts'
-import { rfc3339 } from '@juli-os/artifacts';
+import { type JsonValue, rfc3339 } from '@juli-os/artifacts';
 import type { LifecycleStore } from '@juli-os/ledger';
 import { parseLoose, type StepCtx } from './common.ts';
 
@@ -14,7 +13,6 @@ export const flowContext = (store: LifecycleStore, workflowId: string, now: Date
     Meta: w?.meta ?? {},
     Title: w?.title ?? '',
     Now: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
-    Steps: {},
   };
   const stepsOut: Record<string, unknown> = {};
   for (const st of store.stepsForWorkflow(workflowId)) {
@@ -65,13 +63,13 @@ export const runGenericLlm = async (ctx: StepCtx): Promise<void> => {
   const maxTokens = typeof maxTokensRaw === 'number' && maxTokensRaw > 0 ? maxTokensRaw : 1024;
   const raw = await ctx.completeLlm(asString(st.input['system']), rendered, maxTokens, undefined, `wf:${w.id}/step:llm`);
 
-  const out: Record<string, unknown> = { response: raw, completed_at: rfc3339(clock.now()) };
+  const out: Record<string, JsonValue> = { response: raw, completed_at: rfc3339(clock.now()) };
   try {
     const parsed = parseLoose(raw);
     for (const [k, v] of Object.entries(parsed)) out[k] = v;
     out['is_json'] = true;
   } catch { /* 非 JSON 响应合法——只存原文 */ }
-  store.setStepOutput(st.id, out as JsonRecord);
+  store.setStepOutput(st.id, out);
   // 给紧随的 gate 播种截断摘要，审批推送才有内容（否则只剩裸标题）。
   const steps = store.stepsForWorkflow(w.id);
   const next = steps[st.seq];

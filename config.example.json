@@ -19,9 +19,9 @@
       "model_tier": "standard"
     }
   ],
+  "default_session": "main",
   "email": {
     "enabled": false,
-    "default_session": "main",
     "bound_agents": []
   },
   "queue": { "concurrency": 1 },

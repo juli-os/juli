@@ -3,7 +3,7 @@
 // （收件人只认 meta.from）在引擎层，不在这里。
 
 import nodemailer from 'nodemailer';
-import { ok, toResult, type Result } from '@juli-os/artifacts';
+import { err, ok, toResult, type Result } from '@juli-os/artifacts';
 import type { MailSendCommand, MailerPort } from '../../contracts/ports.ts';
 
 export interface SmtpConfig {
@@ -14,7 +14,7 @@ export interface SmtpConfig {
   readonly from: string;
 }
 
-const isLoopback = (host: string): string => {
+const hostPart = (host: string): string => {
   const h = host.includes(':') && !host.startsWith('[') ? host : host.split(':')[0] ?? host;
   return h;
 };
@@ -22,7 +22,7 @@ const isLoopback = (host: string): string => {
 export const createSmtpMailer = (cfg: SmtpConfig): MailerPort | null => {
   if (cfg.host === '') return null; // 未配置 → send 步以明确错误失败，不静默
   const port = cfg.port === 0 ? 587 : cfg.port;
-  const host = isLoopback(cfg.host);
+  const host = hostPart(cfg.host);
   const transport = nodemailer.createTransport({
     host: cfg.host,
     port,
@@ -37,7 +37,7 @@ export const createSmtpMailer = (cfg: SmtpConfig): MailerPort | null => {
   return {
     async send(cmd: MailSendCommand): Promise<Result<{ messageId: string }, Error>> {
       if (cfg.from === '') {
-        return toResult(Promise.reject(new Error('smtp from not configured')));
+        return err(new Error('smtp from not configured'));
       }
       const domain = cfg.from.includes('@') ? cfg.from.slice(cfg.from.lastIndexOf('@') + 1) : cfg.from;
       const messageId = `<juli-${Date.now()}${Math.floor(Math.random() * 1000)}@${domain}>`;

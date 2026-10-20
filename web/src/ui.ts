@@ -7,10 +7,6 @@ import { ALL_STATUS_LABELS, statusLabelOf as listLabelOf } from './statuses.ts';
 // 导航分组表单一事实源在 nav.ts（开源投影以公开四组同形桩替换）。
 import { NAV_GROUPS } from './nav.ts';
 
-/** 状态徽标（旧原语，范围外视图续用；八屏内新代码用 statusChip/statusDot）。 */
-export const badge = (s: string): string =>
-  `<span class="badge ${esc(s)}">${esc(s)}</span>`;
-
 /** 回信主题派生（与引擎 replySubject 同口径的展示版）。 */
 export const replySubject = (subject: string): string =>
   subject === '' ? 'Re: (无主题)'

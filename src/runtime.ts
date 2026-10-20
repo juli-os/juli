@@ -8,9 +8,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, statSy
 import type { Config } from './platform/config/schema.ts';
 import { resolveAiConfig, resolveSecret, danglingFeedbackRoutes, mergeConfigPatch, effectiveDefaultSession, type AiResolved } from './platform/config/schema.ts';
 import { consoleLogger, createBus, type Logger } from './platform/events/bus.ts';
-import { createLedgerStore, type LifecycleStore } from '@juli-os/ledger';
-import type { JsonRecord } from '@juli-os/artifacts'
-import { createUsageStore, type UsageStore } from '@juli-os/ledger';
+import { createLedgerStore, createUsageStore, type LifecycleStore, type UsageStore } from '@juli-os/ledger';
 import { createAnthropicChat, createOpenAiChat } from './platform/llm/chat.ts';
 import { sessionBirthOf, transcriptMappable } from './platform/llm/transcripts.ts';
 import { type ChatLlmPort } from '@juli-os/agents';
@@ -24,17 +22,17 @@ import { recoverFromSnapshot, takeSnapshot } from '@juli-os/agents';
 import { attachPtyHub } from './platform/ws/ptyhub.ts';
 import { attachChatWireWs, attachSnapshotWireWs } from './platform/ws/wirehubs.ts';
 import { createCompositeAuthenticator, createLocalAuthenticator, createPbAuthenticator, type Authenticator } from './platform/auth/authenticator.ts';
-import { mkdirSync as mkDirSync } from 'node:fs';
 import { createEngine, type Engine } from './business/workflow/engine.ts';
 import { compileChannelPolicy } from './contracts/authz.ts';
 import { loadTemplates, pipelinesDir, saveTemplateFile, deleteTemplateFile, readTemplateFile } from './business/templates/registry.ts';
-import { createChatIntake, type ChatIntake } from './business/intake/chatIntake.ts';
+import { type ChatIntake, type ChatIntakeDeps } from './business/intake/chatIntake.ts';
+import { createChatIntakeRegistry, type ChatIntakeRegistry } from './business/intake/chatIntakeRegistry.ts';
 import { makeChatTools } from './business/intake/chatTools.ts';
 import { getTaskOf, listTasksOf } from './business/intake/chatTasks.ts';
 import { autoApproveSweep, projectAutoApprove, type AutoApproveConfig } from './business/workflow/autoApprove.ts';
 import { makeGradeAlert, makeTaskTier } from './business/workflow/judgmentScenarios.ts';
 import { VERSION } from './contracts/version.ts';
-import { err, ok } from '@juli-os/artifacts';
+import { err, ok, type JsonRecord } from '@juli-os/artifacts';
 import { WORKFLOW_STATUSES } from './contracts/statuses.ts';
 import { createJudgmentGateway, createJudgeFromConfig, loadJudgmentConfig } from '@juli-os/routing';
 import { routeTask, routeTaskMenu, type TaskLanding } from '@juli-os/routing';
@@ -63,11 +61,8 @@ const BOOT_MS = Date.now();
 
 /** 运行时自身所在的 dist（hook.js 与它同源——dev 用 tsx 也能解析到 ts）。 */
 const distDirOf = (meta: { url: string }): string => {
-  const here = fileURLToPath(meta.url);
-  const dir = here.replace(/\/[^/]*$/, '');
   // dist/runtime.js → dist；src/runtime.ts → src（hook 有 .js/.ts 两个入口）。
-  if (dir.endsWith('src')) return dir;
-  return dir;
+  return fileURLToPath(meta.url).replace(/\/[^/]*$/, '');
 };
 
 export type EngineDeps = Parameters<typeof createEngine>[0];
@@ -98,7 +93,7 @@ export interface Runtime {
   readonly channels: readonly InboundChannel[];
   readonly authenticator: Authenticator | null;
   readonly chatHub: ChatHub;
-  emitChat(type: string, data: string): void;
+  emitChat(type: string, data: string, conv?: string): void;
   chat(input: string): Promise<{ events: { type: string; data?: string }[]; reply: string }>;
   /** 业务装配分册产物（类型透传 BusinessParts/BusinessIntake——公开桩全 null）。 */
   readonly feedback: BusinessParts['feedback'];
@@ -115,8 +110,11 @@ export interface Runtime {
   confirmVoicePlan(): Promise<VoiceEvent[]>;
   denyVoicePlan(): Promise<VoiceEvent[]>;
   /** 开单对话（09-29）：clarify loop + 白名单只读工具 + 确认开单走 startTask
-   * 正门（与 #/trigger 表单同契约）。null = LLM 未配置。 */
+   * 正门（与 #/trigger 表单同契约）。null = LLM 未配置。此处=main 桶兼容面。 */
   readonly chatIntake: ChatIntake | null;
+  /** conv 分线程（2026-10-17 分用户第一步）：按 conv id 取隔离的 intake
+   * 实例（独立 LLM 上下文）；清洗与容量纪律见 chatIntakeRegistry。 */
+  chatIntakeFor(conv: string): ChatIntake | null;
   /** 任务路由（0930「所有的都走路由」）：无键起单兜底判定（chat 计划暂存与
    * HTTP /api/lifecycle/tasks 共用）——jev 判定 + 忙闲感知落点，判定在
    * routing 层，本面只做装配。 */
@@ -173,7 +171,7 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
   mkdirSync(dataDir, { recursive: true });
   // 技能（markdown 目录 + /skills /skill 命令）——orchestrator 组合前就绪。
   const skillsDir = join(dataDir, 'skills');
-  mkDirSync(skillsDir, { recursive: true });
+  mkdirSync(skillsDir, { recursive: true });
   const skillRegistry = createSkillRegistry(skillsDir);
 
   const store = createLedgerStore(join(dataDir, 'lifecycle.db'));
@@ -669,14 +667,24 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
     log,
   });
 
+  // 自动批准 sweep 统一装配（boot 即扫 / 30s 心跳 / runAutoApproveSweep 手动
+  // 触发三处同一参数——autoApproveCfg 经 config() 每轮现读，Settings 热改下
+  // 一轮即生效）。
+  const sweepAutoApprove = (): Promise<number> => autoApproveSweep({
+    store, approve: (id, note, by) => engine.approve(id, note, by),
+    config: () => autoApproveCfg, log,
+  });
+
   // ---- 开单对话（09-29）：clarify loop → 用户确认 → startTask 正门开单。
   // 工具白名单只读（chatTools.ts 封闭清单），对话 transcript 不进账。----
-  let chatIntake: ChatIntake | null = null;
+  let intakeRegistry: ChatIntakeRegistry | null = null;
   if (llm !== null) {
     const terminalStatuses = new Set(
       WORKFLOW_STATUSES.filter((s) => s.terminal).map((s) => s.key),
     );
-    chatIntake = createChatIntake({
+    // conv 分线程（2026-10-17）：deps 走工厂——注册表按 conv 惰性建实例，
+    // 每实例一条独立 LLM 对话上下文；main 桶永驻，其余按 LRU 封顶逐出。
+    const makeIntakeDeps = (): ChatIntakeDeps => ({
       llm: makeChatLlm(),
       model: ai.model,
       tools: makeChatTools({
@@ -762,6 +770,7 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
       usage: (r) => usage.record({ source: 'chat-intake', ...r }),
       log: (m) => log.info(m),
     });
+    intakeRegistry = createChatIntakeRegistry(makeIntakeDeps);
   }
 
   // ---- feedback 进件（09-19）：镜像新记录 → startTask 起单（装配体在
@@ -797,7 +806,8 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
     artifactSharing: s3 !== null,
     usage,
     orchestrator,
-    chatIntake,
+    chatIntake: intakeRegistry !== null ? intakeRegistry.main : null,
+    chatIntakeFor: (conv: string) => (intakeRegistry !== null ? intakeRegistry.of(conv) : null),
     taskRoute,
     taskTier,
     highTwinFor,
@@ -823,7 +833,7 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
       return [mailSource, ...extraChannels].filter((c): c is InboundChannel => c !== null);
     },
 
-    emitChat: (type: string, data: string) => chatHub.emit(type, data),
+    emitChat: (type: string, data: string, conv?: string) => chatHub.emit(type, data, conv),
     get chatHub() { return chatHub; },
     async chat(input: string): Promise<{ events: { type: string; data?: string }[]; reply: string }> {
       if (!orchestrator) return { events: [{ type: 'chat:error', data: 'not configured' }], reply: '' };
@@ -880,7 +890,7 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
 
     registerDeviceToken(token: string): void {
       const cur = deviceTokens().filter((t) => t !== token);
-      writeFileSync(tokensFile, JSON.stringify([...cur, token]), { mode: 0o600 });
+      saveDeviceTokens([...cur, token]);
     },
 
     saveTemplate(fileName, yaml) {
@@ -959,10 +969,7 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
     },
 
     runAutoApproveSweep(): Promise<number> {
-      return autoApproveSweep({
-        store, approve: (id, note, by) => engine.approve(id, note, by),
-        config: () => autoApproveCfg, log,
-      });
+      return sweepAutoApprove();
     },
 
     liveOverrides(): JsonRecord {
@@ -976,7 +983,7 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
       injectAgentEnv(ai);
       // 自动批准 boot 即扫：配置已开时，存量在等闸门不等第一个 30s。
       if (autoApproveCfg.mode !== 'off') {
-        void autoApproveSweep({ store, approve: (id, note, by) => engine.approve(id, note, by), config: () => autoApproveCfg, log })
+        void sweepAutoApprove()
           .then((n) => { if (n > 0) log.info(`[auto-approve] boot 扫描处理 ${n} 个闸门`); })
           .catch((e) => log.warn(`[auto-approve] boot 扫描失败：${e instanceof Error ? e.message : String(e)}`));
       }
@@ -994,15 +1001,15 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
       if (provision !== null) {
         void (async () => {
           const names = warmupPlan(config.agents);
-          let ok = 0; let fail = 0;
+          let okCount = 0; let failCount = 0;
           for (const name of names) {
             const r = await provision('startup-warmup', name, '').catch((e: unknown) => ({
               ok: false as const, error: { message: e instanceof Error ? e.message : String(e) },
             }));
-            if (r.ok) ok++;
-            else { fail++; log.error(`[warmup] 会话 ${name} 预热失败（不拦启动，派发时自愈）: ${r.error.message}`); }
+            if (r.ok) okCount++;
+            else { failCount++; log.error(`[warmup] 会话 ${name} 预热失败（不拦启动，派发时自愈）: ${r.error.message}`); }
           }
-          log.info(`[warmup] 声明会话预热完成：${ok} 就绪${fail > 0 ? `，${fail} 失败（见上）` : ''}（socket=${config.tmux_socket_path || 'default'}）`);
+          log.info(`[warmup] 声明会话预热完成：${okCount} 就绪${failCount > 0 ? `，${failCount} 失败（见上）` : ''}（socket=${config.tmux_socket_path || 'default'}）`);
         })();
       }
       mailSource?.start();
@@ -1032,10 +1039,8 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
         // 原队序放行——收单台纯事件驱动，没有这条心跳就没人叫醒 hold 单。
         // 自动批准 sweep（2026-10-07）：30s 一轮——新到闸门与存量在等闸门同一条
         // 路径兜住；boot 即扫一次（用户开规则时排队的存量当轮就清）。
-        setInterval(() => void autoApproveSweep({
-          store, approve: (id, note, by) => engine.approve(id, note, by),
-          config: () => autoApproveCfg, log,
-        }).catch((e) => log.warn(`[auto-approve] sweep 失败：${e instanceof Error ? e.message : String(e)}`)), 30_000),
+        setInterval(() => void sweepAutoApprove()
+          .catch((e) => log.warn(`[auto-approve] sweep 失败：${e instanceof Error ? e.message : String(e)}`)), 30_000),
         // 定档扫描：到点的定时发送续推（60s 精度足够——定档单位是小时）。
         setInterval(() => void engine.sweepSchedules().catch(() => undefined), 60_000),
         // 回流外发箱：欠款必还（60s 补投 + 卡死告警）。

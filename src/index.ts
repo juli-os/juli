@@ -1,7 +1,8 @@
 // 服务入口：加载配置 → 组合运行时 → 挂 HTTP(S) → 启动。systemd / docker /
 // 本机前台皆可跑（服务端部署形态：无 Electron、无 GUI 依赖，API + SSE 即产品面）。
-// TLS（iOS App 兼容）：tls.enabled 时主口服务 HTTPS（自签证书自动生成，
-// App 端 TOFU 钉扎自签公钥），明文 HTTP 退到 plain_port（默认主口+1，LAN/Web 用）。
+// TLS（iOS App 兼容）：tls.enabled 时额外开 tls_port 服务 HTTPS（缺省
+// listen_port+1；受信证书优先，否则自签生成，App 端 TOFU 钉扎公钥），
+// listen_port 恒为明文（LAN/Web 用），公网入口指向 tls_port。
 
 import { serve, getRequestListener } from '@hono/node-server';
 import { createServer as createHttpServer } from 'node:http';

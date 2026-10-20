@@ -86,11 +86,10 @@ describe('sendTextConfirmed（行为契约，真实现+桩 tmux）', () => {
 
   it('粘贴丢失（指纹从未入框）→ 补一次完整粘贴后确认', async () => {
     const state = { enters: 0, pastes: 0 };
-    const landed = { box: false };
     const tmux = realImplWith({
       capturePane: async () => ok(state.pastes >= 2 && state.enters >= 1 ? clearedPane() : absentPane()),
       exec: async (args) => { if (args.includes('Enter')) state.enters += 1; return ok(''); },
-      sendText: async () => { state.pastes += 1; if (state.pastes >= 2) landed.box = true; return ok(undefined); },
+      sendText: async () => { state.pastes += 1; return ok(undefined); },
     });
     const r = await tmux.sendTextConfirmed('s1', PROMPT);
     expect(r.ok).toBe(true);

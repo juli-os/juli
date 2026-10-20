@@ -13,7 +13,7 @@ import { KANBAN_ARCHIVE_KEY, KANBAN_WAITING_KEY, currentStepOf } from '../status
 import { buildTaskCards, countByColumn, taskColumnOf } from '../task-model.ts';
 import { checkChip, isSendGate } from '../gates.ts';
 
-// 兼容既有导入面：九个视图从这里 re-import esc（历史路径，勿断）。
+// 兼容既有导入面：各视图（现存 11 个）从这里 re-import esc（历史路径，勿断）。
 export { esc };
 
 /** 闸门队列行（/api/lifecycle/steps 的 {step, workflow} 形状，snake_case）。 */
@@ -222,10 +222,10 @@ export const dashboardView = async (el: HTMLElement): Promise<() => void> => {
       };
       row.addEventListener('click', (e) => {
         if ((e.target as HTMLElement).closest('a') !== null) return;
-        const btn = (e.target as HTMLElement).closest('button[data-act]');
+        const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-act]');
         if (btn === null) { go(); return; }
         e.stopPropagation();
-        void act(btn as HTMLButtonElement, row.querySelector('.gq-sub'));
+        void act(btn, row.querySelector('.gq-sub'));
       });
       row.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
     }
@@ -289,7 +289,7 @@ export const dashboardView = async (el: HTMLElement): Promise<() => void> => {
       // 不在重载表的人类事件（如 email_sent）：就地补一行，下次重载与服务端对账。
       const ts = data !== null && typeof data === 'object' && typeof (data as { ts?: unknown }).ts === 'string'
         ? (data as { ts: string }).ts : new Date().toISOString();
-      feed?.insertAdjacentHTML('beforeend', feedRow({ ts, type } as LedgerEvent));
+      feed?.insertAdjacentHTML('beforeend', feedRow({ ts, type }));
     } else {
       // 内部事件不逐条刷屏：折叠行实时累计（重载时按窗口重计）。
       const more = el.querySelector('#feed-more');
@@ -330,7 +330,7 @@ const wfTable = (wfs: readonly Workflow[], currentOf: (wid: string) => StepRow |
   </table>`;
 };
 
-const feedRow = (e: LedgerEvent): string => `
+const feedRow = (e: Pick<LedgerEvent, 'ts' | 'type'>): string => `
   <div><span class="feed-time">${esc(e.ts.slice(11, 19))}</span> <span class="${EVENT_CLASS[e.type] ?? 'evt-info'}">${esc(e.type)}</span></div>`;
 
 /** feed 投影：对人有语义的事件逐条照显（白名单见 events-meta.ts）；内部

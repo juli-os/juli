@@ -1,5 +1,5 @@
-// 设置视图（板 09）：左侧节导航 + 右侧分节表单。五种字段控件按图例——
-// string / number（窄）/ boolean toggle（绿=启用）/ secret（脱敏不回显，留空=不变）/ list（逗号分隔）。
+// 设置视图（板 09）：左侧节导航 + 右侧分节表单。六种字段控件——
+// string / number（窄）/ boolean toggle（绿=启用）/ secret（脱敏不回显，留空=不变） / list（逗号分隔） / json（textarea）。
 // 热改键 label 旁挂「热改」chip；保存栏 cream 底说明条 + 保存本节 primary。
 // 热改键保存即生效；其余键写入 config.json、重启服务后生效——服务端
 // /api/settings 裁决，前端只按 applied_hot 如实展示。邮件触发授权（authz）
@@ -218,7 +218,7 @@ const setByPath = (obj: Record<string, unknown>, path: string, value: unknown): 
 
 const SECRET_MARK = '__MASKED__';
 
-/** 字段行（板 09 五种控件）：label（+热改 chip）左列，控件右列。
+/** 字段行（板 09 六种控件）：label（+热改 chip）左列，控件右列。
  * data-init 记渲染时值：保存只发脏字段——env 覆盖值与未动过的键绝不烘进文件。 */
 const rowHtml = (f: FieldSpec, value: unknown, hotKeys: readonly string[]): string => {
   const hot = hotKeys.includes(f.path);
@@ -303,7 +303,7 @@ export const settingsView = async (el: HTMLElement): Promise<(() => void) | void
   main.innerHTML = '';
 
   const setActive = (id: string): void => {
-    nav.querySelectorAll('a').forEach((a) => a.classList.toggle('on', (a as HTMLElement).dataset.sec === id));
+    nav.querySelectorAll<HTMLElement>('a[data-sec]').forEach((a) => a.classList.toggle('on', a.dataset.sec === id));
   };
   nav.querySelectorAll<HTMLElement>('a[data-sec]').forEach((a) => {
     a.addEventListener('click', () => {
@@ -336,7 +336,9 @@ export const settingsView = async (el: HTMLElement): Promise<(() => void) | void
   const renderAi = async (): Promise<void> => {
     const st = await api.get<{ configured: boolean; provider: string; model: string; base_url_set: boolean }>('/api/ai/status');
     const aiCfg = (getByPath(config, 'ai') ?? {}) as Record<string, unknown>;
-    const keyConfigured = aiCfg['api_key'] === SECRET_MARK || (typeof aiCfg['api_key'] === 'string' && (aiCfg['api_key']) !== '');
+    const asStr = (v: unknown): string => (typeof v === 'string' ? v : '');
+    // MASKED 哨兵也是非空串——「已配置」判定即非空字符串。
+    const keyConfigured = asStr(aiCfg['api_key']) !== '';
     const sec = document.createElement('div');
     sec.className = 'panel set-panel';
     sec.id = 'set-ai';
@@ -349,15 +351,15 @@ export const settingsView = async (el: HTMLElement): Promise<(() => void) | void
     sec.innerHTML = `${panelHead('AI <span class="chip hot">统一段</span>', '/api/settings · /api/ai/check')}
       <p class="set-sub">一处配置两处用：引擎 LLM（chat 起单/记账）与 agent 执行（tmux 里 claude 的 ANTHROPIC_API_KEY 注入）同源。现行生效：provider=<b>${esc(st.provider)}</b> · model=<b>${esc(st.model || '（默认）')}</b> · base_url=${st.base_url_set ? '已设' : '未设'} · key=${st.configured ? '✓ 已配置' : '<b style="color:var(--danger,#c0392b)">未配置</b>'}</p>
       <div class="set-row"><label>provider</label><div class="set-ctl">
-        <select id="ai-provider">${provSel(typeof aiCfg['provider'] === 'string' ? (aiCfg['provider']) : '')}</select>
+        <select id="ai-provider">${provSel(asStr(aiCfg['provider']))}</select>
         <span class="set-hint">Anthropic 兼容端点（GLM 等）选 anthropic + 填 base_url</span></div></div>
       <div class="set-row" data-init=""><label>API Key</label><div class="set-ctl">
         <input type="password" id="ai-key" data-secret="1" placeholder="${keyConfigured ? '••••••••' : ''}" autocomplete="off" />
         <span class="set-hint">${keyConfigured ? '已配置 · 留空保持不变' : '未配置（agent 无法干活）'}</span></div></div>
       <div class="set-row"><label>Base URL</label><div class="set-ctl">
-        <input type="text" id="ai-baseurl" value="${esc(typeof aiCfg['base_url'] === 'string' ? (aiCfg['base_url']) : '')}" placeholder="留空 = 官方 api.anthropic.com" /></div></div>
+        <input type="text" id="ai-baseurl" value="${esc(asStr(aiCfg['base_url']))}" placeholder="留空 = 官方 api.anthropic.com" /></div></div>
       <div class="set-row"><label>模型</label><div class="set-ctl">
-        <input type="text" id="ai-model" value="${esc(typeof aiCfg['model'] === 'string' ? (aiCfg['model']) : '')}" placeholder="如 claude-sonnet-4-5 / glm-4.6" /></div></div>
+        <input type="text" id="ai-model" value="${esc(asStr(aiCfg['model']))}" placeholder="如 claude-sonnet-4-5 / glm-4.6" /></div></div>
       <div class="set-save"><span class="dot" aria-hidden="true"></span>
         <span class="set-save-note">保存写入 ai 段（tmux 环境热注入，新 agent 会话生效；引擎 LLM 重启生效）</span>
         <span class="set-status" id="ai-status"></span>
@@ -388,10 +390,10 @@ export const settingsView = async (el: HTMLElement): Promise<(() => void) | void
       void (async () => {
       const v = collect();
       const ai: Record<string, string> = {};
-      if (v.provider !== (typeof aiCfg['provider'] === 'string' ? (aiCfg['provider']) : '')) ai['provider'] = v.provider;
-      if (v.api_key !== '') ai['api_key'] = v.api_key;
-      if (v.base_url !== (typeof aiCfg['base_url'] === 'string' ? (aiCfg['base_url']) : '')) ai['base_url'] = v.base_url;
-      if (v.model !== (typeof aiCfg['model'] === 'string' ? (aiCfg['model']) : '')) ai['model'] = v.model;
+        if (v.provider !== asStr(aiCfg['provider'])) ai['provider'] = v.provider;
+        if (v.api_key !== '') ai['api_key'] = v.api_key;
+        if (v.base_url !== asStr(aiCfg['base_url'])) ai['base_url'] = v.base_url;
+        if (v.model !== asStr(aiCfg['model'])) ai['model'] = v.model;
       if (Object.keys(ai).length === 0) { status.textContent = '没有改动'; return; }
       try {
         const r = await api.put<{ ok: boolean; applied_hot: string[] }>('/api/settings', { patch: { ai } });
@@ -560,14 +562,14 @@ export const settingsView = async (el: HTMLElement): Promise<(() => void) | void
     const sec = document.createElement('div');
     sec.className = 'panel set-panel';
     sec.id = 'set-judgment';
-    const sel = (k: string, cur: string): string =>
+    const sel = (cur: string): string =>
       ['off', 'shadow', 'on'].map((m) =>
         `<option value="${m}"${cur === m ? ' selected' : ''}>${m}</option>`).join('');
     const scenRows = jd.registry.map((k) => {
       const cur = scen[k] ?? 'off';
-      return `<div class="set-row" data-jinit="${cur}"><label>${esc(k)}</label><div class="set-ctl"><select data-jscen="${esc(k)}">${sel(k, cur)}</select></div></div>`;
+      return `<div class="set-row" data-jinit="${cur}"><label>${esc(k)}</label><div class="set-ctl"><select data-jscen="${esc(k)}">${sel(cur)}</select></div></div>`;
     }).join('');
-    const tokenSet = cloud['token'] === '__MASKED__';
+    const tokenSet = cloud['token'] === SECRET_MARK;
     sec.innerHTML = `${panelHead('语义判定（Jev） <span class="chip hot">即时生效</span>', '/api/settings/judgment')}
       <p class="set-sub">场景 off/shadow/on 三态 · shadow=判定照跑只留痕不改行为 · on=过阈值才采纳 · 文件 <span class="mono">${esc(jd.file)}</span></p>
       <div class="set-row"><label>提供方 provider</label><div class="set-ctl">

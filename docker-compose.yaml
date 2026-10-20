@@ -6,7 +6,8 @@
 #   JULI_PASSWORD=change-me docker compose up -d --build
 #   open http://localhost:7170
 #
-# All state lands in ./data (config.json included — set JULI_DATA_DIR below):
+# All state lands in ./data (config.json included — the engine follows
+# JULI_DATA_DIR=/data baked into the image, see Dockerfile):
 # lifecycle.db / pipelines / case-inbox … Recreating the container keeps state.
 services:
   juli:

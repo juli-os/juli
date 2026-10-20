@@ -22,8 +22,6 @@ import { registerEventsRoutes } from './routes/events.ts';
 import { registerBusinessRoutes } from './businessRoutes.ts';
 import { VERSION } from '../contracts/version.ts';
 
-export { VERSION };
-
 /** web/dist 解析：编译产物同级 → cwd；找不到返回 null（API-only 模式）。 */
 const resolveWebDist = (): string | null => {
   const here = dirname(fileURLToPath(import.meta.url)); // dist/http
@@ -68,12 +66,10 @@ export const createHttpApp = (rt: Runtime): Hono<AppEnv> => {
     const auth = c.req.header('authorization') ?? '';
     const token = auth.startsWith('Bearer ') ? auth.slice(7) : c.req.query('token') ?? '';
     if (token !== '') {
-      if (rt.authenticator) {
-        const r = await rt.authenticator.verify(token);
-        if (r.ok) {
-          c.set('user', r.value.id);
-          return next();
-        }
+      const r = await rt.authenticator.verify(token);
+      if (r.ok) {
+        c.set('user', r.value.id);
+        return next();
       }
       if (rt.config.password !== '' && safeEqual(token, rt.config.password)) {
         return next();
@@ -132,8 +128,6 @@ export const createHttpApp = (rt: Runtime): Hono<AppEnv> => {
       }
       const ext = abs.slice(abs.lastIndexOf('.'));
       const body = readFileSync(abs);
-      // 入口 HTML 禁缓存（web-dist 陷阱根治）：bundle 带哈希可长缓存，壳必须
-      // 每次回源——否则发新版后浏览器还在跑旧壳引用旧 bundle。
       const headers: Record<string, string> = { 'content-type': MIME[ext] ?? 'application/octet-stream' };
       // HTML 壳一律禁缓存（web-dist 陷阱根治）：index/demo-live 与探路件原型页
       // 同为迭代频繁的壳页，强刷不再是门槛；bundle/静态资源照常缓存

@@ -1,6 +1,6 @@
 // 模板视图：管线模板列表 + 手动起流。（authz 热更新已迁至「设置」页。）
 
-import { api, type TemplateInfo } from '../api.ts';
+import { api, getToken, type TemplateInfo } from '../api.ts';
 import { esc } from './dashboard.ts';
 import { askText, askChecks } from '../dialog.ts';
 import { toast } from '../ui.ts';
@@ -31,7 +31,7 @@ export const flowView = async (el: HTMLElement): Promise<void> => {
             <button class="mini ghost" data-edit="${esc(t.file)}">编辑</button>
           </div>
         </div>`).join('')
-    }<div class="row"><input id="flow-title" placeholder="标题（可空）" style="padding:6px;border:1px solid var(--line);border-radius:8px" /><input id="flow-input" placeholder='初始 input（JSON，如 {"concept":"拉花"}）' style="flex:1;padding:6px;border:1px solid var(--line);border-radius:8px" /></div></div>`;
+    }<div class="row"><input id="flow-title" placeholder="标题（可空）" style="padding:6px;border:1px solid var(--line);border-radius:8px" /><input id="flow-input" placeholder='初始 input（JSON，如 {"concept":"拉花"}）' style="flex:1;padding:6px;border:1px solid var(--line);border-radius:8px" /></div>`;
 
     for (const btn of box.querySelectorAll<HTMLButtonElement>('button[data-edit]')) {
       btn.addEventListener('click', () => {
@@ -42,7 +42,7 @@ export const flowView = async (el: HTMLElement): Promise<void> => {
         if (edited === null || edited === r.yaml) return;
         const res = await fetch('/api/pipelines', {
           method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: `Bearer ${localStorage.getItem('juli_token') ?? ''}` },
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${getToken()}` },
           body: JSON.stringify({ file, yaml: edited }),
         });
         if (!res.ok) toast('保存失败：' + (await res.text()), 'urgent');

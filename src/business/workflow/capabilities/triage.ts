@@ -7,8 +7,7 @@
 
 import { asString } from '../../../platform/shared/json.ts'
 import { type JsonRecord } from '@juli-os/artifacts'
-import { type Workflow } from '@juli-os/ledger';
-import { originalEmail } from '@juli-os/ledger';
+import { type Workflow, originalEmail } from '@juli-os/ledger';
 import { type JudgmentGateway } from '@juli-os/routing';
 import { parseLoose, type StepCtx } from './common.ts';
 
@@ -52,7 +51,7 @@ export const runTriage = async (ctx: StepCtx, routing: {
   // align_needed 消费的是两次判定之间 LLM 才生成的 summary（顺序依赖）。
   // provider 黑洞的最坏代价=单步 +60s（2×clamp 上界），影子期成本记账见
   // PROBLEMS-20260927-jev-batch2.md P2-7。
-  let outcome = null as Awaited<ReturnType<JudgmentGateway['ask']>>;
+  let outcome: Awaited<ReturnType<JudgmentGateway['ask']>> = null;
   if (judgment !== undefined) {
     outcome = await judgment.ask('triage_classify',
       { from, subject, date, body: body.slice(0, 2000) },
@@ -169,7 +168,7 @@ export const runTriage = async (ctx: StepCtx, routing: {
         },
       });
     if (outcome !== null && outcome.ok) {
-      const p = { mode: outcome.mode, scenario: 'align_needed', answer: outcome.answer ?? '', confidence: outcome.confidence ?? 0, provider: outcome.provider, model: outcome.model ?? '', input_tokens: outcome.inputTokens ?? 0, output_tokens: outcome.outputTokens ?? 0, duration_ms: outcome.durationMs ?? 0 };
+      const p = { mode: outcome.mode, scenario: 'align_needed', answer: outcome.answer ?? '', confidence: outcome.confidence ?? 0, provider: outcome.provider, ...usageOf(outcome) };
       if (outcome.mode === 'on' && outcome.answer === 'false' && (outcome.confidence ?? 0) >= outcome.threshold) {
         ctx.stepEvent(st, 'align_flagged', p);
         if (next) store.setStepInput(next.id, { align_flag: true, align_confidence: outcome.confidence ?? 0 });

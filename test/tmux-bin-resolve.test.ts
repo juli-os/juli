@@ -5,8 +5,7 @@
 // 兜底绝对路径；哪里都没有保留原名让 ENOENT 显性可诊断。
 
 import { describe, expect, it } from 'vitest';
-import { resolveTmuxBin } from '@juli-os/agents';
-import { tmuxAttachCommand } from '@juli-os/agents';
+import { resolveTmuxBin, tmuxAttachCommand } from '@juli-os/agents';
 
 const existsIn = (paths: readonly string[]) => (p: string) => paths.includes(p);
 

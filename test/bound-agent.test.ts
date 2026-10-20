@@ -15,7 +15,7 @@ const BOUND = 'project-a';
 const SENDER = 'alice.chen@example.com';
 
 const makeWorld = (over: Partial<EngineDeps> = {}) => {
-  const { clock, advance } = makeClock();
+  const { clock } = makeClock();
   const store = createLedgerStore(':memory:', { clock, ids: seqIds() });
   const dispatched: { session: string; text: string }[] = [];
   const engine = createEngine({
@@ -41,7 +41,7 @@ const makeWorld = (over: Partial<EngineDeps> = {}) => {
     authz: { mode: 'allowlist', allow: ['*@example.com', SENDER], deny: [] },
     ...over,
   } satisfies EngineDeps);
-  return { engine, store, dispatched, advanceClock: advance };
+  return { engine, store, dispatched };
 };
 
 describe('绑定会话路由（只开邮件口）', () => {

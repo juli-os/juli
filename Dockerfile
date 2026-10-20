@@ -29,11 +29,9 @@ FROM node:22 AS build
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --no-fund --no-audit
-COPY tsconfig*.json vite.web.config.ts vitest.config.ts ./
+COPY tsconfig*.json vite.web.config.ts ./
 COPY src ./src
-COPY cli ./cli
 COPY web ./web
-COPY test ./test
 RUN npm run build && npm run web
 
 FROM node:22-slim

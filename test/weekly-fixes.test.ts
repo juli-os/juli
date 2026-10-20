@@ -29,7 +29,7 @@ const BODY = '回信正文如约定。\n本邮件由 AI 助理答复，如有出
 const BODY_SHA = '40eabe02c026a84872c59362cf0124713e687840a5f391f0b4acf5fd36c8649d';
 
 const makeWorld = (over: Partial<EngineDeps> = {}) => {
-  const { clock, advance } = makeClock();
+  const { clock } = makeClock();
   const store = createLedgerStore(':memory:', { clock, ids: seqIds() });
   const dispatched: { session: string; text: string }[] = [];
   const sent: { to: string; subject: string; cc?: readonly string[] }[] = [];
@@ -57,7 +57,7 @@ const makeWorld = (over: Partial<EngineDeps> = {}) => {
     caseInboxDir: () => '/tmp/na',
     ...over,
   } satisfies EngineDeps);
-  return { engine, store, dispatched, sent, advanceClock: advance };
+  return { engine, store, dispatched, sent };
 };
 
 describe('P0 收件人劫持：回信流 envelope.to 不得覆盖 meta.from', () => {

@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { Hono } from 'hono';
 import { ok } from '@juli-os/artifacts';
 import { type ChatLlmPort, type ToolCallRequest } from '@juli-os/agents';
-import { createChatIntake, extractIntakePlanBlock, stripIntakePlanBlock, INTAKE_SYSTEM_PROMPT, type ChatIntakeDeps } from '../src/business/intake/chatIntake.ts';
+import { createChatIntake, extractIntakePlanBlock, stripIntakePlanBlock, hasIntakePlanBlock, INTAKE_SYSTEM_PROMPT, type ChatIntakeDeps } from '../src/business/intake/chatIntake.ts';
 import { CHAT_TOOL_NAMES, makeChatTools, type ChatToolDeps } from '../src/business/intake/chatTools.ts';
 import { registerChatRoutes } from '../src/http/routes/chat.ts';
 import type { AppEnv } from '../src/http/helpers.ts';
@@ -140,7 +140,7 @@ describe('chatIntake loop', () => {
     const { llm } = fakeLlm([{ content: PLAN_BLOCK }]);
     const intake = createChatIntake({
       llm, model: 'fake', tools: [],
-      startTask: async () => ({ ok: false, error: new Error('标题过长') }) as never,
+      startTask: async () => ({ ok: false as const, error: new Error('标题过长') }),
     });
     await intake.turn('出材料');
     const r = await intake.confirm();
@@ -339,6 +339,12 @@ describe('extractIntakePlanBlock / stripIntakePlanBlock', () => {
 // ---- 白名单只读硬断言 --------------------------------------------------------------
 
 describe('chatTools 白名单', () => {
+  /** 工具 Result → 字符串探针：ok 取 value，失败取 err:消息。 */
+  const val = async (r: Promise<{ ok: boolean; value?: string; error?: Error }>): Promise<string> => {
+    const v = await r;
+    return v.ok ? (v.value ?? '') : `err:${v.error?.message}`;
+  };
+
   it('封闭清单：工具名与 CHAT_TOOL_NAMES 完全一致，零写语义工具', () => {
     const tools = makeChatTools(toolDeps());
     expect(tools.map((t) => t.name)).toEqual([...CHAT_TOOL_NAMES]);
@@ -360,10 +366,6 @@ describe('chatTools 白名单', () => {
     const tools = makeChatTools(deps);
     const lookup = tools.find((t) => t.name === 'lookup_customer')!;
     const list = tools.find((t) => t.name === 'list_tasks')!;
-    const val = async (r: Promise<{ ok: boolean; value?: string; error?: Error }>): Promise<string> => {
-      const v = await r;
-      return v.ok ? (v.value ?? '') : `err:${v.error?.message}`;
-    };
     expect(await val(lookup.execute({ query: '   ' }))).toBe('[]');
     expect(await val(lookup.execute({ query: 'casey' }))).toContain('acme.de');
     // 收敛窗（2026-10-14 用户裁定「找单子只能找 20 太少」）：999→100、
@@ -378,10 +380,6 @@ describe('chatTools 白名单', () => {
 
   it('get_task：命中回全息、未命中 found:false、空参拒；list_sessions/service_info 直通', async () => {
     const tools = makeChatTools(toolDeps());
-    const val = async (r: Promise<{ ok: boolean; value?: string; error?: Error }>): Promise<string> => {
-      const v = await r;
-      return v.ok ? (v.value ?? '') : `err:${v.error?.message}`;
-    };
     const getTask = tools.find((t) => t.name === 'get_task')!;
     expect(await val(getTask.execute({ wf_id: 'wf_known000001' }))).toContain('"waiting_human"');
     expect(await val(getTask.execute({ wf_id: 'wf_nope' }))).toBe('{"found":false}');
@@ -405,6 +403,8 @@ describe('HTTP /api/chat/intake/*', () => {
     const app = new Hono<AppEnv>();
     const rt = {
       chatIntake,
+      // conv 分线程（2026-10-17）：fake=单桶直通（与 main 桶同语义）。
+      chatIntakeFor: (_conv: string) => chatIntake,
       emitChat: () => undefined,
       usage: { stats: () => ({}), timeline: () => [] },
       // R1 P2-4 起路由注册即读 config.data_dir（附件目录与数据面同根）——
@@ -414,7 +414,7 @@ describe('HTTP /api/chat/intake/*', () => {
     registerChatRoutes(app, rt);
     return app;
   };
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- 测试 JSON 探针：data=JSON.parse 动态形态，下游数十处临时断言消费，精确建型需给全部 expect 补窄化（零安全增益 churn）。
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 测试 JSON 探针：data=JSON.parse 动态形态，下游数十处临时断言消费，精确建型需给全部 expect 补窄化（零安全增益 churn）。
   const j = async (app: Hono<AppEnv>, method: string, path: string, body?: unknown): Promise<{ status: number; data: any }> => {
     const res = await app.request(path, {
       method,
@@ -533,5 +533,37 @@ describe('chat 线落点注入引擎级（十一跑 P1-1）', () => {
     // default juli-reply 空闲 → 直达（不注入，也不改道去忙的 juli-dev）
     expect(w.dispatched.find((d) => d.text.includes(CHAT_BRIEF))!.session).toBe('juli-reply');
     expect(audit).toEqual([]); // 「没注入」不记成「注过」
+  });
+});
+
+// 2026-10-17「开单卡不弹」事故回归：LLM 计划块 JSON 尾巴带 `};` 手抖——旧
+// 严格 JSON.parse 直接炸+catch 静默 null，相位永停 discuss（用户端=LLM 承诺
+// 开单但卡永不出现）。边界纪律：LLM 输出=外部数据，解析须宽容（平衡花括号
+// 提取）+「块在场但解析失败」可区分（hasIntakePlanBlock）。
+describe('extractIntakePlanBlock 宽容解析（LLM 手抖面）', () => {
+  const tonightPayload = '好的，如果没问题我按这个提议开单：\n\n```intake-plan\n{"title":"跟进单","summary":"概要","brief":"完整 brief"}\n```\n';
+  it('事故原串：JSON 尾巴多 } 与分号 → 平衡提取救回', () => {
+    const text = '复述……如果没问题，我按这个提议开单：\n\n```intake-plan\n{"title":"音标迭代","summary":"音标模块","brief":"三个改动点……"}\n};\n```';
+    const p = extractIntakePlanBlock(text);
+    expect(p?.title).toBe('音标迭代');
+    expect(p?.brief).toContain('三个改动点');
+  });
+  it('干净块照常', () => {
+    expect(extractIntakePlanBlock(tonightPayload)?.title).toBe('跟进单');
+  });
+  it('块后带 LLM 废话尾巴也救回（右边界收在首个平衡闭括号）', () => {
+    const text = '```intake-plan\n{"title":"t","summary":"s","brief":"b"}\n以上，请确认。\n```';
+    expect(extractIntakePlanBlock(text)?.title).toBe('t');
+  });
+  it('字符串内的花括号不误判深度（嵌套 JSON 值）', () => {
+    const text = '```intake-plan\n{"title":"t","summary":"s","brief":"含 } 与 { 的内容"}\n```';
+    expect(extractIntakePlanBlock(text)?.brief).toContain('含 } 与 { 的内容');
+  });
+  it('无块 → null 且 hasIntakePlanBlock=false；块在解析炸 → null 但 has=true（可区分告警）', () => {
+    expect(extractIntakePlanBlock('没有块')).toBeNull();
+    expect(hasIntakePlanBlock('没有块')).toBe(false);
+    const broken = '```intake-plan\n根本不是 JSON\n```';
+    expect(extractIntakePlanBlock(broken)).toBeNull();
+    expect(hasIntakePlanBlock(broken)).toBe(true);
   });
 });

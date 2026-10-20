@@ -2,13 +2,10 @@
 // （tmux 异步 / ACP 同步两条派发路径；发送步=守卫链+信封契约+SMTP 全链）。
 
 import { createHash } from 'node:crypto';
-import { rfc3339 } from '@juli-os/artifacts';
-import { asString } from '../../platform/shared/json.ts'
-import type { JsonRecord, JsonValue } from '@juli-os/artifacts'
+import { rfc3339, type JsonRecord, type JsonValue } from '@juli-os/artifacts';
+import { asString } from '../../platform/shared/json.ts';
 import type { Logger } from '../../platform/events/bus.ts';
-import type { LifecycleStore } from '@juli-os/ledger';
-import { appendReference } from '@juli-os/ledger';
-import { type Step } from '@juli-os/ledger';
+import { appendReference, type LifecycleStore, type Step } from '@juli-os/ledger';
 import type { StepCtx, StepHandler } from './capabilities/index.ts';
 import { agentSessionOf, flowContext, planPrompt, renderFlowTemplate } from './capabilities/index.ts';
 import {
@@ -411,7 +408,7 @@ export const makeSteps = (o: {
           (deps.availableSessions ?? []).includes(s) && !store.sessionHasOpenWork(s, w.id);
         const divert = [...others.filter((a) => a.company === home), ...others.filter((a) => a.company !== home)]
           .find((a) => idleOf(a.session))?.session ?? null;
-        if (divert !== null && divert !== undefined) {
+        if (divert !== null) {
           // 改道必须彻底（2026-09-28 双投事故）：resolved_session 一并落步——
           // 僵尸看门狗/重派/干预都按它找「这步的活会话」。只改运行时变量不落
           // 步，下游按播种地址（input.session）把空闲会话误判僵尸、再按旧地址
@@ -673,7 +670,7 @@ export const makeSteps = (o: {
       // 哈希核验对【取回字节】重算——账本登记值只作参考，传输/磁盘层面的
       // 任何篡改（字节变了账本没变）在这里被抓。
       const actual = createHash('sha256').update(content.bytes).digest('hex');
-      if (sha !== '' && actual !== sha) {
+      if (actual !== sha) {
         st0.setStepOutput(st.id, {
           error: `body artifact hash mismatch (approved ${sha.slice(0, 12)}…, got ${actual.slice(0, 12)}…) — 内容与批准版本不一致，拒发`,
         });
@@ -854,4 +851,3 @@ export const makeSteps = (o: {
 
   return { openGate, runAgentStep, runSendStep, resolveBodyText, gateWorkflowActive, renderSeedPlan };
 };
-

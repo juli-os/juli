@@ -39,6 +39,11 @@ const harnessOf = (judgment: JudgmentGateway): JudgmentScenarioDeps & {
   return { judgment, store, log: { info: (m) => { lines.push(m); } }, lines };
 };
 
+/** 留痕面必炸的假依赖（appendEvent 抛 db locked）：钉 gradeAlert 上抛 /
+ * taskTier 容错这对留痕语义分叉。 */
+const throwingDepsOf = (judgment: JudgmentGateway): JudgmentScenarioDeps =>
+  ({ judgment, store: { appendEvent: () => { throw new Error('db locked'); } }, log: { info: () => {} } });
+
 describe('makeGradeAlert（alert_grade 判定本体）', () => {
   it('ask→null（场景 off/网关缺席）→ 照推且零留痕', async () => {
     const { judgment } = gatewayOf(null);
@@ -87,7 +92,7 @@ describe('makeGradeAlert（alert_grade 判定本体）', () => {
 
   it('留痕抛错上抛（无 try/catch——推送路径 fire-and-forget 面兜底=照推）', async () => {
     const { judgment } = gatewayOf(outcome());
-    const d = { judgment, store: { appendEvent: () => { throw new Error('db locked'); } }, log: { info: () => {} } } as unknown as JudgmentScenarioDeps;
+    const d = throwingDepsOf(judgment);
     await expect(makeGradeAlert(d)('t', 'b')).rejects.toThrow('db locked');
   });
 });
@@ -118,7 +123,7 @@ describe('makeTaskTier（task_tier 判定本体）', () => {
 
   it('留痕失败不阻断档位判定（try/catch 容错——与 gradeAlert 语义差异）', async () => {
     const { judgment } = gatewayOf(outcome({ answer: 'high' }));
-    const d = { judgment, store: { appendEvent: () => { throw new Error('db locked'); } }, log: { info: () => {} } } as unknown as JudgmentScenarioDeps;
+    const d = throwingDepsOf(judgment);
     await expect(makeTaskTier(d)('t', 'b')).resolves.toBe('high');
   });
 

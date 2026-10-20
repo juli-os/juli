@@ -1,16 +1,16 @@
 #cloud-config
 # Aliyun ECS bootstrap for juli (one-time user-data).
-# Installs docker + compose plugin, prepares /data, opens nothing else —
-# the engine container is created by deploy.sh (needs JULI_PASSWORD).
+# Installs docker, prepares /data, opens nothing else —
+# the engine container is created by deploy.sh (password: /data/juli_password,
+# preset here as an empty 0600 file — write the JULI_PASSWORD=... line into it
+# once over SSH, see README; the password itself is not known at bootstrap).
 packages: [docker.io]
 runcmd:
   - systemctl enable --now docker
   - mkdir -p /data
   - chmod 700 /data
-  - |
-    cat >/etc/systemd/system/juli-update.path <<'EOF'
-    # (optional helper) redeploy trigger omitted — deploy.sh uses cloud assistant
-    EOF
+  - touch /data/juli_password
+  - chmod 600 /data/juli_password
 write_files:
   - path: /etc/docker/daemon.json
     permissions: "0644"

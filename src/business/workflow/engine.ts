@@ -316,14 +316,14 @@ export const createEngine = (deps: EngineDeps): Engine => {
       const sess = st !== null && st.status === 'pending' && st.kind === 'agent'
         && typeof st.input['session'] === 'string' ? (st.input['session']).trim() : '';
       const avail = deps.availableSessions ?? [];
-      if (sess !== '' && avail.length > 0) {
+      if (st !== null && sess !== '' && avail.length > 0) {
         // 占用=已派发在跑的单（running）——同会话排队的兄弟单不算占（否则
         // 两个等待单互相视为忙=死锁）；0930「排队也是忙」口径保留给下面的
         // 改道候选判定（idleAlt 用 sessionHasOpenWork，queued 计忙防堆积）。
         const occupied = store.listWorkflows(500).some((x) => x.id !== workflowId && x.status === 'running'
           && (x.session === sess || (x.meta?.['assigned_session'] ?? '') === sess));
         if (occupied) {
-        const pinV = st!.input['session_pinned'];
+        const pinV = st.input['session_pinned'];
         const pinned = pinV === true || pinV === 'true';
         const boundNames = (deps.routing.boundAgents ?? []).map((b) => b.session);
         const idleAlt = (deps.routing.agents ?? []).some((a) =>
@@ -425,8 +425,7 @@ export const createEngine = (deps: EngineDeps): Engine => {
       if (patch.session !== undefined && patch.session.trim() !== '') { ov['session'] = patch.session.trim(); applied['session'] = patch.session.trim(); }
       if (patch.context !== undefined && patch.context.trim() !== '') {
         const prev = typeof ov['context'] === 'string' ? ov['context'] : '';
-        ov['context'] = (prev !== '' ? `${prev}
-` : '') + patch.context.trim();
+        ov['context'] = (prev !== '' ? `${prev}\n` : '') + patch.context.trim();
         applied['context_appended'] = patch.context.trim().slice(0, 80);
       }
       const metaPatch: Record<string, JsonValue> = {};

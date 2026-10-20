@@ -5,7 +5,7 @@ import type { Hono, Context } from 'hono';
 import { stepToGo, workflowToGo } from '../../platform/shared/goShape.ts';
 import { type StepKind } from '@juli-os/ledger';
 import type { Runtime } from '../../runtime.ts';
-import type { JsonRecord } from '@juli-os/artifacts'
+import type { JsonRecord } from '@juli-os/artifacts';
 import { bodyStr, clampInt, readBody, type AppEnv } from '../helpers.ts';
 import { usageAggOf } from '../../business/workflow/costContext.ts';
 
@@ -192,41 +192,6 @@ export const registerLifecycleRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
     return c.json({ events: rt.store.listEvents(limit, types.length > 0 ? types : undefined) });
   });
 
-  // send_at 类型守卫：approve 专属的定时发参数（其余动作忽略）。
-const stepAction = (action: 'approve' | 'deny' | 'resolve' | 'retry') =>
-    async (c: Context): Promise<Response> => {
-      const body = await readBody(c);
-      const id = c.req.param('id') ?? '';
-      const noteV = body['note'];
-      const note = typeof noteV === 'string' ? noteV : '';
-      const byV = body['by'];
-      const by = typeof byV === 'string' ? byV : 'operator';
-      // 干预重试（agent/verify/llm 步）：携带 plan/prompt/session 补丁，
-      // 重臂前覆写步骤 input——出问题时人可以在重跑前改指令/改路由。
-      const patch: { plan?: string; prompt?: string; session?: string } = {};
-      for (const k of ['plan', 'prompt', 'session'] as const) {
-        const v = body[k];
-        if (typeof v === 'string' && v.trim() !== '') patch[k] = v;
-      }
-      try {
-        const sendAt = typeof body['send_at'] === 'string' && body['send_at'] !== '' ? body['send_at'] : undefined;
-        if (action === 'approve') await rt.engine.approve(id, note, by, sendAt);
-        else if (action === 'deny') await rt.engine.deny(id, note, by);
-        else if (action === 'resolve') await rt.engine.resolve(id, note, by);
-        else await rt.engine.retry(id, Object.keys(patch).length > 0 ? patch : undefined, by);
-        return c.json({ ok: true });
-      } catch (e) {
-        return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
-      }
-    };
-
-  app.post('/api/lifecycle/steps/:id/approve', stepAction('approve'));
-  app.post('/api/lifecycle/steps/:id/deny', stepAction('deny'));
-  app.post('/api/lifecycle/steps/:id/resolve', stepAction('resolve'));
-  app.post('/api/lifecycle/steps/:id/retry', stepAction('retry'));
-  // 收单台快照（0920）：并发上限 / 正占位 / 等待中（队序）。CLI juli queue 同源。
-  app.get('/api/queue', (c) => c.json(rt.engine.queueStatus()));
-
   // ---- 引擎动作路由的公共壳 -----------------------------------------------------
   // 读 body → 调引擎（:id 参数 + body）→ {ok:true}（或 fn 返回的 JSON）；
   // 引擎抛错 → 400 透传中文消息。五段 try/catch 样板收口成一处。
@@ -241,6 +206,32 @@ const stepAction = (action: 'approve' | 'deny' | 'resolve' | 'retry') =>
         return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
       }
     };
+
+  // send_at 类型守卫：approve 专属的定时发参数（其余动作忽略）。
+  const stepAction = (action: 'approve' | 'deny' | 'resolve' | 'retry') =>
+    engineAction(async (id, body) => {
+      const note = bodyStr(body, 'note');
+      const by = bodyStr(body, 'by', 'operator');
+      // 干预重试（agent/verify/llm 步）：携带 plan/prompt/session 补丁，
+      // 重臂前覆写步骤 input——出问题时人可以在重跑前改指令/改路由。
+      const patch: { plan?: string; prompt?: string; session?: string } = {};
+      for (const k of ['plan', 'prompt', 'session'] as const) {
+        const v = body[k];
+        if (typeof v === 'string' && v.trim() !== '') patch[k] = v;
+      }
+      const sendAt = typeof body['send_at'] === 'string' && body['send_at'] !== '' ? body['send_at'] : undefined;
+      if (action === 'approve') await rt.engine.approve(id, note, by, sendAt);
+      else if (action === 'deny') await rt.engine.deny(id, note, by);
+      else if (action === 'resolve') await rt.engine.resolve(id, note, by);
+      else await rt.engine.retry(id, Object.keys(patch).length > 0 ? patch : undefined, by);
+    });
+
+  app.post('/api/lifecycle/steps/:id/approve', stepAction('approve'));
+  app.post('/api/lifecycle/steps/:id/deny', stepAction('deny'));
+  app.post('/api/lifecycle/steps/:id/resolve', stepAction('resolve'));
+  app.post('/api/lifecycle/steps/:id/retry', stepAction('retry'));
+  // 收单台快照（0920）：并发上限 / 正占位 / 等待中（队序）。CLI juli queue 同源。
+  app.get('/api/queue', (c) => c.json(rt.engine.queueStatus()));
 
   app.post('/api/lifecycle/steps/:id/rework', engineAction(async (id, body) => {
     await rt.engine.rework(id, bodyStr(body, 'feedback'), bodyStr(body, 'by', 'operator'));
@@ -318,22 +309,16 @@ const stepAction = (action: 'approve' | 'deny' | 'resolve' | 'retry') =>
   }));
 
   // 免模板起单（动态模型标准入口）：POST /api/lifecycle/tasks {title, input}
-  app.post('/api/lifecycle/tasks', async (c) => {
-    const body = await readBody(c);
-    const title = bodyStr(body, 'title');
+  app.post('/api/lifecycle/tasks', engineAction(async (_id, body) => {
     const rawInput = body['input'] ?? {};
     const input = (rawInput !== null && typeof rawInput === 'object' && !Array.isArray(rawInput) ? rawInput : {}) as JsonRecord;
-    try {
-      // 判定收敛执行层（2026-10-13 用户裁定「排队后再决定路由」）：进件只
-      // 收倾向（显式 session/挂靠/档位原样透传），落点与档位判定移到派发
-      // 时刻（engine steps 三无腿，jev 对实时忙闲判）——进件快照过期就此
-      // 收口；startTask「入口到 createWorkflow 无 await」不变量随之恢复。
-      const w = await rt.engine.startTask(title, input);
-      return c.json({ workflow: w });
-    } catch (e) {
-      return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
-    }
-  });
+    // 判定收敛执行层（2026-10-13 用户裁定「排队后再决定路由」）：进件只
+    // 收倾向（显式 session/挂靠/档位原样透传），落点与档位判定移到派发
+    // 时刻（engine steps 三无腿，jev 对实时忙闲判）——进件快照过期就此
+    // 收口；startTask「入口到 createWorkflow 无 await」不变量随之恢复。
+    const w = await rt.engine.startTask(bodyStr(body, 'title'), input);
+    return { workflow: w } as unknown as JsonRecord;
+  }));
 
   app.post('/api/lifecycle/workflows/:id/settle', engineAction(async (id, body) => {
     await rt.engine.settle(id, bodyStr(body, 'by', 'operator'));
@@ -348,17 +333,9 @@ const stepAction = (action: 'approve' | 'deny' | 'resolve' | 'retry') =>
     await rt.engine.closeWorkflow(id, bodyStr(body, 'note'), bodyStr(body, 'by', 'operator'));
   }));
 
-  app.post('/api/lifecycle/workflows/:id/assign', async (c) => {
-    const body = await readBody(c);
-    const session = bodyStr(body, 'session');
-    const by = bodyStr(body, 'by', 'operator');
-    try {
-      await rt.engine.assignSession(c.req.param('id'), session, by);
-      return c.json({ ok: true });
-    } catch (e) {
-      return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
-    }
-  });
+  app.post('/api/lifecycle/workflows/:id/assign', engineAction(async (id, body) => {
+    await rt.engine.assignSession(id, bodyStr(body, 'session'), bodyStr(body, 'by', 'operator'));
+  }));
 
   app.get('/api/lifecycle/steps', (c) => {
     const status = c.req.query('status') ?? '';

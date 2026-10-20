@@ -11,7 +11,7 @@ import type { MailerPort, PusherPort } from '../src/contracts/ports.ts';
 import { makeClock, makeEmail, seqIds } from './helpers.ts';
 
 const makeWorld = (over: Partial<EngineDeps> = {}) => {
-  const { clock, advance } = makeClock();
+  const { clock } = makeClock();
   const store = createLedgerStore(':memory:', { clock, ids: seqIds() });
   const engine = createEngine({
     store,
@@ -27,7 +27,7 @@ const makeWorld = (over: Partial<EngineDeps> = {}) => {
     authz: { mode: 'allowlist', allow: ['*@example.com'], deny: [] },
     ...over,
   } satisfies EngineDeps);
-  return { engine, store, advanceClock: advance };
+  return { engine, store };
 };
 
 describe('decideRoute 纯函数（可回放）', () => {

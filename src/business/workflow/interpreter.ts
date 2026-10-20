@@ -7,11 +7,11 @@ import type { Clock } from '@juli-os/artifacts';
 import type { LifecycleStore } from '@juli-os/ledger';
 import { type Step, type StepKind, type Workflow } from '@juli-os/ledger';
 import { isActiveStepStatus } from '../../contracts/statuses.ts';
-import { asString } from '../../platform/shared/json.ts'
+import { asString } from '../../platform/shared/json.ts';
 import {
-  runTriage, runDraft, runGenericLlm, runShare, type StepCtx, type StepHandler,
+  runTriage, runDraft, runGenericLlm, runShare, renderFlowTemplate, flowContext,
+  type StepCtx, type StepHandler,
 } from './capabilities/index.ts';
-import { renderFlowTemplate, flowContext } from './capabilities/index.ts';
 import { isSendGateDecision } from '../send/sendSeed.ts';
 import type { EngineDeps } from './engine.ts';
 import type { Journal } from './journal.ts';
@@ -100,7 +100,7 @@ export const makeInterpreter = (o: {
       // nodes 模式:节点间空档 = 等下一次动作追加,不是完成。但链尾悬空
       // （全终态且无 send 步）必须留痕——静默等待正是 wf_e4013364bc8d 的
       // 「批准了发送闸门却永远没发」事故形态。
-      if (store.getWorkflow(workflowId)?.meta['mode'] === 'nodes') {
+      if (w0.meta['mode'] === 'nodes') {
         await detectChainDangling(workflowId);
         await hintSettleable(workflowId);
         return;
@@ -117,9 +117,10 @@ export const makeInterpreter = (o: {
         // 守卫的全部意图是人工处置——通知缺位处置闭环就迟迟不启动。与
         // workflowDone 推送同构：尽力而为，推送失败绝不阻塞守卫本身。
         const wFailed = store.getWorkflow(workflowId);
+        const pusher = deps.pusher;
         if (wFailed) {
-          await o.journal.pushBestEffort('workflowFailed', deps.pusher &&
-            (() => deps.pusher!.workflowFailed(wFailed, '零步骤守卫：流水无任何步骤即推进——需人工核实后 close')));
+          await o.journal.pushBestEffort('workflowFailed', pusher &&
+            (() => pusher.workflowFailed(wFailed, '零步骤守卫：流水无任何步骤即推进——需人工核实后 close')));
         }
         return;
       }
@@ -129,8 +130,9 @@ export const makeInterpreter = (o: {
       // 结案流程图：2026-10-04 用户裁定彻底删除（wf_00a2a1339b3a）。
       const w = store.getWorkflow(workflowId);
       if (w) {
-        await o.journal.pushBestEffort('workflowDone', deps.pusher &&
-          (() => deps.pusher!.workflowDone(w, '业务流完成，回信已发出')));
+        const pusher = deps.pusher;
+        await o.journal.pushBestEffort('workflowDone', pusher &&
+          (() => pusher.workflowDone(w, '业务流完成，回信已发出')));
       }
       return;
     }

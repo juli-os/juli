@@ -9,6 +9,7 @@ import type { IncomingMessage, Server } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { safeEqual } from '../shared/secure.ts';
+import { sanitizeConv } from '../shared/conv.ts';
 import type { ChatHub } from './chathub.ts';
 import type { TmuxClient } from '@juli-os/agents';
 
@@ -75,20 +76,26 @@ export const attachChatWireWs = (deps: {
 }): void => {
   const wss = new WebSocketServer({ noServer: true });
   deps.server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
-    acceptWithToken(req, socket, head, '/ws/chat', deps.password, wss, (ws) => {
+    acceptWithToken(req, socket, head, '/ws/chat', deps.password, wss, (ws, url) => {
+      // conv 分线程（2026-10-17）：客户端带 ?conv= 只收该线程帧；不带=旧
+      // 客户端，只收 main（旧单线程语义）——并行使用/诊断注入不再串台。
+      // 清洗与 HTTP 侧同口径（sanitizeConv，R1-F2）：空串/非法 id 一律归
+      // main，不会订阅永不存在的线程静默零帧。
+      const conv = sanitizeConv(url.searchParams.get('conv'));
       const send = (frame: { type: string; data: string }): void => {
         if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame));
       };
       const unsub = deps.chatHub.subscribe((e) => {
+        if (e.conv !== conv) return;
         const w = toWireEvent(e.type, e.data);
         send(w);
       });
       const ping = setInterval(() => send({ type: 'ping', data: '' }), 30_000);
-      deps.log?.('[ws] chat wire attach');
+      deps.log?.(`[ws] chat wire attach (conv=${conv})`);
       ws.on('close', () => {
         clearInterval(ping);
         unsub();
-        deps.log?.('[ws] chat wire detach');
+        deps.log?.(`[ws] chat wire detach (conv=${conv})`);
       });
     });
   });

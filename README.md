@@ -109,7 +109,7 @@ starts runs through the same engine — replies wait at a send gate. See
 
 Prebuilt images: `ghcr.io/juli-os/juli` (multi-arch, tagged releases).
 
-One-command cloud deployments (Terraform / Cloud Run / Aliyun SAE) live in
+One-command cloud deployments (Terraform / Cloud Run / Aliyun ECS) live in
 [`deploy/`](deploy/) — each with a README covering the minimal monthly setup.
 Single instance only: the ledger is SQLite, so scale-out is intentionally out
 of scope for the MVP.

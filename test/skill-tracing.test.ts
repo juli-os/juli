@@ -8,8 +8,7 @@ import { join } from 'node:path';
 import { configSchema } from '../src/platform/config/schema.ts';
 import { createRuntime } from '../src/runtime.ts';
 import { createHttpApp } from '../src/http/app.ts';
-import { defaultHookSpecs, installClaudeHooks } from '@juli-os/agents';
-import { parseSkillUsedStdin } from '@juli-os/agents';
+import { defaultHookSpecs, installClaudeHooks, parseSkillUsedStdin } from '@juli-os/agents';
 
 const dir = mkdtempSync(join(tmpdir(), 'juli-skill-'));
 const claudeDir = join(dir, 'claude');

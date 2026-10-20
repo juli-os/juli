@@ -192,7 +192,6 @@ describe('GET /api/lifecycle/workflows/:id usageCost', () => {
       rt.store.db.prepare('UPDATE workflow_steps SET updated_at=?, status=? WHERE id=?')
         .run('2026-10-09T02:30:00Z', 'completed', g.id);
       rt.store.db.prepare('UPDATE workflows SET status=? WHERE id=?').run('completed', w.id);
-      rt.store.db.prepare('UPDATE workflows SET updated_at=? WHERE id=?').run('2026-10-09T03:00:00Z', w.id);
       const udb = new DatabaseSync(join(dir, 'prompt_usage.db'));
       insertTurn(udb, 'juli-a', 'glm-5.3', 1_000_000, 0, 0, '2026-10-09T01:10:00.000Z'); // 步窗内：8 元
       insertTurn(udb, 'juli-a', 'glm-5.3', 1_000_000, 0, 0, '2026-10-09T02:45:00.000Z'); // 延伸段（回流执行）：8 元

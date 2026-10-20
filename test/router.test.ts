@@ -7,7 +7,7 @@ import { createSessionRouter } from '@juli-os/agents';
 const fakeList = (names: string[]) => (): readonly string[] => names;
 
 describe('createSessionRouter（复用优先）', () => {
-  it('存在的会话原样复用；不存在的落回 default——绝不凭空新造', async () => {
+  it('存在的会话原样复用；不存在的落回 default——绝不凭空新造', () => {
     const r = createSessionRouter({
       listSync: fakeList(['juli-reply', 'juli-demo-card', 'dev']),
       defaultSession: 'juli-reply', ttlMs: 60_000,

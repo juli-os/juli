@@ -7,10 +7,9 @@
 // waiting_human=审批卡不出现。
 
 import { describe, expect, it } from 'vitest';
-import { ladderEmail, makeEngine, makeEmail, until } from './helpers.ts';
+import { ladderEmail, makeClock, makeEngine, makeEmail, seqIds, until } from './helpers.ts';
 import { makeQueue } from '../src/business/workflow/queue.ts';
 import { createLedgerStore } from '@juli-os/ledger';
-import { makeClock, seqIds } from './helpers.ts';
 
 describe('①③ 改道彻底化 + 重派跟随落点', () => {
   const setupBusyDivert = async () => {
@@ -182,7 +181,6 @@ describe('④ 闸门开启不经收单台排队', () => {
   });
 });
 
-
 describe('跟进会话继承（2026-09-28 用户口令「复用之前处理的 session」）', () => {
   it('relates_to 原单有落点 → 跟进首步继承原会话 + session_inherited 留痕', async () => {
     const w = makeEngine({ routing: { defaultSession: 'juli-reply', defaultProject: 'p' } });
@@ -227,7 +225,6 @@ describe('跟进会话继承（2026-09-28 用户口令「复用之前处理的 s
     expect(w.store.stepsForWorkflow(follow.id)[0]!.input['session']).toBe('juli-reply');
   });
 });
-
 
 describe('统一干预四件套（2026-09-28 用户口令「状态迁移时人插得进手」）', () => {
   it('无 override → 行为零变化：派发走 default，零 override 事件', async () => {
@@ -321,20 +318,21 @@ describe('统一干预四件套（2026-09-28 用户口令「状态迁移时人�
   });
 });
 
+/** 等输入/问询类测试共用：阶梯起流 → 人批 → 推进到第三步 agent running。 */
+const setupAtAgent = async (fingerprint: () => string) => {
+  const w = makeEngine({
+    routing: { defaultSession: 'juli-reply', defaultProject: 'p' },
+    zombieFingerprint: async () => fingerprint(),
+  });
+  await ladderEmail(w.engine, makeEmail());
+  const wfId = w.store.listWorkflows()[0]!.id;
+  await until(() => w.store.stepsForWorkflow(wfId)[1]!.status === 'waiting_human');
+  await w.engine.approve(w.store.stepsForWorkflow(wfId)[1]!.id, '', 'boss');
+  await until(() => w.store.stepsForWorkflow(wfId)[2]!.status === 'running');
+  return { w, wfId };
+};
 
 describe('等输入豁免（2026-09-28 提问卡单修复：ask user 不再被僵尸打断）', () => {
-  const setupAtAgent = async (fingerprint: () => string) => {
-    const w = makeEngine({
-      routing: { defaultSession: 'juli-reply', defaultProject: 'p' },
-      zombieFingerprint: async () => fingerprint(),
-    });
-    await ladderEmail(w.engine, makeEmail());
-    const wfId = w.store.listWorkflows()[0]!.id;
-    await until(() => w.store.stepsForWorkflow(wfId)[1]!.status === 'waiting_human');
-    await w.engine.approve(w.store.stepsForWorkflow(wfId)[1]!.id, '', 'boss');
-    await until(() => w.store.stepsForWorkflow(wfId)[2]!.status === 'running');
-    return { w, wfId };
-  };
   const ASK_PANE = '⎿ Do you want to make this edit to about.html?\n❯ 1. Yes\n  2. No, and tell claude what to do differently';
 
   it('等输入态：超时也不判死（豁免）+ agent_awaiting_input 留痕 + 推送通知', async () => {
@@ -370,23 +368,9 @@ describe('等输入豁免（2026-09-28 提问卡单修复：ask user 不再被�
   });
 });
 
-
 describe('hook 等输入（CC Notification 信号，2026-09-28 用户裁定「cli hook 更稳妥」）', () => {
-  const setup = async (fingerprint: () => string) => {
-    const w = makeEngine({
-      routing: { defaultSession: 'juli-reply', defaultProject: 'p' },
-      zombieFingerprint: async () => fingerprint(),
-    });
-    await ladderEmail(w.engine, makeEmail());
-    const wfId = w.store.listWorkflows()[0]!.id;
-    await until(() => w.store.stepsForWorkflow(wfId)[1]!.status === 'waiting_human');
-    await w.engine.approve(w.store.stepsForWorkflow(wfId)[1]!.id, '', 'boss');
-    await until(() => w.store.stepsForWorkflow(wfId)[2]!.status === 'running');
-    return { w, wfId };
-  };
-
   it('Notification hook → 豁免（pane 无指纹也豁免）+ 事件带 message + 同期一次', async () => {
-    const { w } = await setup(() => '完全没有等待指纹的普通 pane');
+    const { w } = await setupAtAgent(() => '完全没有等待指纹的普通 pane');
     await w.engine.noteAwaiting('juli-reply', 'Claude needs your permission to use Bash');
     w.advanceClock(30 * 60_000);
     await w.engine.sweepZombies();
@@ -404,7 +388,7 @@ describe('hook 等输入（CC Notification 信号，2026-09-28 用户裁定「cl
   });
 
   it('心跳即解除豁免（人已回答/agent 继续）→ 真僵尸判定恢复', async () => {
-    const { w } = await setup(() => '完全没有等待指纹的普通 pane');
+    const { w } = await setupAtAgent(() => '完全没有等待指纹的普通 pane');
     await w.engine.noteAwaiting('juli-reply', 'waiting for input');
     w.engine.touchSession('juli-reply'); // 心跳=已继续
     w.advanceClock(6 * 60_000);
@@ -420,7 +404,6 @@ describe('hook 等输入（CC Notification 信号，2026-09-28 用户裁定「cl
     expect(w.store.listEvents(50).some((e) => e.type === 'agent_awaiting_input')).toBe(false);
   });
 });
-
 
 describe('问询闸门=选择题（2026-09-28 用户口令「升格为 step+审核，做成选择题」）', () => {
   const MENU_PANE = [
@@ -444,15 +427,7 @@ describe('问询闸门=选择题（2026-09-28 用户口令「升格为 step+审�
   });
 
   it('noteAwaiting → 挂 waiting_human 问询闸（带选项）+ 去重不重复挂', async () => {
-    const w = makeEngine({
-      routing: { defaultSession: 'juli-reply', defaultProject: 'p' },
-      zombieFingerprint: async () => MENU_PANE,
-    });
-    await ladderEmail(w.engine, makeEmail());
-    const wfId = w.store.listWorkflows()[0]!.id;
-    await until(() => w.store.stepsForWorkflow(wfId)[1]!.status === 'waiting_human');
-    await w.engine.approve(w.store.stepsForWorkflow(wfId)[1]!.id, '', 'boss');
-    await until(() => w.store.stepsForWorkflow(wfId)[2]!.status === 'running');
+    const { w, wfId } = await setupAtAgent(() => MENU_PANE);
     await w.engine.noteAwaiting('juli-reply', 'Claude needs your permission to use Edit');
     const gates = w.store.stepsForWorkflow(wfId).filter((g) => g.kind === 'gate' && g.status === 'waiting_human' && (g.input as Record<string, unknown>)['question_options'] !== undefined);
     expect(gates).toHaveLength(1);
@@ -493,7 +468,6 @@ describe('问询闸门=选择题（2026-09-28 用户口令「升格为 step+审�
   });
 });
 
-
 describe('feedback 锚继承 → 主动 settle（2026-09-28 两次实战后补上）', () => {
   it('跟进继承原单锚（单 id+数组全量去重）+ 事件留痕；已有锚不覆盖', async () => {
     const w = makeEngine({ routing: { defaultSession: 'juli-reply', defaultProject: 'p' } });
@@ -529,13 +503,6 @@ describe('feedback 锚继承 → 主动 settle（2026-09-28 两次实战后补�
     await until(() => w.store.stepsForWorkflow(follow.id)[0]!.status === 'running');
     // 跟进 agent 干完：stop hook 结算 + autoAppend 补 apply 闸（锚继承后认它）
     await w.engine.onAgentStopped('juli-reply', 'done', '跟进执行完毕');
-    const steps = w.store.stepsForWorkflow(follow.id);
-    const gate = steps[steps.length - 1]!;
-    // 无闸则手挂一个 apply 闸再批（autoAppend 只认 feedback 单——锚继承后现在认了）
-    if (gate.kind !== 'gate') {
-      // onAgentStopped 已结算；手工补挂 apply 闸走引擎口
-      // （autoAppendFeedbackGate 在结算时已跑——锚继承应已让它自动补闸）
-    }
     const g = w.store.stepsForWorkflow(follow.id).find((x) => x.kind === 'gate');
     expect(g).toBeDefined(); // 锚继承 → autoAppendFeedbackGate 补闸生效
     // 回挂证据：mirror 表插一条 reply_to=r1

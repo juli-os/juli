@@ -23,6 +23,8 @@ const makeApp = (): { app: Hono<AppEnv>; dataDir: string; seen: string[] } => {
         return { events: [], reply: input };
       },
     },
+    // conv 分线程（2026-10-17）：fake=单桶直通（与 main 桶同语义）。
+    chatIntakeFor: () => rt.chatIntake,
     emitChat: () => undefined,
   } as unknown as Runtime;
   const app = new Hono<AppEnv>();

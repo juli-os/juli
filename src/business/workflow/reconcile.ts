@@ -5,8 +5,8 @@
 import type { Logger } from '../../platform/events/bus.ts';
 import type { LifecycleStore } from '@juli-os/ledger';
 import { isActiveStepStatus, isSettledStepStatus } from '../../contracts/statuses.ts';
-import { asString } from '../../platform/shared/json.ts'
-import type { JsonRecord, JsonValue } from '@juli-os/artifacts'
+import { asString } from '../../platform/shared/json.ts';
+import type { JsonRecord, JsonValue } from '@juli-os/artifacts';
 import { gateDelivery } from '../send/sendSeed.ts';
 import { agentLiveSessionOf } from './capabilities/index.ts';
 import { briefDeclaresApply, feedbackRecordIdOf, hasLiveGate } from './support.ts';

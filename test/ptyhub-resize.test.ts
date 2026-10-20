@@ -12,8 +12,7 @@ import { join } from 'node:path';
 import { createServer, type Server } from 'node:http';
 import WebSocket from 'ws';
 import { attachPtyHub } from '../src/platform/ws/ptyhub.ts';
-import { createTmuxClient } from '@juli-os/agents';
-import { ptyAvailable } from '@juli-os/agents';
+import { createTmuxClient, ptyAvailable } from '@juli-os/agents';
 
 // 守卫必须双查：CI（ubuntu runner）预装 tmux 但没有 /usr/bin/expect——pty
 // 桥是 expect 脚本，缺它 createPty spawn 即错、pty 秒退 → 全测试挂
@@ -68,8 +67,8 @@ describe.skipIf(!canRunPtyE2E)('ptyhub resize 交换不自毁', () => {
 
   beforeAll(async () => { await new Promise<void>((r) => server.listen(0, () => r())); });
   afterAll(() => {
-    try { execFileSync('tmux', ['-S', e2eSock, 'kill-session', '-t', session], { stdio: 'ignore', env: { ...process.env } }); } catch { /* 已不在 */ }
-    try { execFileSync('tmux', ['-S', e2eSock, 'kill-server'], { stdio: 'ignore', env: { ...process.env } }); } catch { /* 已不在 */ }
+    try { execFileSync('tmux', ['-S', e2eSock, 'kill-session', '-t', session], { stdio: 'ignore' }); } catch { /* 已不在 */ }
+    try { execFileSync('tmux', ['-S', e2eSock, 'kill-server'], { stdio: 'ignore' }); } catch { /* 已不在 */ }
     try { rmSync(e2eSock); } catch { /* socket 文件非 server 退出残留时忽略 */ }
     server.close();
   });

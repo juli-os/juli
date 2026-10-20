@@ -97,7 +97,7 @@ export const runHook = async (argv: readonly string[]): Promise<void> => {
     case 'awaiting': {
       // CC Notification payload（stdin JSON）带 message——「需要权限/等输入」的
       // 人话原因，透传给引擎做通知正文。
-      const payload = parseHookStdin(await readStdin()) as { message?: string } | null;
+      const payload = parseHookStdin(await readStdin()) as { message?: unknown } | null;
       body = { message: typeof payload?.message === 'string' ? payload.message : '' };
       path = `/api/agents/${encodeURIComponent(session)}/awaiting`;
       break;

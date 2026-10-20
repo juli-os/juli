@@ -6,9 +6,8 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { yamlParse } from '../../platform/shared/yamlparse.ts';
-import { STEP_KINDS } from '@juli-os/ledger';
-import { type StepKind } from '@juli-os/ledger';
-import type { JsonRecord, JsonValue } from '@juli-os/artifacts'
+import { STEP_KINDS, type StepKind } from '@juli-os/ledger';
+import type { JsonRecord, JsonValue } from '@juli-os/artifacts';
 
 // enum 从账本的 StepKind 派生：两处词汇表漂移 = 编译错，不是运行时惊喜。
 export const stepKindSchema = z.enum([...STEP_KINDS] as [StepKind, ...StepKind[]]);
@@ -136,9 +135,9 @@ export const parseTemplate = (data: string): Template => {
     if (s.when && s.kind === 'gate') throw new Error(`step ${s.id}: gate steps cannot have when（人审不可语义跳过）`);
     return {
       id: s.id, kind: s.kind, title: s.title,
-      session: s.session ?? '', prompt: s.prompt ?? '', system: s.system ?? '',
-      model: s.model ?? '', when: s.when ?? '',
-      maxTokens: s.max_tokens ?? 0,
+      session: s.session, prompt: s.prompt, system: s.system,
+      model: s.model, when: s.when,
+      maxTokens: s.max_tokens,
       zombie: s.zombie ? { timeout: s.zombie.timeout, maxAttempts: s.zombie.max_attempts } : undefined,
     };
   });

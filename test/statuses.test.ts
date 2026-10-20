@@ -11,9 +11,10 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { createLedgerStore, type LifecycleStore } from '@juli-os/ledger';
-import { TERMINAL_WORKFLOW_STATUSES } from '@juli-os/ledger';
-import { type StepKind, type StepStatus, type WorkflowStatus } from '@juli-os/ledger';
+import {
+  createLedgerStore, type LifecycleStore, TERMINAL_WORKFLOW_STATUSES,
+  type StepKind, type StepStatus, type WorkflowStatus,
+} from '@juli-os/ledger';
 import {
   ACTIVE_STEP_STATUSES, ACTIVE_WORKFLOW_STATUSES, DEDUP_WINDOW_STATUSES,
   PRUNE_WORKFLOW_STATUSES, SETTLED_STEP_STATUSES, SETTLED_WORKFLOW_STATUSES,
@@ -37,8 +38,6 @@ const WF_UNION_GUARD: Record<WorkflowStatus, true> = {
 const STEP_UNION_GUARD: Record<StepStatus, true> = {
   pending: true, running: true, waiting_human: true, completed: true, failed: true, cancelled: true, skipped: true,
 };
-void WF_UNION_GUARD;
-void STEP_UNION_GUARD;
 
 describe('状态唯一名单：完整性', () => {
   it('名单 key 集合 === 类型联合全集（穷尽守卫与名单互锁）', () => {

@@ -22,21 +22,20 @@ describe('warmupPlan', () => {
 describe('warmup 行为契约（假 tmux）', () => {
   const readyPane = '▐▛███▛█   Claude Code v2.1.258\n▝▜██████▀  glm-5.3-flash[1m]\n❯';
   const fakeTmux = (over: Partial<Record<string, unknown>> = {}): TmuxClient => {
-    const calls: string[] = [];
     const t = {
       socketPath: '/tmp/fake.sock',
-      async hasSession(name: string) { calls.push(`has:${name}`); return true; },
-      async exec(args: readonly string[]) { calls.push(`exec:${args[0]}`); return { ok: true as const, value: readyPane }; },
+      async hasSession(_name: string) { return true; },
+      async exec(_args: readonly string[]) { return { ok: true as const, value: readyPane }; },
       async listSessions() { return ['juli-reply']; },
       async listSessionsDetailed() { return { ok: true as const, value: [{ name: 'juli-reply', attached: false, path: '/w', cmd: 'claude' }] }; },
       async newSession() { return { ok: true as const, value: undefined }; },
-      async sendText(name: string, _text: string) { calls.push(`send:${name}`); return { ok: true as const, value: undefined }; },
-      async sendTextConfirmed(name: string) { calls.push(`conf:${name}`); return { ok: true as const, value: { enters: 0, repasted: false, elapsedMs: 5 } }; },
+      async sendText(_name: string, _text: string) { return { ok: true as const, value: undefined }; },
+      async sendTextConfirmed(_name: string) { return { ok: true as const, value: { enters: 0, repasted: false, elapsedMs: 5 } }; },
       async capturePane() { return { ok: true as const, value: readyPane }; },
       async killSession() { return { ok: true as const, value: undefined }; },
       async interrupt() { return { ok: true as const, value: undefined }; },
       ...over,
-    } as unknown as TmuxClient & { readonly callsRef: string[] };
+    } as unknown as TmuxClient;
     return t;
   };
 

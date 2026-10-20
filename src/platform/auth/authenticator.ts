@@ -19,8 +19,7 @@ export interface Authenticator {
 export const createLocalAuthenticator = (password: string): Authenticator => ({
   mode: 'local',
   async verify(token) {
-    if (password === '' || token === '') return { ok: false, error: new Error('local auth failed') };
-    if (password === '' || !safeEqual(token, password)) {
+    if (token === '' || !safeEqual(token, password)) {
       return { ok: false, error: new Error('local auth failed') };
     }
     return ok({ id: 'operator', email: '', role: 'operator' });

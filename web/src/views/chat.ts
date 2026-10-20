@@ -248,6 +248,27 @@ const CHAT_CSS = `
 .chat-input textarea:focus { border-color: var(--c-orange); box-shadow: var(--ring); outline: none; }
 `;
 
+// 空线程空态（初始模板/新对话/清空三处同源）。
+const EMPTY_HTML = `
+        <div class="chat-empty" id="c-empty">
+          <span class="lead">有什么要办的？</span>
+          说一句话，juli 问清楚后给你一张单子卡——确认才开单。
+        </div>`;
+
+// conv 分线程（2026-10-17）：本浏览器的会话线程 id——服务端按 conv 隔离
+// intake 上下文/相位/暂存计划，诊断注入与多端并行不再串台。「新对话」=
+// 换 id（旧线程留在服务端按 LRU 自然过期）。
+const CONV_KEY = 'juli_conv';
+const newConvId = (): string => `web-${(crypto.randomUUID ? crypto.randomUUID() : String(Date.now()))}`;
+const convId = (): string => {
+  let v = localStorage.getItem(CONV_KEY) ?? '';
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(v)) {
+    v = newConvId();
+    localStorage.setItem(CONV_KEY, v);
+  }
+  return v;
+};
+
 export const chatView = async (el: HTMLElement): Promise<void> => {
   let plan: IntakePlan | null = null;
   let busy = false;
@@ -265,13 +286,9 @@ export const chatView = async (el: HTMLElement): Promise<void> => {
       <div class="chat-head">
         <h1>发单</h1>
         <p class="sub">说一句话，juli 问清楚后给你一张单子卡——确认才开单。</p>
-        ${transcript.length > 0 ? '<button class="mini ghost" id="c-clear" title="清空本浏览器的历史记录（服务端与其它设备不受影响）">清空</button>' : ''}
+        <button class="mini ghost" id="c-new" title="换一条全新对话线程（服务端上下文重开；旧线程按容量自然过期）">新对话</button>${transcript.length > 0 ? '<button class="mini ghost" id="c-clear" title="清空本浏览器的历史记录（服务端与其它设备不受影响）">清空</button>' : ''}
       </div>
-      <div class="chat-thread" id="c-thread">
-        <div class="chat-empty" id="c-empty">
-          <span class="lead">有什么要办的？</span>
-          说一句话，juli 问清楚后给你一张单子卡——确认才开单。
-        </div>
+      <div class="chat-thread" id="c-thread">${EMPTY_HTML}
       </div>
       <div id="c-plan"></div>
       <div class="chat-tray" id="c-tray"></div>
@@ -289,6 +306,8 @@ export const chatView = async (el: HTMLElement): Promise<void> => {
   const planSlot = el.querySelector('#c-plan') as HTMLElement;
   const input = el.querySelector('#c-input') as HTMLTextAreaElement;
   const send = el.querySelector('#c-send') as HTMLButtonElement;
+  // 模板无条件渲染（同 send；条件渲染的只有 #c-clear），故走 as 断言惯例。
+  const newChatBtn = el.querySelector('#c-new') as HTMLButtonElement;
   const status = el.querySelector('#c-status') as HTMLElement;
   const attachBtn = el.querySelector('#c-attach') as HTMLButtonElement;
   const fileInput = el.querySelector('#c-file') as HTMLInputElement;
@@ -456,6 +475,7 @@ export const chatView = async (el: HTMLElement): Promise<void> => {
     if ((text === '' && pendingAtts.length === 0) || busy) return;
     busy = true;
     send.disabled = true; // 在途禁用（UX 纪律）
+    newChatBtn.disabled = true; // 同禁：busy 守卫是静默 no-op，反馈只能靠按钮态（R3）
     const outAtts = pendingAtts;
     status.textContent = outAtts.length > 0 ? '上传附件…' : '开单助手思考中…';
     if (text !== '') appendMsg('user', text, outAtts);
@@ -466,7 +486,7 @@ export const chatView = async (el: HTMLElement): Promise<void> => {
       let refs: AttachRef[] = [];
       for (const a of outAtts) refs = [...refs, await uploadAttach(a)];
       status.textContent = '开单助手思考中…';
-      const r = await api.post<TurnResponse>('/api/chat/intake/turn', {
+      const r = await api.post<TurnResponse>(`/api/chat/intake/turn?conv=${convId()}`, {
         input: text === '' ? '[附件]' : text,
         ...(refs.length > 0 ? { attachments: refs } : {}),
       });
@@ -481,15 +501,17 @@ export const chatView = async (el: HTMLElement): Promise<void> => {
     }
     busy = false;
     send.disabled = false;
+    newChatBtn.disabled = false;
   };
 
   const confirmPlan = async (): Promise<void> => {
     if (!plan || busy) return;
     busy = true;
+    newChatBtn.disabled = true; // 同 fire：在途守卫静默，禁用即反馈
     status.textContent = '开单中…';
     try {
       const autoAp = planSlot.querySelector<HTMLInputElement>('#c-autoap')?.checked === true;
-      const r = await api.post<{ events: readonly IntakeEvent[]; runId: string | null }>('/api/chat/intake/confirm', {
+      const r = await api.post<{ events: readonly IntakeEvent[]; runId: string | null }>(`/api/chat/intake/confirm?conv=${convId()}`, {
         auto_approve: autoAp,
       });
       applyEvents(r.events);
@@ -503,12 +525,13 @@ export const chatView = async (el: HTMLElement): Promise<void> => {
       status.textContent = `开单失败：${e instanceof Error ? e.message : String(e)}`;
     }
     busy = false;
+    newChatBtn.disabled = false;
   };
 
   const denyPlan = async (): Promise<void> => {
     if (busy) return;
     try {
-      const r = await api.post<{ events: readonly IntakeEvent[] }>('/api/chat/intake/deny');
+      const r = await api.post<{ events: readonly IntakeEvent[] }>(`/api/chat/intake/deny?conv=${convId()}`);
       applyEvents(r.events);
     } catch { /* 回到讨论态失败也不阻塞继续对话 */ }
   };
@@ -527,6 +550,18 @@ export const chatView = async (el: HTMLElement): Promise<void> => {
   // 写穿透，重进/刷新即回放——与 iOS restoreTranscript 同语义。
   for (const m of transcript) renderMsg(m.role, m.text, m.atts);
 
+  // conv 分线程（2026-10-17）：「新对话」=换 conv id（服务端线程+本地回显双清）。
+  newChatBtn.addEventListener('click', () => {
+    if (busy) return; // 回合在途禁换线程：在途请求的 conv 已定格，清空后旧响应会血染新线程（R1-F3）
+    localStorage.setItem(CONV_KEY, newConvId());
+    transcript = [];
+    saveTranscript(transcript);
+    thread.innerHTML = EMPTY_HTML;
+    plan = null;
+    planSlot.innerHTML = '';
+    status.textContent = '';
+    el.querySelector('#c-clear')?.remove();
+  });
   const clearBtn = el.querySelector<HTMLButtonElement>('#c-clear');
   if (clearBtn !== null) {
     clearBtn.addEventListener('click', () => {
@@ -534,17 +569,13 @@ export const chatView = async (el: HTMLElement): Promise<void> => {
       transcript = [];
       saveTranscript(transcript);
       clearBtn.remove();
-      thread.innerHTML = `
-        <div class="chat-empty" id="c-empty">
-          <span class="lead">有什么要办的？</span>
-          说一句话，juli 问清楚后给你一张单子卡——确认才开单。
-        </div>`;
+      thread.innerHTML = EMPTY_HTML;
     });
   }
 
   // 重连恢复：暂存中的计划卡不丢（transcript 是 UI 态，丢了可接受）。
   try {
-    const s = await api.get<StateResponse>('/api/chat/intake/state');
+    const s = await api.get<StateResponse>(`/api/chat/intake/state?conv=${convId()}`);
     if (s.plan) { plan = s.plan; renderPlan(); }
   } catch { /* 未配置 LLM 时端点 503——视图保持空线程 */ }
 };

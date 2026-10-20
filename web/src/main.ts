@@ -56,6 +56,9 @@ let renderGen = 0;
 
 const render = async (): Promise<void> => {
   cleanup?.();
+  // 用毕即清：若本视图随后加载失败/代际过期提前 return（未走到下面的
+  // cleanup = c），残留的旧清理口会在下次 render 开头被二次调用。
+  cleanup = undefined;
   const gen = ++renderGen;
   const hash = location.hash.replace(/^#/, '');
   const route = hash.split('?')[0] || DEFAULT_ROUTE;
@@ -192,6 +195,4 @@ void boot();
 // EVENTS 白名单、feed 配色同源——事件元数据单一事实源，勿在此复制第二份）。
 // toast 实现单一在 ui.ts（R7-F1 P2-11：原本地版 🔴/✓ 前缀与时长语义已并入
 // 共享版，此处直接引用——main/settings/feedback 三处调用面同一份）。
-
-void api; // api 命名空间由各视图引用；此处引用防 tree-shake 误删类型
 } // 手机门牌分支的桌面侧收尾（2026-09-30 手机 Web 弃用）

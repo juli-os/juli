@@ -20,7 +20,7 @@ docker-build: ## Build the MVP image (engine + tmux + Claude Code)
 	# "--build-arg http_proxy=http://host.docker.internal:<port> --build-arg https_proxy=http://host.docker.internal:<port>"
 up:         ## compose up (JULI_PASSWORD required)
 	docker compose up -d --build
-down:
+down:       ## compose down
 	docker compose down
 deploy-aliyun: ## Aliyun: ACR push + optional ECS update (see deploy/aliyun/README.md)
 	bash deploy/aliyun/deploy.sh

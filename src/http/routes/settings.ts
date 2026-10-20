@@ -11,7 +11,7 @@ import { createAnthropicChat, createOpenAiChat } from '../../platform/llm/chat.t
 import { parseJudgmentConfig } from '@juli-os/routing';
 import { JUDGMENT_SCENARIOS } from '@juli-os/routing';
 import type { Runtime } from '../../runtime.ts';
-import type { JsonRecord } from '@juli-os/artifacts'
+import type { JsonRecord } from '@juli-os/artifacts';
 import { bodyStr, readBody, type AppEnv } from '../helpers.ts';
 
 /** judgment.json 读盘（缺文件=null；坏 JSON=null 的口径与引擎 loadJudgmentConfig 一致）。 */
@@ -73,7 +73,7 @@ export const registerSettingsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => 
 
   // ---- 统一 AI 段（2026-10-10 开源 MVP）：状态投影 + 连通性自检 ------------------
   // 状态面给驾驶舱引导态（未配置显眼引导，不静默降级）；自检打一次最小
-  // completion（max_tokens 8）——不落账、不写配置。body 可带覆盖值（保存前
+  // completion（max_tokens 32）——不落账、不写配置。body 可带覆盖值（保存前
   // 先测），空串 = 用现行生效值（env JULI_AI_* > ai 段 > 旧散键）。
   app.get('/api/ai/status', (c) => {
     const ai = resolveAiConfig(rt.config, process.env);
@@ -91,9 +91,8 @@ export const registerSettingsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => 
     // 并入共享实现，语义逐字不变。
     const asString = (k: string): string => bodyStr(body, k);
     const cur = resolveAiConfig(rt.config, process.env);
-    const provider = asString('provider') === 'openai' || asString('provider') === 'anthropic'
-      ? (asString('provider') as 'openai' | 'anthropic')
-      : cur.provider;
+    const providerRaw = asString('provider');
+    const provider = providerRaw === 'openai' || providerRaw === 'anthropic' ? providerRaw : cur.provider;
     const keyRaw = asString('api_key');
     const apiKey = keyRaw === '' ? cur.apiKey : resolveSecret({ configured: keyRaw });
     const baseUrl = asString('base_url') || cur.baseUrl;

@@ -50,7 +50,7 @@ export const costContextOf = (
   const windows: (readonly [string, string])[] = [];
   for (const st of agentSteps) {
     const a = st.startedAt ?? '';
-    const b = st.updatedAt ?? st.completedAt ?? ''; // completedAt 可空，updatedAt 兜底
+    const b = st.updatedAt ?? st.completedAt ?? ''; // updatedAt 为主，completedAt 可空仅作兜底
     if (a !== '' && b !== '') windows.push([a, b]);
   }
   const since = w.createdAt ?? '';

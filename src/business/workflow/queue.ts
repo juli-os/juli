@@ -37,15 +37,19 @@ export const makeQueue = (o: {
    * 幽灵槽（收单台 F1 教训）。缺省=永不 hold（旧行为）。 */
   readonly holdGate?: (workflowId: string) => boolean;
 }): Queue => {
-  const { store, queueConcurrency, late } = o;
-  const holdGate = o.holdGate;
+  const { store, queueConcurrency, late, holdGate } = o;
   const activeIds = new Set<string>(); // 正占队位的机器执行链
   const waitingIds: string[] = []; // FIFO 等待（队头在前）
 
-  const machineBusy = (workflowId: string): boolean => {
+  /** 共用探测：workflow 在跑（非 queued/终态）才取当前步，否则 null。 */
+  const runningStep = (workflowId: string) => {
     const w = store.getWorkflow(workflowId);
-    if (!w || w.status !== 'running') return false;
-    const st = store.currentStep(workflowId);
+    if (!w || w.status !== 'running') return null;
+    return store.currentStep(workflowId);
+  };
+
+  const machineBusy = (workflowId: string): boolean => {
+    const st = runningStep(workflowId);
     return st !== null && st.status === 'running';
   };
 
@@ -75,9 +79,7 @@ export const makeQueue = (o: {
    * 推进不占并发预算、不等 agent 回合让位（照片单闸门被批量回合串行阻塞、
    * 审批卡迟迟不出的形态）。闸门被批准后的后续（send/agent）照常过队列。 */
   const lightweightGate = (workflowId: string): boolean => {
-    const w = store.getWorkflow(workflowId);
-    if (w === null || w.status !== 'running') return false;
-    const st = store.currentStep(workflowId);
+    const st = runningStep(workflowId);
     return st !== null && st.kind === 'gate' && st.status === 'pending';
   };
 

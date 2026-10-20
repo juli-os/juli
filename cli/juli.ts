@@ -14,18 +14,15 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runHook } from '../src/cli/hook.ts';
 import { execSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
-import { createTmuxClient } from '@juli-os/agents';
-import { createProvisioningDispatch } from '@juli-os/agents';
-import { createJev, jevTokenFromEnv } from '@juli-os/routing';
+import { createProvisioningDispatch, createTmuxClient } from '@juli-os/agents';
 import {
-  planRouting, SAMPLE_FACTS, SAMPLE_RECORDS, ticketTitle, topAlternatives,
-  type RoutingFacts, type RoutingPlan,
+  createJev, jevTokenFromEnv, planRouting, SAMPLE_FACTS, SAMPLE_RECORDS, ticketTitle, topAlternatives,
+  type FbRecord, type Judge, type RoutingFacts, type RoutingPlan,
 } from '@juli-os/routing';
 import {
   configFilePath, configSchema, danglingFeedbackRoutes, defaultDataDir, resolveAiConfig, saveConfigFile,
 } from '../src/platform/config/schema.ts';
 import { createAnthropicChat, createOpenAiChat } from '../src/platform/llm/chat.ts';
-import type { FbRecord } from '@juli-os/routing';
 
 const BASE = process.env['JULI_SERVICE_URL'] ?? 'http://127.0.0.1:7170';
 const PW = process.env['JULI_PASSWORD'] ??
@@ -162,9 +159,8 @@ if (isCliEntry) (async () => {
   if (cmd === 'start') {
     // 双形态：带模板名=配方起流；只有 --title=免模板起单（动态模型标准入口）。
     const tpl = pos(0);
-    if (tpl === '') {
-      const title = arg('title');
-      if (title === '') { console.error('✗ 用法: juli start <template> ... 或 juli start --title T [--input JSON] [--relates-to WF]'); process.exit(1); }
+    // 两形态共用的入参解析：--input JSON 合并 + --relates-to/--relatesTo → relates_to。
+    const inputFromArgs = (): Record<string, unknown> => {
       const input: Record<string, unknown> = {};
       const raw = arg('input');
       if (raw !== '') {
@@ -172,6 +168,12 @@ if (isCliEntry) (async () => {
       }
       const rel = arg('relates-to') || arg('relatesTo');
       if (rel !== '') input['relates_to'] = rel;
+      return input;
+    };
+    if (tpl === '') {
+      const title = arg('title');
+      if (title === '') { console.error('✗ 用法: juli start <template> ... 或 juli start --title T [--input JSON] [--relates-to WF]'); process.exit(1); }
+      const input = inputFromArgs();
       const d = await call('POST', '/api/lifecycle/tasks', { title, input });
       const wf = (d as { workflow: { id: string } }).workflow.id;
       console.log(`✓ 已起单: ${wf}`);
@@ -179,13 +181,7 @@ if (isCliEntry) (async () => {
       console.log(`  接管: npx tsx cli/juli.ts claim ${wf} --session <会话名>`);
       return;
     }
-    const input: Record<string, unknown> = {};
-    const raw = arg('input');
-    if (raw !== '') {
-      try { Object.assign(input, JSON.parse(raw)); } catch { console.error('✗ --input 不是合法 JSON'); process.exit(1); }
-    }
-    const rel = arg('relates-to') || arg('relatesTo');
-    if (rel !== '') input['relates_to'] = rel;
+    const input = inputFromArgs();
     const body: Record<string, unknown> = { template: tpl, title: arg('title'), input };
     const steps = arg('steps');
     if (steps !== '') body['steps'] = steps.split(',').map((x) => x.trim()).filter(Boolean);
@@ -251,14 +247,14 @@ if (isCliEntry) (async () => {
       process.exit(1);
     }
     const slash = cmd === 'compact' ? '/compact' : '/clear';
-    const socketCfg2 = readSocketCfg();
-    const tmux2 = createTmuxClient(socketCfg2 ? { socketPath: socketCfg2 } : {});
-    const det = await tmux2.listSessionsDetailed();
+    const socketCfg = readSocketCfg();
+    const tmux = createTmuxClient(socketCfg ? { socketPath: socketCfg } : {});
+    const det = await tmux.listSessionsDetailed();
     if (!det.ok || !det.value.some((x) => x.name === name)) {
       console.error(`✗ 会话 ${name} 不在（juli session:list 查看）`);
       process.exit(1);
     }
-    const r = await tmux2.sendTextConfirmed(name, slash);
+    const r = await tmux.sendTextConfirmed(name, slash);
     if (!r.ok) { console.error(`✗ 发送失败: ${r.error.message}`); process.exit(1); }
     console.log(`✓ 已向 ${name} 发送 ${slash}（${r.value.elapsedMs}ms · 补 Enter×${r.value.enters}）`);
     console.log(`  CC 正在${cmd === 'compact' ? '压缩' : '清空'} context…（idle 提示符回来后生效；transcript 照常留档）`);
@@ -452,7 +448,6 @@ if (isCliEntry) (async () => {
     }
     let session = arg('session');
     if (session === '') {
-      const { execSync } = await import('node:child_process');
       try {
         // tmux 会话内 $TMUX 首段即本会话 server 的 socket（P2-9 已用一次性
         // 实验核实：自定义 socket 部署下不带 -S 的 display-message 也靠它
@@ -561,7 +556,7 @@ if (isCliEntry) (async () => {
       const g = await call('GET', '/api/agents/graph') as { nodes: { name: string; working: boolean; live: boolean }[] };
       facts = { ...facts, live: Object.fromEntries(g.nodes.map((n) => [n.name, { working: n.working, live: n.live }])) };
     }
-    let judge = null;
+    let judge: Judge | null = null;
     if (!noJev) {
       const token = jevTokenFromEnv();
       if (token === '') {

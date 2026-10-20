@@ -43,6 +43,23 @@ export const makeLifecycle = (o: {
   const { deps, store, log } = o;
   const now = o.now;
 
+  /** 起流/起单共用的 meta 抽取（startFlow/startTask 原为 copy-paste 重复块）：
+   * from/subject 进 meta——send 步的收件人被结构性锁在 meta.from，手动起流
+   * 声明了 from 就获得完整答复能力（含发送），与邮件进件同一约束；
+   * auto_approve 单子级免批（2026-10-07）：chat 计划卡「本单免批」勾选随
+   * confirm 进来——创建即标记，闸门 sweep 直接吃（autoApprove.ts per-order
+   * 分支）；in_reply_to 线程头透传进 meta.message_id——发送步的 msgId 兜底
+   * 读它，跟帖不断线（juli-reply 线程纪律）。 */
+  const copySendMeta = (input: JsonRecord, meta: Record<string, JsonValue>): void => {
+    const fromV = input['from'];
+    if (typeof fromV === 'string' && fromV.trim() !== '') meta['from'] = fromV.trim();
+    const subjV = input['subject'];
+    if (typeof subjV === 'string' && subjV.trim() !== '') meta['subject'] = subjV.trim();
+    if (input['auto_approve'] === true) meta['auto_approve'] = true;
+    const irtV = input['in_reply_to'];
+    if (typeof irtV === 'string' && irtV.trim() !== '') meta['message_id'] = irtV.trim();
+  };
+
   /** 收口兜底收编（settle/closeWorkflow 共用）：agent 迟到的交付文件不许
    * 烂在收口之后——结案前最后扫一次 case-inbox。尽力而为：失败只记日志，
    * 绝不阻断收口（收口是人工动作，工件可以事后从目录补录）。 */
@@ -116,17 +133,8 @@ export const makeLifecycle = (o: {
         meta['relates_to_unknown'] = relatesTo;
       }
     }
-    const fromV = input['from'];
-    if (typeof fromV === 'string' && fromV.trim() !== '') meta['from'] = fromV.trim();
-    const subjV = input['subject'];
-    if (typeof subjV === 'string' && subjV.trim() !== '') meta['subject'] = subjV.trim();
-    // 单子级免批（2026-10-07）：chat 计划卡「本单免批」勾选随 confirm 进来
-    // ——创建即标记，闸门 sweep 直接吃（autoApprove.ts per-order 分支）。
-    if (input['auto_approve'] === true) meta['auto_approve'] = true;
-    // 线程头透传：手动起流的答复带上 input.in_reply_to → 发送步的
-    // msgId 兜底读 meta.message_id——跟帖不断线（juli-reply 线程纪律）。
-    const irtV = input['in_reply_to'];
-    if (typeof irtV === 'string' && irtV.trim() !== '') meta['message_id'] = irtV.trim();
+    // from/subject/auto_approve/in_reply_to 四键抽取见 copySendMeta（注释在彼）。
+    copySendMeta(input, meta);
     // nodes 模式:阶梯不预建——节点由动作(claim/deliver/send…)追加,
     // 模板只是词汇表;workflow 在显式 settle 前保持 running。
     if (tpl.mode === 'nodes') {
@@ -173,15 +181,8 @@ export const makeLifecycle = (o: {
     let inheritedFromParent = false; // 继承是否发生（与 tier 改道后的最终落点区分记账）
     let inheritedSession = ''; // 继承的原会话（session_inherited 事件与 tier 改道基准）
     const meta: Record<string, JsonValue> = { template_input: input, mode: 'nodes' };
-    const fromV = input['from'];
-    if (typeof fromV === 'string' && fromV.trim() !== '') meta['from'] = fromV.trim();
-    const subjV = input['subject'];
-    if (typeof subjV === 'string' && subjV.trim() !== '') meta['subject'] = subjV.trim();
-    // 单子级免批（2026-10-07）：chat 计划卡「本单免批」勾选随 confirm 进来
-    // ——创建即标记，闸门 sweep 直接吃（autoApprove.ts per-order 分支）。
-    if (input['auto_approve'] === true) meta['auto_approve'] = true;
-    const irtV = input['in_reply_to'];
-    if (typeof irtV === 'string' && irtV.trim() !== '') meta['message_id'] = irtV.trim();
+    // from/subject/auto_approve/in_reply_to 四键抽取见 copySendMeta（注释在彼）。
+    copySendMeta(input, meta);
     let parentId: string | undefined;
     const rel = asString(input['relates_to']).trim();
     if (rel !== '') {
@@ -196,7 +197,7 @@ export const makeLifecycle = (o: {
       // 原单无落点不猜。
       if (parent !== null && asString(input['session']).trim() === '') {
         const ps = parent.session.trim();
-        const isBound = (o.deps.routing.boundAgents ?? []).some((b) => b.session === ps);
+        const isBound = (deps.routing.boundAgents ?? []).some((b) => b.session === ps);
         if (ps !== '' && !isBound) {
           meta['session_inherited_from'] = parent.id;
           inheritTo = ps;
@@ -245,7 +246,7 @@ export const makeLifecycle = (o: {
     // = 零变化。事件：model_tier_routed / model_tier_mismatch / model_tier_unavailable。
     let tierEvent: { kind: string; payload: JsonRecord } | null = null;
     if (asString(input['model_tier']).trim() === 'high') {
-      const decls = o.deps.routing.agents ?? [];
+      const decls = deps.routing.agents ?? [];
       const highs = decls.filter((a) => a.model_tier === 'high' && a.session.trim() !== '');
       const explicit = asString(input['session']).trim();
       if (explicit !== '') {
@@ -292,11 +293,12 @@ export const makeLifecycle = (o: {
       store.appendEvent('workflow', w.id, tierEvent.kind, tierEvent.payload);
     }
     if (w.meta['feedback_anchor_inherited_from'] !== undefined) {
+      const ti = w.meta['template_input'] as JsonRecord;
       store.appendEvent('workflow', w.id, 'feedback_anchor_inherited', {
         from: asString(w.meta['feedback_anchor_inherited_from']),
-        record_id: asString((w.meta['template_input'] as JsonRecord)['feedback_record_id']),
-        count: Array.isArray((w.meta['template_input'] as JsonRecord)['feedback_record_ids'])
-          ? ((w.meta['template_input'] as JsonRecord)['feedback_record_ids'] as unknown[]).length : 0,
+        record_id: asString(ti['feedback_record_id']),
+        count: Array.isArray(ti['feedback_record_ids'])
+          ? (ti['feedback_record_ids'] as unknown[]).length : 0,
       });
     }
     try {

@@ -20,7 +20,7 @@ const runDefault = (cmd: readonly string[]): Promise<void> =>
 const frontmostDefault = async (): Promise<boolean> => {
   const out = await new Promise<string>((resolve) => {
     execFile('osascript', ['-e',
-      'application "System Events" is frontmost of first process whose frontmost is true',
+      'tell application "System Events" to get name of first process whose frontmost is true',
     ], { timeout: 3000 }, (e, stdout) => resolve(e ? '' : stdout.trim().toLowerCase()));
   });
   return out.includes('juli') || out.includes('terminal');

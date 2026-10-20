@@ -149,11 +149,10 @@ describe('引擎级：feedback 单链尾自愈补闸（2026-09-21 深夜事故�
 
   it('链上已有存活闸门（含已批准）不重复补挂', async () => {
     const w = makeEngine();
-    const { wf, step } = mkFeedbackRun(w, FB_BRIEF);
-    w.store.createStep({ workflowId: wf.id, seq: 2, kind: 'gate', title: '确认闸门' });
-    w.store.setStepInput(w.store.stepsForWorkflow(wf.id)[1]!.id, { delivery: 'apply' });
-    w.store.setStepStatus(w.store.stepsForWorkflow(wf.id)[1]!.id, 'completed');
-    void step;
+    const { wf } = mkFeedbackRun(w, FB_BRIEF);
+    const gate = w.store.createStep({ workflowId: wf.id, seq: 2, kind: 'gate', title: '确认闸门' });
+    w.store.setStepInput(gate.id, { delivery: 'apply' });
+    w.store.setStepStatus(gate.id, 'completed');
     await w.engine.onAgentStopped('juli-reply', 'ok', '汇报');
     expect(w.store.stepsForWorkflow(wf.id).filter((s) => s.kind === 'gate')).toHaveLength(1);
   });

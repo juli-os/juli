@@ -1,8 +1,8 @@
 // 引擎记账与 LLM 服务：事件落账（stepEvent 的失败镜像/推送收口）、案卷追加、
 // LLM 补全（180s 超时 + 429 退避重试 ×2）。全部子模块共用的底座服务。
 
-import { asString } from '../../platform/shared/json.ts'
-import type { JsonRecord } from '@juli-os/artifacts'
+import { asString } from '../../platform/shared/json.ts';
+import type { JsonRecord } from '@juli-os/artifacts';
 import type { Logger } from '../../platform/events/bus.ts';
 import type { LifecycleStore } from '@juli-os/ledger';
 import { type Step, type Workflow } from '@juli-os/ledger';
@@ -86,7 +86,7 @@ export const makeJournal = (o: {
     store.saveCaseFile(workflowId, appendDecision(cf, { seq: gateSeq, action, by, note }, now()));
   };
 
-  const appendStepToCaseFile = (w: import('@juli-os/ledger').Workflow, st: Step): void => {
+  const appendStepToCaseFile = (w: Workflow, st: Step): void => {
     if (Object.keys(st.output).length === 0) return;
     let cf = store.loadCaseFile(w.id);
     if (st.kind === 'triage') {

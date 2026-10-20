@@ -395,7 +395,6 @@ describe('store 原子追加（appendStepOutputItem）', () => {
   });
 });
 
-
 describe('语义跳过（when）', () => {
   const SKIPPY_YAML = `key: skippy
 name: 跳过测试流
@@ -412,7 +411,6 @@ steps:
     kind: send
     title: 发送
 `;
-  const _w = makeEngine({ templates: { skippy: parseTemplate(SKIPPY_YAML) } });
 
   it('needs_reply=true → agent 正常执行（skippy 模板无闸门，when 为真直通）', async () => {
     const w = makeEngine({ templates: { skippy: parseTemplate(SKIPPY_YAML) } });

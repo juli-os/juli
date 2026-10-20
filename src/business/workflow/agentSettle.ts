@@ -177,7 +177,7 @@ export const makeAgentSettle = (o: {
           envelope = res.envelope as unknown as JsonValue;
           hasManifest = res.has_manifest;
           const patch: Record<string, JsonValue> = { deliverables };
-          if (res.envelope !== null) patch['envelope'] = res.envelope as unknown as JsonValue;
+          if (envelope !== null) patch['envelope'] = envelope;
           if (res.warnings.length > 0) patch['contract_warnings'] = res.warnings;
           store.setStepOutput(st.id, patch);
         }

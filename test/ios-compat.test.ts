@@ -11,7 +11,7 @@ import { createServer as createHttpServer } from 'node:http';
 import { configSchema } from '../src/platform/config/schema.ts';
 import { createRuntime } from '../src/runtime.ts';
 import { createHttpApp } from '../src/http/app.ts';
-import { attachChatWireWs, attachSnapshotWireWs, toWireEvent } from '../src/platform/ws/wirehubs.ts';
+import { attachChatWireWs, attachSnapshotWireWs, attachUpgradeFallback, toWireEvent } from '../src/platform/ws/wirehubs.ts';
 import { createChatHub } from '../src/platform/ws/chathub.ts';
 import { ok, err, type Result } from '@juli-os/artifacts';
 import type { TmuxClient } from '@juli-os/agents';
@@ -74,12 +74,6 @@ const mkTmpCfg = (label: string) => configSchema.parse({ data_dir: mkdtempSync(j
 const fake = makeFakeTmux();
 const rtT = createRuntime(mkTmpCfg('tmux'), { tmux: fake.tmux });
 const appT = createHttpApp(rtT);
-// share 诚实化守卫：S3 已配置（artifactSharing = true）的第二运行时。
-const _rtS3 = createRuntime(configSchema.parse({
-  data_dir: mkdtempSync(join(tmpdir(), 'juli-ios-s3-')),
-  s3: { endpoint: 'http://127.0.0.1:1', bucket: 'juli-test', access_key_id: 'ak' },
-  secrets: { s3_secret_key: 'sk' },
-}));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 测试 JSON 探针：data=JSON.parse 动态形态，下游数十处临时断言消费，精确建型需给全部 expect 补窄化（零安全增益 churn）。
 const j = async (method: string, path: string, body?: unknown): Promise<{ status: number; data: any }> => {
@@ -183,7 +177,7 @@ describe('artifacts 族', () => {
     expect((await app.request(`/api/artifacts/${put.id}/content`)).status).toBe(410);
   });
 
-  it('会话产物裸数组 + content 按类型出流；未配 OSS 时 share 503', async () => {
+  it('会话产物裸数组 + content 按类型出流', async () => {
     const wid = seed('t3', 'c@x.com');
     await rt.artifactLedger.putAndRegister({
       workflowId: wid, role: 'agent_output', name: 'page.html', bytes: Buffer.from('<p>x</p>'),
@@ -241,7 +235,8 @@ describe('artifacts 族', () => {
     const { url } = await res.json() as { url: string };
     expect(url).toContain(`/api/artifacts/${put.id}/content?share=`);
     // 收件人免 Bearer 取件成功（app.request 自带 token 也行；剥掉再验一次真免密）。
-    const bare = await app.request(url.replace(/^https?:\/\/[^/]+/, ''));
+    const strip = (u: string): string => u.replace(/^https?:\/\/[^/]+/, '');
+    const bare = await app.request(strip(url));
     expect(bare.status).toBe(200);
     expect(await bare.text()).toBe('<p>share me</p>');
     // 篡改签名 → 401（HMAC 防伪；开放模式无鉴权面，用带密码实例验证）。
@@ -256,7 +251,6 @@ describe('artifacts 族', () => {
       headers: { 'content-type': 'application/json', authorization: 'Bearer pw-share-test' },
     });
     const { url: urlPw } = await resPw.json() as { url: string };
-    const strip = (u: string): string => u.replace(/^https?:\/\/[^/]+/, '');
     expect((await appPw.request(strip(urlPw))).status).toBe(200); // 免密取件 ✓
     const evilPw = urlPw.replace(/share=[0-9]+:[0-9a-f]+/, 'share=9999999999:deadbeefdeadbeefdeadbeefdeadbeef');
     expect((await appPw.request(strip(evilPw))).status).toBe(401); // 篡改拒收 ✓
@@ -468,6 +462,41 @@ describe('ws chat wire', () => {
     expect(frames).toContainEqual({ type: 'assistant', data: '你好' });
   });
 
+  it('conv 分线程真分支：各 conv 只收本线程帧；空串 ?conv= 清洗归 main（R1-F2）', async () => {
+    // 真连接走 attachChatWireWs 的真实订阅/过滤分支（此前只有测试内模拟过滤）；
+    // 「?conv=」空串是 `?? 'main'` 不触发的洞——清洗后必须落 main 而非静默零帧。
+    const hub = createChatHub();
+    const server = createHttpServer();
+    attachChatWireWs({ server, chatHub: hub, password: '', log: () => undefined });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as { port: number }).port;
+    const collect = (query: string): {
+      frames: { type: string; data: string }[];
+      opened: Promise<void>;
+      ws: WebSocket;
+    } => {
+      const frames: { type: string; data: string }[] = [];
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/chat${query}`);
+      const opened = new Promise<void>((r) => ws.on('open', r));
+      ws.on('message', (d) => frames.push(JSON.parse(String(d))));
+      return { frames, opened, ws };
+    };
+    const convA = collect('?conv=conv-a'); // 正常线程
+    const emptyConv = collect('?conv='); // 空串——清洗归 main（旧 ?? 写法=静默零帧）
+    const legacy = collect(''); // 旧客户端不带 conv → main
+    await Promise.all([convA.opened, emptyConv.opened, legacy.opened]);
+    hub.emit('text', '给A', 'conv-a');
+    hub.emit('text', '给main', 'main');
+    await new Promise((r) => setTimeout(r, 250));
+    convA.ws.close();
+    emptyConv.ws.close();
+    legacy.ws.close();
+    server.close();
+    expect(convA.frames.map((f) => f.data)).toEqual(['给A']); // 真分支过滤：不串 main
+    expect(emptyConv.frames.map((f) => f.data)).toEqual(['给main']); // 空串归 main
+    expect(legacy.frames.map((f) => f.data)).toEqual(['给main']);
+  });
+
   it('错误 token 401 拒连', async () => {
     const hub = createChatHub();
     const server = createHttpServer();
@@ -511,11 +540,10 @@ describe('ws chat wire', () => {
   });
 
   it('未匹配 upgrade 兜底销毁：/ws/unknown 3s 内 error/close（不悬挂）', async () => {
-    const wirehubs = await import('../src/platform/ws/wirehubs.ts');
     const hub = createChatHub();
     const server = createHttpServer();
-    wirehubs.attachChatWireWs({ server, chatHub: hub, password: '', log: () => undefined });
-    wirehubs.attachUpgradeFallback(server);
+    attachChatWireWs({ server, chatHub: hub, password: '', log: () => undefined });
+    attachUpgradeFallback(server);
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
     const port = (server.address() as { port: number }).port;
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/unknown`);

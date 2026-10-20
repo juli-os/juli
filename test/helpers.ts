@@ -5,10 +5,9 @@ import { createLedgerStore } from '@juli-os/ledger';
 import { createEngine, type Engine, type EngineDeps } from '../src/business/workflow/engine.ts';
 import { parseTemplate } from '../src/business/templates/template.ts';
 import { EMAIL_REPLY_YAML } from '../src/business/templates/defaultTemplates.ts';
-import { ok, type Result } from '@juli-os/artifacts';
+import { ok } from '@juli-os/artifacts';
 import type { Clock, IdGen } from '@juli-os/artifacts';
-import type { EmailMessage, LlmPort, MailerPort, PusherPort } from '../src/contracts/ports.ts';
-import type { CompletionRequest } from '../src/contracts/ports.ts';
+import type { CompletionRequest, EmailMessage, LlmPort, MailerPort, PusherPort } from '../src/contracts/ports.ts';
 
 /** 可拨动的假时钟：僵尸心跳/对账这类"沉默时长"断言需要它。 */
 export const makeClock = (): { clock: Clock; advance: (ms: number) => void } => {
@@ -21,7 +20,7 @@ export const makeClock = (): { clock: Clock; advance: (ms: number) => void } => 
 
 export const fixedClock: Clock = { now: () => new Date('2026-09-07T08:00:00Z') };
 
-export const seqIds = (_prefix = 'id'): IdGen => {
+export const seqIds = (): IdGen => {
   let n = 0;
   return { newId: (p: string) => `${p}_${String(++n).padStart(4, '0')}` };
 };
@@ -144,5 +143,3 @@ export const until = async (predicate: () => boolean, ms = 2000): Promise<void> 
     await new Promise((r) => setTimeout(r, 5));
   }
 };
-
-export type { Result };

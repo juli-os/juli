@@ -5,7 +5,7 @@
 import type { Logger } from '../../platform/events/bus.ts';
 import type { LifecycleStore } from '@juli-os/ledger';
 import { type Step } from '@juli-os/ledger';
-import { asString } from '../../platform/shared/json.ts'
+import { asString } from '../../platform/shared/json.ts';
 import type { EngineDeps } from './engine.ts';
 import type { Journal } from './journal.ts';
 

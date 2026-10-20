@@ -23,7 +23,7 @@ const authHeaders = (): Record<string, string> => ({
 const handle = async <T>(res: Response): Promise<T> => {
   const data = (await res.json().catch(() => null)) as T | { error?: string } | null;
   if (!res.ok) {
-    const msg = data && typeof data === 'object' && 'error' in data ? String((data).error) : `http ${res.status}`;
+    const msg = data && typeof data === 'object' && 'error' in data ? String(data.error) : `http ${res.status}`;
     throw new ApiError(res.status, msg);
   }
   return data as T;
@@ -49,7 +49,7 @@ export const api = {
     const res = await fetch(p, { headers: authHeaders() });
     if (!res.ok) {
       const data = (await res.json().catch(() => null)) as { error?: string } | null;
-      throw new ApiError(res.status, data?.['error'] ?? `http ${res.status}`);
+      throw new ApiError(res.status, data?.error ?? `http ${res.status}`);
     }
     return res.text();
   },

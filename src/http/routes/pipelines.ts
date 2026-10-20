@@ -28,7 +28,6 @@ export const registerPipelinesRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
     if (fileName === '' || yaml === '') return c.json({ error: 'file and yaml required' }, 400);
     const saveErr = rt.saveTemplate(fileName, yaml);
     if (saveErr !== null) return c.json({ error: saveErr }, 400);
-    rt.reloadTemplates();
     return c.json({ ok: true });
   });
 
@@ -43,7 +42,6 @@ export const registerPipelinesRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
     const file = c.req.param('file') ?? '';
     if (!/^[\w.-]+\.ya?ml$/.test(file)) return c.json({ error: '文件名不合法' }, 400);
     rt.deleteTemplate(file);
-    rt.reloadTemplates();
     return c.json({ ok: true });
   });
 
@@ -53,7 +51,7 @@ export const registerPipelinesRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
     const title = bodyStr(body, 'title');
     if (template === '') return c.json({ error: 'template required' }, 400);
     const rawInput = body['input'] ?? {};
-    if (rawInput === null || typeof rawInput !== 'object' || Array.isArray(rawInput)) {
+    if (typeof rawInput !== 'object' || Array.isArray(rawInput)) {
       return c.json({ error: 'input must be an object' }, 400);
     }
     const input = rawInput as JsonRecord;

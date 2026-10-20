@@ -9,6 +9,9 @@ import { DEFAULT_TEMPLATE_FILES } from './defaultTemplates.ts';
 
 export const pipelinesDir = (dataDir: string): string => join(dataDir, 'pipelines');
 
+/** 模板文件名白名单（save/read 共用；字符类不含「/」，天然防路径穿越）。 */
+const TEMPLATE_FILE_NAME_RE = /^[\w.-]+\.ya?ml$/;
+
 export interface RegistryLoadResult {
   readonly templates: Readonly<Record<string, Template>>;
   readonly files: Readonly<Record<string, string>>;
@@ -48,11 +51,11 @@ export const loadTemplates = (dir: string): RegistryLoadResult => {
   return { templates, files, errors };
 };
 
-/** 保存（新增/覆盖）一个模板文件并重载解析。返回 null 或错误串。 */
+/** 保存（新增/覆盖）一个模板文件；YAML 先过 tryParseTemplate 校验。返回 null 或错误串。注册表重载由调用方负责。 */
 export const saveTemplateFile = (dir: string, fileName: string, yaml: string): string | null => {
   const t = tryParseTemplate(yaml);
   if (!t) return 'template YAML 无效（key/steps/kind/title 校验未过）';
-  if (!/^[\w.-]+\.ya?ml$/.test(fileName)) return '文件名不合法';
+  if (!TEMPLATE_FILE_NAME_RE.test(fileName)) return '文件名不合法';
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, fileName), yaml, { mode: 0o600 });
   return null;
@@ -69,7 +72,7 @@ export const deleteTemplateFile = (dir: string, fileName: string): void => {
 
 /** 读模板原始 YAML（编辑器的取件口）；不存在或越权名返回 null。 */
 export const readTemplateFile = (dir: string, fileName: string): string | null => {
-  if (!/^[\w.-]+\.ya?ml$/.test(fileName)) return null;
+  if (!TEMPLATE_FILE_NAME_RE.test(fileName)) return null;
   const p = join(dir, fileName);
   try {
     return existsSync(p) ? readFileSync(p, 'utf8') : null;

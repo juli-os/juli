@@ -8,8 +8,8 @@ import { type Step } from '@juli-os/ledger';
 import { agentLiveSessionOf } from './capabilities/index.ts';
 import { paneAwaitingInput } from '@juli-os/agents';
 import { parsePaneQuestion } from '@juli-os/agents';
-import { asString } from '../../platform/shared/json.ts'
-import type { JsonValue } from '@juli-os/artifacts'
+import { asString } from '../../platform/shared/json.ts';
+import type { JsonValue } from '@juli-os/artifacts';
 import { parseDur, type Template, type ZombiePolicy } from '../templates/template.ts';
 import type { EngineDeps } from './engine.ts';
 import type { Journal } from './journal.ts';
@@ -169,7 +169,7 @@ export const makeZombie = (o: {
       const q = parsePaneQuestion(pane, message);
       // 挂闸：链尾追加 waiting_human 问询闸（当前步仍 running 挡着 advance，
       // 闸直接置等人在审批面可见；人回答后闸 completed，agent 续跑结算原步）。
-      const lastSeq = steps.length > 0 ? steps[steps.length - 1]!.seq : st.seq;
+      const lastSeq = steps.at(-1)?.seq ?? st.seq;
       store.insertStepsAt(w.id, lastSeq, [{
         kind: 'gate', title: `问询：${q.question.slice(0, 40)}`,
         input: {
@@ -240,8 +240,7 @@ export const makeZombie = (o: {
         }
         continue; // 绝不判死等输入态
       }
-      const last = heartbeatOf(session, new Date(st.updatedAt));
-      const silentMs = now().getTime() - last.getTime();
+      const silentMs = silentMsOf(st, session);
       if (silentMs < timeoutMs || firstSeen) continue;
       await healZombie(st, session, silentMs, maxAttempts);
     }

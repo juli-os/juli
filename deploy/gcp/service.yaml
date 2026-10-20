@@ -1,6 +1,6 @@
 # Declarative form of the gcloud commands in README.md (deploy with:
 #   gcloud run services replace service.yaml --region asia-east1
-# after substituting PROJECT_NUMBER — see README caveat about ephemeral /data).
+# — see README caveat about ephemeral /data).
 apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:

@@ -6,9 +6,8 @@
 import { describe, expect, it } from 'vitest';
 import { createLedgerStore } from '@juli-os/ledger';
 import { createEngine, type EngineDeps } from '../src/business/workflow/engine.ts';
-import { ok } from '@juli-os/artifacts';
+import { ok, type JsonRecord } from '@juli-os/artifacts';
 import { makeClock, makeEmail, seqIds, until } from './helpers.ts';
-import type { JsonRecord } from '@juli-os/artifacts'
 import type { MailerPort, PusherPort } from '../src/contracts/ports.ts';
 
 const makeEngineEmpty = (over: Partial<EngineDeps> = {}) => {
@@ -126,12 +125,6 @@ describe('批准回流（批准=触发下一个）', () => {
     expect(relays[0]!.text).toContain('按计划做');
     expect(relays[0]!.text).toContain('继续执行');
     expect(w.store.listEvents(50).some((e) => e.type === 'gate_relayed')).toBe(true);
-    // ladder 配方流：approve 走阶梯推进，不回话（防双重驱动）。
-    relays.length = 0;
-    const w2 = makeEngineEmpty({
-      sendToSession: async (session, text) => { relays.push({ session, text }); return { delivered: true, reason: '' }; },
-    });
-    void w2;
   });
 
   // 0923 断点④：feedback 处理完面板停「新建」——闸门批准=拍板，回流指令
@@ -169,7 +162,7 @@ describe('批准回流（批准=触发下一个）', () => {
 });
 
 describe('回流外发箱（批准=触发下一个，欠款必还）', () => {
-  const makeRelayWorld = (opts: { failTimes: number; paneAfterSend: 'marker' | 'none' } ) => {
+  const makeRelayWorld = (opts: { failTimes: number; paneAfterSend: 'marker' | 'none' }) => {
     const relays: { session: string; text: string }[] = [];
     let pane = '';
     let fails = 0;
@@ -384,7 +377,7 @@ describe('发送附件契约（宣称=实物）', () => {
 
   it('正文宣称附件但 deliverables 取不到字节 → 拒发（宣称与实物一致）', async () => {
     const w = makeAttachWorld(false);
-    const { wf } = await setupGate(w, '成品见附件。\n如有出入请回复纠正。\n本邮件由 AI 助理答复，如有出入，直接回复本邮件纠正。', true);
+    const { wf } = await setupGate(w, BODY_TEXT, true);
     const send = w.store.stepsForWorkflow(wf.id).find((x) => x.kind === 'send')!;
     expect(send.status).toBe('failed');
     expect(String(send.output['error'])).toContain('宣称与实物不一致');

@@ -49,7 +49,7 @@ export const askText = (opts: AskTextOpts): Promise<string | null> =>
     wrap.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:999;display:flex;align-items:center;justify-content:center;padding:16px';
     const field = opts.multiline
       ? `<textarea id="dlg-f" rows="14" placeholder="${esc(opts.placeholder ?? '')}" style="width:100%;box-sizing:border-box;padding:8px;border:1px solid var(--line);border-radius:8px;font:12px/1.5 ui-monospace,monospace;resize:vertical"></textarea>`
-      : `<input id="dlg-f" value="" placeholder="${esc(opts.placeholder ?? '')}" style="width:100%;box-sizing:border-box;padding:8px;border:1px solid var(--line);border-radius:8px" />`;
+      : `<input id="dlg-f" placeholder="${esc(opts.placeholder ?? '')}" style="width:100%;box-sizing:border-box;padding:8px;border:1px solid var(--line);border-radius:8px" />`;
     wrap.innerHTML = `
       <div class="panel" style="width:min(720px,94vw);max-height:88vh;display:flex;flex-direction:column;margin:0">
         <h2 style="margin:0 0 10px;font-size:16px">${esc(opts.title)}</h2>
@@ -164,7 +164,7 @@ export const askChecks = (title: string, options: { id: string; label: string }[
     wrap.addEventListener('click', (e) => { if (e.target === wrap) done(null); });
     wrap.querySelector('#dlg-cancel')!.addEventListener('click', () => done(null));
     wrap.querySelector('#dlg-ok')!.addEventListener('click', () => {
-      const picked = [...wrap.querySelectorAll('input[type=checkbox]:checked')].map((x) => (x as HTMLInputElement).value);
+      const picked = [...wrap.querySelectorAll<HTMLInputElement>('input[type=checkbox]:checked')].map((x) => x.value);
       done(picked.length > 0 ? picked : null);
     });
     document.addEventListener('keydown', onKey, true);

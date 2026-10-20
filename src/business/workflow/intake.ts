@@ -3,13 +3,11 @@
 // 任务卡）与泛化渠道（onInbound：按渠道路由模板的动态进件）。
 
 import { type Clock } from '@juli-os/artifacts';
-import { truncate } from '../../platform/shared/json.ts'
+import { truncate } from '../../platform/shared/json.ts';
 import { normalizeEmail } from '../../platform/shared/email.ts';
 import type { Logger } from '../../platform/events/bus.ts';
-import type { LifecycleStore } from '@juli-os/ledger';
-import { type Workflow } from '@juli-os/ledger';
 import {
-  parseCaseFile, withOriginal,
+  parseCaseFile, withOriginal, type LifecycleStore, type Workflow,
 } from '@juli-os/ledger';
 import { DEDUP_META_KEY, dedupKey, type EmailMessage } from '../../contracts/ports.ts';
 import type { InboundMessage } from '../../contracts/channels.ts';
@@ -37,7 +35,7 @@ const refsOf = (v: unknown): string[] => {
   return [];
 };
 
-export const makeIntake = (o: {  readonly deps: EngineDeps;
+export const makeIntake = (o: { readonly deps: EngineDeps;
   readonly store: LifecycleStore;
   readonly clock: Clock;
   readonly now: () => Date;
@@ -95,7 +93,7 @@ export const makeIntake = (o: {  readonly deps: EngineDeps;
   /** 回复/转发主题前缀（中英混排，半/全角冒号都收；大小写不敏感）。 */
   const THREAD_SUBJECT_PREFIX = /^(?:回复|答复|回覆|转发|re|fw|fwd|aw|sv)\s*[:：]\s*/i;
   /** 主题归一化：循环剥前缀（「回复：Re: PPT 需求」与「PPT 需求」同键）+ trim + 小写。
-   * 纯函数；web 看板的展示侧去噪持有一份对齐副本（web 不引 src，见 kanban.ts）。 */
+   * 纯函数；web 看板的展示侧去噪持有一份对齐副本（web 不引 src，见 web/src/task-model.ts）。 */
   const normalizeThreadSubject = (subject: string): string => {
     let cur = subject.trim();
     for (;;) {
@@ -236,8 +234,9 @@ export const makeIntake = (o: {  readonly deps: EngineDeps;
     // 线程链:references 里有已知 message_id → 关联到那条流水(因果锚)。
     const refs = refsOf(m.references);
     let related: string | null = null;
-    if (refs.length > 0 || m.inReplyTo !== '') {
-      const needles = new Set([...refs, m.inReplyTo].filter((x) => x !== ''));
+    const irt = m.inReplyTo ?? '';
+    if (refs.length > 0 || irt !== '') {
+      const needles = new Set([...refs, irt].filter((x) => x !== ''));
       for (const cand of store.listWorkflows(200)) {
         const mid = cand.meta['message_id'];
         if (typeof mid === 'string' && mid !== '' && needles.has(mid)) {
@@ -331,26 +330,26 @@ export const makeIntake = (o: {  readonly deps: EngineDeps;
     let jevSession = '';
     if (bound === undefined && deps.judgment !== undefined) {
       const boundNames = new Set((deps.routing.boundAgents ?? []).map((b) => b.session));
-        const declared = (deps.routing.agents ?? [])
-          .filter((a) => !boundNames.has(a.session))
-          .map((a) => ({ session: a.session, company: a.company, domain: a.domain, senders: a.senders ?? [], description: a.description ?? '' }));
+      const declared = (deps.routing.agents ?? [])
+        .filter((a) => !boundNames.has(a.session))
+        .map((a) => ({ session: a.session, company: a.company, domain: a.domain, senders: a.senders ?? [], description: a.description ?? '' }));
       if (declared.length > 0) {
         const criteria: Record<string, string> = {};
         for (const d of declared) {
           const doms = d.senders.map((x) => x.split('@')[1] ?? '').filter((x) => x !== '').join(',');
           criteria[d.session] = `company=${d.company} domain=${d.domain}${doms !== '' ? ` senderDomains=${doms}` : ''}`
-            + (d.description !== undefined && d.description !== '' ? ` desc=${d.description}` : '');
+            + (d.description !== '' ? ` desc=${d.description}` : '');
         }
         const outcome = await deps.judgment.ask('route_intake',
           { from: m.from, subject: m.subject, body: m.body.slice(0, 600), rule_session: route.session },
           { target_session: { type: 'choice', instructions: 'Which declared session (by company/domain) should own this inbound email?', criteria } });
         if (outcome !== null && outcome.ok) {
           const p = { mode: outcome.mode, scenario: 'route_intake', provider: outcome.provider, model: outcome.model ?? '', confidence: outcome.confidence ?? 0, answer: outcome.answer ?? '', rule_session: route.session, input_tokens: outcome.inputTokens ?? 0, output_tokens: outcome.outputTokens ?? 0, duration_ms: outcome.durationMs ?? 0 };
-          const valid = declared.some((d) => d.session === outcome.answer);
+          const valid = declared.find((d) => d.session === outcome.answer) ?? null;
           if (outcome.mode === 'shadow') {
             store.appendEvent('workflow', w.id, 'route_judgment', { ...p, agree: outcome.answer === route.session });
-          } else if (valid && (outcome.confidence ?? 0) >= outcome.threshold) {
-            jevSession = outcome.answer!;
+          } else if (valid !== null && (outcome.confidence ?? 0) >= outcome.threshold) {
+            jevSession = valid.session;
             store.appendEvent('workflow', w.id, 'route_judgment_applied', { ...p, resolved: jevSession });
             route = {
               ...route, session: jevSession,
@@ -358,7 +357,7 @@ export const makeIntake = (o: {  readonly deps: EngineDeps;
               reasons: { ...route.reasons, jev: `内容判定 → ${jevSession}（置信 ${(outcome.confidence ?? 0).toFixed(2)}，规则腿 ${route.session} 被内容覆盖）` },
             };
           } else {
-            store.appendEvent('workflow', w.id, 'route_judgment_rejected', { ...p, reason: !valid ? '非声明会话' : '低于阈值' });
+            store.appendEvent('workflow', w.id, 'route_judgment_rejected', { ...p, reason: valid === null ? '非声明会话' : '低于阈值' });
           }
         } else if (outcome !== null) {
           store.appendEvent('workflow', w.id, 'route_judgment', { mode: outcome.mode, scenario: 'route_intake', error: outcome.error ?? '', rule_session: route.session });

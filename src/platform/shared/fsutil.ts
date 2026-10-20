@@ -2,7 +2,7 @@
 
 import { readFileSync } from 'node:fs';
 
-export interface ReadFile {
+interface ReadFile {
   (path: string): string | null;
 }
 

@@ -74,7 +74,7 @@ export const stepToGo = (
   output: nonEmptyObject(st.output),
   created_at: st.updatedAt,
   updated_at: st.updatedAt,
-  started_at: nonEmpty(st.startedAt ?? '') || undefined,
-  completed_at: nonEmpty(st.completedAt ?? '') || undefined,
+  started_at: nonEmpty(st.startedAt),
+  completed_at: nonEmpty(st.completedAt),
   summary: st.summary || undefined,
 });

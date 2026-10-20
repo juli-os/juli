@@ -54,7 +54,7 @@ const parkedCase = (w: ReturnType<typeof makeWorld>, session = 'juli-reply') => 
   w.store.setStepStatus(st.id, 'completed');
   w.store.setStepOutput(st.id, { output: '要求：修 engine 的路由函数，加测试' });
   w.store.setWorkflowSession(wf.id, session);
-  return { wf, st };
+  return { wf };
 };
 
 describe('task-handoff 转派', () => {

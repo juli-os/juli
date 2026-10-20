@@ -35,18 +35,24 @@ export const deliverablesBody = (input: JsonRecord): DeliverableRef | null => {
 export const envelopeRefs = (env: JsonValue | undefined): readonly string[] =>
   parseEnvelope(env)?.feedback_refs ?? [];
 
+/** 申报单信封本体（纯 object 才算数；标量/数组/null → null）——
+ * to/subject/cc 三处读取共用同一形状判定。 */
+const envelopeOf = (input: JsonRecord): JsonRecord | null => {
+  const env = input['envelope'];
+  if (env === null || typeof env !== 'object' || Array.isArray(env)) return null;
+  return env as JsonRecord;
+};
+
 /** 申报单信封的收件人（任务流主动发信，wf_505578377218 事故后一等字段）。 */
 export const envelopeTo = (input: JsonRecord): string => {
-  const env = input['envelope'];
-  if (env === null || typeof env !== 'object' || Array.isArray(env)) return '';
-  return asString((env as JsonRecord)['to'] ?? undefined).trim();
+  const env = envelopeOf(input);
+  return env === null ? '' : asString(env['to']).trim();
 };
 
 /** 申报单信封的主题（任务流新线程用原题，不套 Re:）。 */
 export const envelopeSubject = (input: JsonRecord): string => {
-  const env = input['envelope'];
-  if (env === null || typeof env !== 'object' || Array.isArray(env)) return '';
-  return asString((env as JsonRecord)['subject'] ?? undefined).trim();
+  const env = envelopeOf(input);
+  return env === null ? '' : asString(env['subject']).trim();
 };
 
 /** 闸门交付方式（2026-09-21 板 A「交付显式化」）：申报单一等字段——
@@ -112,12 +118,10 @@ export const seedSendFromGate = (store: LifecycleStore, gate: Step, sendStep: St
   const refIds = Array.isArray(refs)
     ? refs.filter((x): x is string => typeof x === 'string' && x !== '')
     : (typeof refs === 'string' ? refs.split(/\s+/).filter(Boolean) : []);
-  if (refIds.length > 0) {
-    const last = refIds[refIds.length - 1]!;
-    if (last !== '') msgId = last;
-  }
+  if (refIds.length > 0) msgId = refIds[refIds.length - 1]!;
   const bodyRef = deliverablesBody(gate.input);
-  const isNodes = store.getWorkflow(gate.workflowId)?.meta['mode'] === 'nodes';
+  // meta 已在上方读出，两次读取之间无写入——mode 直接取，不重复回库。
+  const isNodes = meta['mode'] === 'nodes';
   const from = asString(meta['from']).trim();
   // 收件人（单一事实源 resolveSendRecipient，P0）：任务流（无原始发件人）
   // 收件人=闸门申报 envelope.to——人批卡看到的地址就是发信地址；回信流
@@ -131,12 +135,13 @@ export const seedSendFromGate = (store: LifecycleStore, gate: Step, sendStep: St
     });
   }
   const envSubject = envelopeSubject(gate.input);
+  const reSubject = replySubject(asString(meta['subject']));
   // 主题（2026-09-20 P1 回信流收口）：判据与收件人同一维度——meta.from 在位
   // =回信流，一律 Re: 原题（线程语义），申报 envelope.subject 不盖原题；
   // 任务流维持「nodes 才认申报」的既有模式门。
   const subject = from !== ''
-    ? replySubject(asString(meta['subject']))
-    : (isNodes && envSubject !== '' ? envSubject : replySubject(asString(meta['subject'])));
+    ? reSubject
+    : (isNodes && envSubject !== '' ? envSubject : reSubject);
   const seed: Record<string, JsonValue> = {
     to: rcpt.to,
     subject,
@@ -162,16 +167,16 @@ export const seedSendFromGate = (store: LifecycleStore, gate: Step, sendStep: St
   // =回信流，申报 cc 一律不进种子（与 to 同一优先级锁；envelope.cc 申报只
   // 作展示+审计，envelope_cc_override_ignored 留痕）——被注入的 agent 借
   // 抄送外泄的通道就此关死。任务流维持 nodes 才认申报。
-  const env = gate.input['envelope'];
-  if (env !== null && typeof env === 'object' && !Array.isArray(env)) {
-    const cc = (env as { cc?: unknown }).cc;
+  const env = envelopeOf(gate.input);
+  if (env !== null) {
+    const cc = env['cc'];
     const addrs = Array.isArray(cc) ? cc.filter((x): x is string => typeof x === 'string' && x.trim() !== '') : [];
     if (from !== '') {
       if (addrs.length > 0 || envSubject !== '') {
         store.appendEvent('step', gate.id, 'envelope_cc_override_ignored', {
           ...(addrs.length > 0 ? { declared_cc: addrs } : {}),
           ...(envSubject !== ''
-            ? { declared_subject: envSubject, locked_subject: replySubject(asString(meta['subject'])) }
+            ? { declared_subject: envSubject, locked_subject: reSubject }
             : {}),
           note: '回信流信封锁定原线程（meta.from 在位）：申报 cc/subject 不进实发',
         });

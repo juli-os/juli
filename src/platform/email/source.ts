@@ -147,7 +147,9 @@ export const createMailSource = (deps: SourceDeps): MailSource => {
     },
 
     setIntervalSec(sec: number): boolean {
-      if (!Number.isFinite(sec) || sec <= 0) return false;
+      // 拒到整数秒为止：0 < sec < 1 经 Math.trunc 会得 0——0ms 节拍等于
+      // 全速轮询自打，且返回 true 谎报已生效（接口契约：非法值拒绝）。
+      if (!Number.isFinite(sec) || sec < 1) return false;
       intervalSec = Math.trunc(sec);
       return true;
     },

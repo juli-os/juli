@@ -41,18 +41,20 @@ describe('PTY（script(1) 零依赖实现）', () => {
 });
 
 describe('xterm WS 桥（hub 单元面）', () => {
+  // 两用例共用同一无状态桩：hasSession=false → newSession ok → attach 失败路径。
+  const tmux = {
+    async hasSession() { return false; },
+    async newSession() { return ok(undefined); },
+    async listSessions() { return []; },
+    async sendText() { return ok(undefined); },
+    async capturePane() { return ok('pane'); },
+    async killSession() { return ok(undefined); },
+    async interrupt() { return ok(undefined); },
+    async exec() { return ok(''); },
+  } as unknown as TmuxClient;
+
   it('未知会话：attach 失败 → ws 以 1011 关闭；未带 token 的 /api 路径不受影响', async () => {
     const server = createServer();
-    const tmux = {
-      async hasSession() { return false; },
-      async newSession() { return ok(undefined); },
-      async listSessions() { return []; },
-      async sendText() { return ok(undefined); },
-      async capturePane() { return ok('pane'); },
-      async killSession() { return ok(undefined); },
-      async interrupt() { return ok(undefined); },
-      async exec() { return ok(''); },
-    } as unknown as TmuxClient;
     attachPtyHub({ server, tmux, password: '' });
     await new Promise<void>((r) => server.listen(0, () => r()));
     const port = (server.address() as { port: number }).port;
@@ -69,16 +71,6 @@ describe('xterm WS 桥（hub 单元面）', () => {
 
   it('绑定会话守卫（PROBLEMS-R2 P1 旁道 B）：命中 boundSessions → 1008 拒连；普通名不受影响', async () => {
     const server = createServer();
-    const tmux = {
-      async hasSession() { return false; },
-      async newSession() { return ok(undefined); },
-      async listSessions() { return []; },
-      async sendText() { return ok(undefined); },
-      async capturePane() { return ok('pane'); },
-      async killSession() { return ok(undefined); },
-      async interrupt() { return ok(undefined); },
-      async exec() { return ok(''); },
-    } as unknown as TmuxClient;
     attachPtyHub({ server, tmux, password: '', boundSessions: ['project-a'] });
     await new Promise<void>((r) => server.listen(0, () => r()));
     const port = (server.address() as { port: number }).port;

@@ -42,6 +42,24 @@ interface UsageCost {
   readonly totalCny: { readonly cache: number; readonly input: number; readonly output: number; readonly total: number };
 }
 
+/** 登记工件引用（gate/send 步 input.deliverables 的单条形状；闸门卡与完成态
+ * 回看面共用）。 */
+interface DeliverableRef {
+  readonly id: string;
+  readonly name: string;
+  readonly view_role: string;
+  readonly sha256: string;
+  readonly summary?: string;
+}
+
+/** 工件卡条目：闸门「交付工件」区与完成态回看面同款渲染（两处必须长得一样）。 */
+const deliverableItem = (d: DeliverableRef): string => `
+  <div class="deliverable" data-art="${esc(d.id)}" data-role="${esc(d.view_role)}" data-name="${esc(d.name)}">
+    <div class="dl-head"><span class="chip kind">${esc(d.view_role)}</span> <strong>${esc(d.name)}</strong>
+      <span class="muted" style="font-size:11px">sha256 ${esc(d.sha256.slice(0, 6))}…${d.summary ? ' · ' + esc(d.summary) : ''}</span></div>
+    <div class="dl-body muted">加载中…</div>
+  </div>`;
+
 export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | void> => {
   el.innerHTML = `
     ${costPanelHTML()}
@@ -212,7 +230,7 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
     const sentTo = typeof w.meta?.['from'] === 'string' ? w.meta['from'] : '';
     const banner = w.status === 'completed'
       ? (sendStep
-        ? `<div class="done-banner">✓ 已发送给 ${entityAnchor('customer', sentTo, sentTo)} · 流水完成（${esc(String((sendStep.output as Record<string, unknown>)['message_id'] ?? ''))}）</div>`
+        ? `<div class="done-banner">✓ 已发送给 ${entityAnchor('customer', sentTo, sentTo)} · 流水完成（${esc(String(((sendStep.output ?? {}) as Record<string, unknown>)['message_id'] ?? ''))}）</div>`
         : '<div class="done-banner">✓ 流水完成</div>')
       : '';
     // 发出后回看面（09-19）：完成态 run 的交付工件只读面板。闸门卡只在
@@ -220,12 +238,12 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
     // 步骤 input.deliverables（agent 收编/gate/send 都申报），取件复用
     // /api/artifacts/{id}/content + renderDeliverable，与审核同一渲染器。
     const seenArt = new Set<string>();
-    const sentArts: { id: string; name: string; view_role: string; sha256: string; summary?: string }[] = [];
-    const deliverablesOf = (s: Step): { id: string; name: string; view_role: string; sha256: string; summary?: string }[] =>
+    const sentArts: DeliverableRef[] = [];
+    const deliverablesOf = (s: Step): readonly DeliverableRef[] =>
       Array.isArray((s.input ?? {})['deliverables'])
-        ? ((s.input)['deliverables'] as { id: string; name: string; view_role: string; sha256: string; summary?: string }[])
+        ? ((s.input)['deliverables'] as DeliverableRef[])
         : [];
-    const pushDl = (dl: readonly { id: string; name: string; view_role: string; sha256: string; summary?: string }[]): void => {
+    const pushDl = (dl: readonly DeliverableRef[]): void => {
       for (const d of dl) {
         // 同名工件在流程中会被重复登记（agent 收编与 gate 申报各一个 id，
         // 内容同源）——回看面按 role/name 去重，展示逻辑工件。
@@ -242,12 +260,7 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
     const artsPanel = w.status === 'completed' && sentArts.length > 0 ? `
       <div class="panel sent-arts">
         <div class="gc-col-h">${sendStep ? '交付工件（已随信发出 · 点开回看）' : '交付工件（本单产出）'}</div>
-        <div class="deliverables">${sentArts.map((d) => `
-          <div class="deliverable" data-art="${esc(d.id)}" data-role="${esc(d.view_role)}" data-name="${esc(d.name)}">
-            <div class="dl-head"><span class="chip kind">${esc(d.view_role)}</span> <strong>${esc(d.name)}</strong>
-              <span class="muted" style="font-size:11px">sha256 ${esc(d.sha256.slice(0, 6))}…${d.summary ? ' · ' + esc(d.summary) : ''}</span></div>
-            <div class="dl-body muted">加载中…</div>
-          </div>`).join('')}
+        <div class="deliverables">${sentArts.map((d) => deliverableItem(d)).join('')}
         </div>
       </div>` : '';
     // 用量与成本行（wf_535149a174fe + 2026-10-07 可见性对齐 iOS）：Prompts
@@ -278,9 +291,9 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
         <div class="wf-head">
           <h2>${esc(w.title)}</h2> ${statusChip(w.status)}${heldIds.has(w.id) ? ` <span class="chip warn" title="工作窗 hold：高价时段（${esc(holdUntil)}）暂停派发，窗口结束自动放行">⏸ HOLD${holdUntil ? ' · ' + esc(holdUntil) : ''}</span>` : ''}
           <div class="wf-actions">
-            ${(w.meta?.['auto_approve'] ?? null) === true ? `<span class="chip soft" title="本单免批：非发送闸门由 juli-auto 自动批准（问询与外发邮件仍等人）；点右侧「需批」恢复人工">⚡ 自动批准中</span>` : ''}
+            ${w.meta?.['auto_approve'] === true ? `<span class="chip soft" title="本单免批：非发送闸门由 juli-auto 自动批准（问询与外发邮件仍等人）；点右侧「需批」恢复人工">⚡ 自动批准中</span>` : ''}
             ${(w.status === 'running' || w.status === 'queued' || w.status === 'waiting_human')
-              ? (w.meta?.['auto_approve'] ?? null) === true
+              ? w.meta?.['auto_approve'] === true
                 ? `<button class="mini ghost" data-autoap-off="${w.id}" title="恢复人工批准">需批</button>`
                 : `<button class="mini" data-autoap-on="${w.id}" title="本单免批：非发送闸门自动批准（by=juli-auto 留痕）；问询与外发邮件仍会等你">免批</button>`
               : ''}
@@ -475,7 +488,7 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
     for (const btn of detail.querySelectorAll<HTMLButtonElement>('button[data-autoap-on], button[data-autoap-off]')) {
       btn.addEventListener('click', () => {
         const onBtn = btn.dataset.autoapOn !== undefined;
-        void runAction(btn, () => api.post(`/api/lifecycle/workflows/${esc(w.id)}/auto-approve`, { on: onBtn }));
+        void runAction(btn, () => api.post(`/api/lifecycle/workflows/${w.id}/auto-approve`, { on: onBtn }));
       });
     }
     for (const btn of detail.querySelectorAll<HTMLButtonElement>('button[data-release]')) {
@@ -585,7 +598,6 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
         }
         if (isDirection) {
           // 方向修正：本单以修正意见收口归档，新意见起独立单（relates_to 链回）。
-          const w = d.workflow;
           await runAction(btn, async () => {
             await api.post(`/api/lifecycle/steps/${btn.dataset.rework}/resolve`, { note: `方向修正→另起:${feedback}`, by: 'web' });
             await api.post('/api/lifecycle/tasks', {
@@ -883,7 +895,7 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
         : replySubject(typeof meta['subject'] === 'string' ? meta['subject'] : typeof i['subject'] === 'string' ? i['subject'] : '');
     const subjIgnored = replyLocked && envSubject !== '' && envSubject !== subj ? envSubject : '';
     const dl = Array.isArray(i['deliverables'])
-      ? (i['deliverables'] as { id: string; name: string; view_role: string; sha256: string; summary?: string }[])
+      ? (i['deliverables'] as DeliverableRef[])
       : [];
     const body = dl.find((d) => d.view_role === 'body');
     const others = dl.filter((d) => d.view_role !== 'body');
@@ -920,12 +932,7 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
       : '<span class="muted" style="font-size:12px">（引擎未附自检结果）</span>';
     const othersHtml = others.length > 0
       ? `<div class="gc-col-h">交付工件（登记后不可变）</div>
-         <div class="deliverables">${others.map((d) => `
-        <div class="deliverable" data-art="${esc(d.id)}" data-role="${esc(d.view_role)}" data-name="${esc(d.name)}">
-          <div class="dl-head"><span class="chip kind">${esc(d.view_role)}</span> <strong>${esc(d.name)}</strong>
-            <span class="muted" style="font-size:11px">sha256 ${esc(d.sha256.slice(0, 6))}…${d.summary ? ' · ' + esc(d.summary) : ''}</span></div>
-          <div class="dl-body muted">加载中…</div>
-        </div>`).join('')}
+         <div class="deliverables">${others.map((d) => deliverableItem(d)).join('')}
       </div>` : '';
     return `
     <div class="gate-card">
