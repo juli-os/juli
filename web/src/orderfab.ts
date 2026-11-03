@@ -43,9 +43,21 @@ export const mountOrderDrawer = (): void => {
       if (el !== null) el.inert = on;
     }
   };
+  // chatView 自 2026-10-21 起带清理口（语音输入的 WS/计时器/音轨）：抽屉关闭
+  // 必须调用，否则语音件泄漏到抽屉外。挂载是 async——抽屉在挂载完成前就被关
+  // 的竞态下，晚到的清理口立即自调（照 main.ts render 代际守卫先例）。
+  // b44 R1 P2 代际计数：仅靠 isOpen 判定挡不住「关后未决期再开」——第一次
+  // 挂载的 then 在第二次打开后才兑现，drawer 是 open 的，死视图清理口被注册
+  // 为现役，关闭时调的是死口、活视图的清理口永不被调（/ws/chat 连接泄漏）。
+  // 每次开/关推代号，then 先验代际，过期即调即弃。
+  let chatCleanup: (() => void) | null = null;
+  let renderGen = 0;
   const close = (): void => {
+    renderGen++; // 未决挂载整体作废（then 兑现即调即弃，不留死清理口）
     drawer.classList.remove('open');
-    body.innerHTML = ''; // 卸载对话视图（chatView 无清理口，清 DOM 即收口）
+    chatCleanup?.();
+    chatCleanup = null;
+    body.innerHTML = ''; // 卸载对话视图（清理口之外的 DOM 残留一并清）
     setBackgroundInert(false); // 先解除背景 inert 再归还焦点——inert 中的元素不可聚焦
     releaseTrap?.();
     releaseTrap = null;
@@ -61,7 +73,12 @@ export const mountOrderDrawer = (): void => {
     releaseTrap = trapFocus(drawer);
     drawer.classList.add('open');
     setBackgroundInert(true);
-    void chatView(body); // 挂载即 input.focus()（chat.ts）——焦点入抽屉
+    const myGen = ++renderGen;
+    void chatView(body).then((c) => { // 挂载即 input.focus()（chat.ts）——焦点入抽屉
+      if (c === undefined || c === null) return;
+      if (myGen !== renderGen || !drawer.classList.contains('open')) c(); // 过代际/已关：即调即弃
+      else chatCleanup = c;
+    });
   });
   document.getElementById('order-drawer-close')!.addEventListener('click', close);
   document.addEventListener('keydown', (e) => {

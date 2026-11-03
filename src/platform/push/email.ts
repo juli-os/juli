@@ -1,6 +1,7 @@
-// 邮件通知（PusherPort 的邮件实现）：闸门等待/完成/失败/链尾悬空/步骤失败
-// 五事件全量进邮箱——这些全是「要人动手或知道」的事，与设备推送（APNs/Bark，
-// 仅前三事件）平行，不互斥不互替。复用回信 SMTP 通道（同一 MailerPort），
+// 邮件通知（PusherPort 的邮件实现）：闸门等待/完成/失败/链尾悬空/步骤失败/
+// 可结算/等输入七事件全量进邮箱——这些全是「要人动手或知道」的事，与设备
+// 推送（APNs/Bark，仅前三事件）平行，不互斥不互替。复用回信 SMTP 通道
+// （同一 MailerPort），
 // 不另起连接池；收件人（to/cc）热改生效——runtime 闭包注入 getter，这里
 // 每次发送现读，不快照启动值。尽力而为：内部自捕获，绝不 reject 阻塞引擎
 // （与 pushAll 的 .catch(() => undefined) 同语义，只是收口在自己这层）。
@@ -28,7 +29,7 @@ export interface EmailNotifyDeps {
 }
 
 const clean = (list: readonly string[]): readonly string[] =>
-  list.filter((x) => typeof x === 'string' && x.trim() !== '');
+  list.filter((x) => x.trim() !== '');
 
 /** 截断（shared/json.ts truncate 同款风格）：邮件容量比设备推送（30/200）
  * 大——主题 80 / 正文 1500，startTask 允许的 120 字标题与超长摘要不撑爆
@@ -124,8 +125,9 @@ export const createEmailNotifier = (deps: EmailNotifyDeps): PusherPort => {
 };
 
 /** 双通道组合器（设备推送 + 邮件通知）：三个共享事件并行双发；可选事件
- * （chainDangling/stepFailed）按 PusherPort 可选语义——某一侧实现了才在
- * 组合体上存在（只调实现侧），两侧都缺则为 undefined。全部 fire-and-forget：
+ * （chainDangling/stepFailed/settleHint/awaitingInput）按 PusherPort 可选
+ * 语义——某一侧实现了才在组合体上存在（只调实现侧），两侧都缺则为
+ * undefined。全部 fire-and-forget：
  * 方法立即返回 resolved promise，实际发送后台跑、错误收口在本层——引擎在
  * withLock 内 await 这些方法，SMTP 的 30s 级最坏延迟绝不能串进持锁路径
  * （对齐引擎 stepFailed 调用点的尽力而为形态）。 */

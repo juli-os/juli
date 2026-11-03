@@ -24,12 +24,31 @@ export interface PtyHubDeps {
 export const attachPtyHub = (deps: PtyHubDeps): void => {
   const wss = new WebSocketServer({ noServer: true });
   deps.server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
-    const url = new URL(req.url ?? '/', 'http://localhost');
+    // 同 wirehubs.acceptWithToken（R1 P0#1）：裸 new URL 对 `//[` 这类 llhttp
+    // 放行的请求目标同步抛 TypeError = 免认证打死进程；畸形 URL 一律销毁
+    // socket、不标记 __juliWs（兜底再 destroy 一次，幂等无害）。
+    let url: URL;
+    try {
+      url = new URL(req.url ?? '/', 'http://localhost');
+    } catch {
+      socket.destroy();
+      return;
+    }
     if (!url.pathname.startsWith('/ws/xterm/')) return; // 交给其它 upgrade 处理方
+    // session 提取同在 token 校验之前（b44 P0）：畸形 percent-encoding（如
+    // /ws/xterm/%E0%A4%A）使 decodeURIComponent 对原样保留的 % 序列同步抛
+    // URIError，与 ：32 的 new URL throw 同一杀进程通路。提取失败一律销毁
+    // socket、不标记 __juliWs（兜底再 destroy 一次，幂等无害）。
+    let session: string;
+    try {
+      session = decodeURIComponent(url.pathname.slice('/ws/xterm/'.length));
+    } catch {
+      socket.destroy();
+      return;
+    }
     // 标记已认领（index.ts 兜底销毁的依据，与 wirehubs.acceptWithToken 同语义）。
     (socket as unknown as { __juliWs?: boolean }).__juliWs = true;
     socket.on('error', () => undefined);
-    const session = decodeURIComponent(url.pathname.slice('/ws/xterm/'.length));
     const token = url.searchParams.get('token') ?? '';
     if (deps.password !== '' && !safeEqual(token, deps.password)) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
@@ -46,8 +65,9 @@ export const attachPtyHub = (deps: PtyHubDeps): void => {
  * RangeError（ws 8.21.3 实证），而本文件两处 reason 含中文 + 客户端可控的
  * 会话名——attach 失败消息带 19+ 字符会话名即越界（135 字节实测），抛点又都
  * 在 void 丢弃的 async 里，不拦就是未处理 rejection，Node 默认直接退出进程。
- * 只按字节回退截断：≤123 字节的原样透传，绝不改动现网不越界的原文。 */
-const closeReason = (s: string): string => {
+ * 只按字节回退截断：≤123 字节的原样透传，绝不改动现网不越界的原文。
+ * 导出仅供测试（test/pty-close-reason.test.ts，R1 P2#6），行为契约在那边钉死。 */
+export const closeReason = (s: string): string => {
   let out = s;
   while (Buffer.byteLength(out) > 123) out = out.slice(0, -1);
   return out;
@@ -57,6 +77,16 @@ const serveSession = async (deps: PtyHubDeps, ws: WebSocket, session: string): P
   const log = deps.log ?? (() => undefined);
   if (session.trim() === '') {
     ws.close(1008, 'session required');
+    return;
+  }
+  // 绑定会话守卫（2026-09-20 P1 旁道 B，与 /api/sessions/:name/send 同判据）：
+  // 绑定会话（专用 agent 隔离）只开邮件口——全双工 PTY 是比裸 send-keys 更强
+  // 的注入面，无闸门、无账本，一律拒（1008）。只读观察走 /ws/snapshot。
+  // 必须置于心跳建立之前：拒连路径 return 时 ws.on('close') 清理段尚未
+  // 注册，之后才建 hb 会在该路径泄漏常驻 interval（闭包钉住整条 ws）。
+  if ((deps.boundSessions ?? []).includes(session)) {
+    log(`[ws] xterm 拒连绑定会话 ${session}（专用 agent 隔离：PTY 桥不开放，只读观察走 /ws/snapshot）`);
+    ws.close(1008, closeReason(`会话 ${session} 是绑定会话（专用 agent 隔离）——PTY 桥不开放，只读观察走 /ws/snapshot`));
     return;
   }
   // 心跳（2026-09-29 泄漏实证）：客户端进程暴死（浏览器被杀/断网）时不发
@@ -71,14 +101,6 @@ const serveSession = async (deps: PtyHubDeps, ws: WebSocket, session: string): P
     alive = false;
     ws.ping();
   }, 15_000);
-  // 绑定会话守卫（2026-09-20 P1 旁道 B，与 /api/sessions/:name/send 同判据）：
-  // 绑定会话（专用 agent 隔离）只开邮件口——全双工 PTY 是比裸 send-keys 更强
-  // 的注入面，无闸门、无账本，一律拒（1008）。只读观察走 /ws/snapshot。
-  if ((deps.boundSessions ?? []).includes(session)) {
-    log(`[ws] xterm 拒连绑定会话 ${session}（专用 agent 隔离：PTY 桥不开放，只读观察走 /ws/snapshot）`);
-    ws.close(1008, closeReason(`会话 ${session} 是绑定会话（专用 agent 隔离）——PTY 桥不开放，只读观察走 /ws/snapshot`));
-    return;
-  }
   let pty: PtySession | null = null;
   let cols = 120;
   let rows = 32;
@@ -93,6 +115,7 @@ const serveSession = async (deps: PtyHubDeps, ws: WebSocket, session: string): P
     const seq = ++createSeq;
     creating = true;
     const usedCols = cols;
+    const usedRows = rows;
     const res = await attachTmuxPty(deps.tmux, session, { cols, rows }, (chunk) => {
       if (ws.readyState === ws.OPEN) ws.send(chunk);
     });
@@ -108,7 +131,7 @@ const serveSession = async (deps: PtyHubDeps, ws: WebSocket, session: string): P
     }
     const me = res.value;
     pty = me;
-    log(`[ws] xterm attach ${session} (${cols}x${rows})`);
+    log(`[ws] xterm attach ${session} (${usedCols}x${usedRows})`); // 创建时刻实尺寸（cols 其后变了由复查重建另记一条）
     void me.exit.then(() => {
       // 只认「当前 PTY」退出才收连接：resize 交换会 kill 旧 PTY（pty=null
       // →建新），旧 PTY 的 exit 回调随后异步到达——若不验身份，任何一次
@@ -132,23 +155,27 @@ const serveSession = async (deps: PtyHubDeps, ws: WebSocket, session: string): P
     if (text.startsWith('{"type"')) {
       try {
         const v = JSON.parse(text) as { type?: string; cols?: number; rows?: number };
-        const inCols = v.cols ?? 0;
-        const inRows = v.rows ?? 0;
-        if (v.type === 'size' && inCols > 20 && inRows > 10) {
-          const nextCols = Math.min(400, Math.trunc(inCols));
-          const nextRows = Math.min(200, Math.trunc(inRows));
-          if (nextCols !== cols) {
-            cols = nextCols;
-            rows = nextRows;
-            // 建连在途时只更新变量（create 完成后的复查会跟上新尺寸）；
-            // 已建才走 kill+重建。
-            if (!creating) {
-              pty?.kill();
-              pty = null;
-              void create();
+        // size 帧整帧消费：尺寸非法（缺字段/超下界）只丢弃，绝不落进
+        // pty?.write——控制帧不得漏进 PTY 数据面当按键注入。
+        if (v.type === 'size') {
+          const inCols = v.cols ?? 0;
+          const inRows = v.rows ?? 0;
+          if (inCols > 20 && inRows > 10) {
+            const nextCols = Math.min(400, Math.trunc(inCols));
+            const nextRows = Math.min(200, Math.trunc(inRows));
+            if (nextCols !== cols) {
+              cols = nextCols;
+              rows = nextRows;
+              // 建连在途时只更新变量（create 完成后的复查会跟上新尺寸）；
+              // 已建才走 kill+重建。
+              if (!creating) {
+                pty?.kill();
+                pty = null;
+                void create();
+              }
+            } else if (nextRows !== rows) {
+              rows = nextRows; // 仅行数变化：记录，不重建
             }
-          } else if (nextRows !== rows) {
-            rows = nextRows; // 仅行数变化：记录，不重建
           }
           return;
         }

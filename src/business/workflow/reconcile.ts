@@ -138,7 +138,14 @@ export const makeReconcile = (o: {
       .some((a) => a.stepId === gate.id && a.deletedAt === null)
       || feedbackReplyCount(recordId) > 0;
     if (!executed) return false;
-    await o.lifecycle.settle(workflowId, 'auto-apply');
+    // 逐单 try（与 settleOneApprovedRun 同裁决）：守卫与 settle 取锁之间
+    // appendNode 可插队，settleLocked 会打回——一单被拒不炸整轮启动收口。
+    try {
+      await o.lifecycle.settle(workflowId, 'auto-apply');
+    } catch (e) {
+      log.warn(`[engine] feedback apply 链收口被拒 (${workflowId}，下轮再判): ${e instanceof Error ? e.message : String(e)}`);
+      return false;
+    }
     log.info(`[engine] feedback apply 链自动收口 ${workflowId}（record ${recordId}）`);
     return true;
   };

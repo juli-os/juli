@@ -36,7 +36,13 @@ export const makeRelay = (o: {
   const now = o.now;
 
   const deliverRelay = async (relayId: string, sess: string, text: string, marker: string): Promise<boolean> => {
-    if (!deps.sendToSession) return false;
+    // 无 sender 也是失败，照记尝试次数——不然 attempts 永不增长，卡死告警
+    //（attempts>=3）永不响，欠款静默烂在外发箱（steps.ts「smtp not
+    // configured」同款留痕）。
+    if (!deps.sendToSession) {
+      store.markRelayAttempt(relayId, 'sender not configured');
+      return false;
+    }
     try {
       if (deps.readPane) {
         const pane = await deps.readPane(sess).catch(() => null);

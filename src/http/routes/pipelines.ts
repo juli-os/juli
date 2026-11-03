@@ -3,7 +3,8 @@
 
 import type { Hono } from 'hono';
 import type { Runtime } from '../../runtime.ts';
-import type { JsonRecord } from '@juli-os/artifacts'
+import type { JsonRecord } from '@juli-os/artifacts';
+import { TEMPLATE_FILE_NAME_RE } from '../../business/templates/registry.ts';
 import { bodyStr, readBody, type AppEnv } from '../helpers.ts';
 
 export const registerPipelinesRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
@@ -40,7 +41,7 @@ export const registerPipelinesRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
 
   app.delete('/api/pipelines/:file', (c) => {
     const file = c.req.param('file') ?? '';
-    if (!/^[\w.-]+\.ya?ml$/.test(file)) return c.json({ error: '文件名不合法' }, 400);
+    if (!TEMPLATE_FILE_NAME_RE.test(file)) return c.json({ error: '文件名不合法' }, 400);
     rt.deleteTemplate(file);
     return c.json({ ok: true });
   });

@@ -91,10 +91,9 @@ const defaultProbeUrl = async (url: string): Promise<boolean> => {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), 3000);
   try {
+    // fetch 自身失败已内联兜底（→ null → false），此处只需保证超时定时器回收。
     const res = await fetch(url, { method: 'HEAD', signal: ac.signal, redirect: 'follow' }).catch(() => null);
     return res !== null && res.ok;
-  } catch {
-    return false;
   } finally {
     clearTimeout(t);
   }
@@ -134,11 +133,10 @@ export const runSendChecks = async (
   } else {
     checks.push({ name: 'contract', status: 'pass', detail: `申报单带 ${opts.feedbackRefs.length} 个 feedback 指针` });
   }
-  // 称呼一致性（2026-10-01 陈莉君事故）：编造姓名在闸门面显性化，人只判异常。
-  if (opts.senderName !== undefined || greetingNameIn(body) !== undefined) {
-    const g = greetingCheck(body, opts.senderName, opts.senderAddress);
-    if (g !== null) checks.push(g);
-  }
+  // 称呼一致性（2026-10-01 陈莉君事故）：编造姓名在闸门面显性化，人只判异常
+  //（正文无称呼形态时 greetingCheck 自返 null，无需外层再挡）。
+  const g = greetingCheck(body, opts.senderName, opts.senderAddress);
+  if (g !== null) checks.push(g);
   if (opts.probeUrls) {
     const probe = opts.probeUrl ?? defaultProbeUrl;
     for (const url of urlsIn(body)) {

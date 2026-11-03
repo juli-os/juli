@@ -75,7 +75,10 @@ export const makeHumanActions = (o: {
         `intervention delivery failed to @${session}: ${res.reason}——已转外发箱补投（relay ${relayId}），送达后下一回合可见`,
       );
     }
-    const hist = Array.isArray(st.input['interventions']) ? st.input['interventions'] : [];
+    // 投递 await 期间快照已陈旧：重读再算历史，读-改-写落在同一同步块
+    // （事件环单线程即原子）——并发插话不再互相覆盖 interventions（丢更新）。
+    const stNow = store.getStep(stepId) ?? st;
+    const hist = Array.isArray(stNow.input['interventions']) ? stNow.input['interventions'] : [];
     store.setStepInput(st.id, {
       interventions: [...hist, { text: t, by, at: rfc3339(now()) }],
     });
@@ -254,33 +257,40 @@ export const makeHumanActions = (o: {
   const assignSession = async (workflowId: string, session: string, by: string): Promise<void> => {
     const s = session.trim();
     if (s === '') throw new Error('session required');
-    const steps = store.stepsForWorkflow(workflowId);
-    for (const st of steps) {
-      if (AGENT_STEP_KINDS.includes(st.kind) && st.status === 'running') {
-        throw new Error(`agent step ${st.title} is running — wait for the turn to settle before reassigning`);
+    // 锁内做全套（同 retry/amendStep/reworkSend/handoff 壳）：检查「无在飞
+    // agent 步」与写路由/步输入之间若无锁，引擎恰在间隙派出该步——人的改派
+    // 写进 running 步、引擎按旧 session 派发，正是注释里「改派静默失效」类
+    // 事故的窗口。withLock 是队列锁，唯一调用面在 HTTP 路由（锁外），无死锁。
+    await o.withLock(workflowId, async () => {
+      if (!store.getWorkflow(workflowId)) throw new Error(`workflow ${workflowId} not found`);
+      const steps = store.stepsForWorkflow(workflowId);
+      for (const st of steps) {
+        if (AGENT_STEP_KINDS.includes(st.kind) && st.status === 'running') {
+          throw new Error(`agent step ${st.title} is running — wait for the turn to settle before reassigning`);
+        }
       }
-    }
-    // 路由记录：闸门批准读 steps[0].output.session。
-    const triage = steps.find((st) => st.kind === 'triage');
-    if (triage) store.setStepOutput(triage.id, { session: s });
-    // 未起步的 agent/verify 跟随新路由。顺带清三字段（九跑 P1）：上次派发的
-    // resolved_session（忙闲改道/别名/jev 落点快照）不清则 steps.ts 派发优先级
-    // 压过人改的 input.session——改派对失败步静默失效；busy_diverted_from 是
-    // 同源的改道痕迹；session_pinned=true（0930 修）：人点名即钉住——忙时不
-    // 改道宁可排队（宁可慢不换人），与 ovSession 消费路径同语义；旧钉随
-    // 合并写一并覆盖为新落点的钉。
-    for (const st of steps) {
-      if (AGENT_STEP_KINDS.includes(st.kind) &&
-        (st.status === 'pending' || st.status === 'failed')) {
-        store.setStepInput(st.id, {
-          session: s, resolved_session: null, busy_diverted_from: null, session_pinned: true,
-        });
+      // 路由记录：闸门批准读 steps[0].output.session。
+      const triage = steps.find((st) => st.kind === 'triage');
+      if (triage) store.setStepOutput(triage.id, { session: s });
+      // 未起步的 agent/verify 跟随新路由。顺带清三字段（九跑 P1）：上次派发的
+      // resolved_session（忙闲改道/别名/jev 落点快照）不清则 steps.ts 派发优先级
+      // 压过人改的 input.session——改派对失败步静默失效；busy_diverted_from 是
+      // 同源的改道痕迹；session_pinned=true（0930 修）：人点名即钉住——忙时不
+      // 改道宁可排队（宁可慢不换人），与 ovSession 消费路径同语义；旧钉随
+      // 合并写一并覆盖为新落点的钉。
+      for (const st of steps) {
+        if (AGENT_STEP_KINDS.includes(st.kind) &&
+          (st.status === 'pending' || st.status === 'failed')) {
+          store.setStepInput(st.id, {
+            session: s, resolved_session: null, busy_diverted_from: null, session_pinned: true,
+          });
+        }
       }
-    }
-    store.updateWorkflowMeta(workflowId, {
-      assigned_session: s, assigned_by: by, assigned_at: rfc3339(now()),
+      store.updateWorkflowMeta(workflowId, {
+        assigned_session: s, assigned_by: by, assigned_at: rfc3339(now()),
+      });
+      store.appendEvent('workflow', workflowId, 'agent_assigned', { session: s, by });
     });
-    store.appendEvent('workflow', workflowId, 'agent_assigned', { session: s, by });
   };
 
   /** 转派（task-handoff，2026-09-20 裁决）：agent 读懂内容发现「不归我」后的

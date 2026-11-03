@@ -13,7 +13,7 @@ import {
 } from '../send/sendChecks.ts';
 import { composeTextBody, renderEmailHtml, SIGNATURE_TEXT, stripSignature } from '../send/emailView.ts';
 import {
-  deliverablesBody, envelopeRefs, gateDelivery, isEffectDelivery, resolveSendRecipient,
+  deliverablesBody, envelopeRefs, gateDelivery, isEffectDelivery, replySubject, resolveSendRecipient,
 } from '../send/sendSeed.ts';
 import { anchorPlan, claimsAttachment, gateSummary } from './support.ts';
 import type { EngineDeps } from './engine.ts';
@@ -25,9 +25,6 @@ export interface Steps {
   openGate: StepHandler;
   runAgentStep: StepHandler;
   runSendStep: StepHandler;
-  /** 闸门视角的正文候选：优先 deliverables 里唯一 body 工件（按哈希取字节），
-   * 退回内联 draft（旧链路/无契约）。取不到返回 null。 */
-  resolveBodyText(gate: Step): Promise<string | null>;
   gateWorkflowActive(workflowId: string): string | null;
   /** 播种/自愈回退任务卡的渲染接缝（第 5 轮审查 P1）：上游 input.prompt 常
    * 是未渲染模板——原样复制会把字面占位符当计划派发。渲染成具体文本再落
@@ -123,10 +120,15 @@ export const makeSteps = (o: {
     }
     st0.setStepStatus(st.id, 'waiting_human');
     o.journal.stepEvent(st, 'step_waiting_human', {});
+    // 推送前重读：上面的 carry/checks 刚写进 input，st 快照还是旧值——
+    // gateSummary 读 draft/plan/note，旧快照会把带草稿的待审卡推成裸标题。
+    const fresh = st0.getStep(st.id) ?? st;
     await o.journal.pushBestEffort('gateWaiting', deps.pusher &&
-      (() => deps.pusher!.gateWaiting(w, st, gateSummary(st))));
+      (() => deps.pusher!.gateWaiting(w, fresh, gateSummary(fresh))));
   };
 
+  /** 闸门视角的正文候选：优先 deliverables 里唯一 body 工件（按哈希取字节），
+   * 退回内联 draft（旧链路/无契约）。取不到返回 null。 */
   const resolveBodyText = async (gate: Step): Promise<string | null> => {
     const body = deliverablesBody(gate.input);
     if (body !== null && deps.artifacts?.getContent) {
@@ -235,9 +237,12 @@ export const makeSteps = (o: {
         session = renderFlowTemplate(session, { ...flowContext(store, w.id, now()), Input: st.input }).trim();
         st0.setStepInput(st.id, { resolved_session: session });
       } catch (e) {
-        st0.setStepOutput(st.id, { error: `session 求值失败: ${e instanceof Error ? e.message : String(e)}` });
+        // 与任务卡渲染失败同一处置：失败原因进 output/事件/log 三处，可重试。
+        const msg = `session 求值失败: ${e instanceof Error ? e.message : String(e)}`;
+        st0.setStepOutput(st.id, { error: msg });
         st0.setStepStatus(st.id, 'failed');
-        o.journal.stepEvent(st, 'step_failed', { error: 'session 求值失败' });
+        o.journal.stepEvent(st, 'step_failed', { error: msg });
+        log.error(`[engine] step ${st.id} (${st.kind}) ${msg}`);
         return;
       }
     }
@@ -249,6 +254,8 @@ export const makeSteps = (o: {
     // CLI/agent 给步钉绑定会话一律显式 failed，杜绝旁道。绑定会话同时豁免
     // 复用优先落回：不存在时保持原名交就绪派发按配置 cwd 自建（落回
     // juli-reply = 绑定被打穿，wf 事故形态）。
+    // 绑定会话名集合（精确匹配判型三处共用：正向守卫/近匹配排除/改道候选排除）。
+    const boundNames = new Set((deps.routing.boundAgents ?? []).map((b) => b.session));
     const boundHit = (deps.routing.boundAgents ?? []).find((b) => b.session === session.trim());
     if (boundHit !== undefined) {
       if (asString(w.meta['session_bound']) !== boundHit.session) {
@@ -292,7 +299,6 @@ export const makeSteps = (o: {
           // 的派发路径上——期间同工作流结算/闸门动作排队等锁、收单台槽位被
           // 占；timeout_ms 已被网关夹紧 [1s,30s]（judgment.ts），阻塞有上界。
           if (deps.judgment !== undefined) {
-            const boundNames = new Set((deps.routing.boundAgents ?? []).map((b) => b.session));
             const declared = (deps.routing.agents ?? [])
               .filter((a) => !boundNames.has(a.session))
               .map((a) => ({ session: a.session, company: a.company, domain: a.domain }));
@@ -335,6 +341,12 @@ export const makeSteps = (o: {
           }
         }
       }
+      // 干预钉住（2026-09-28 四件套）：人点名的会话不换人——忙闲改道与下方
+      // 三无单判定同守此钉。ovSession 是本次派发消费到的干预值（局部变量——
+      // setStepInput 的写入不反映进函数开头的步快照）；历史钉住（重派场景）
+      // 读 input 快照兜底。
+      const pinned = ovSession !== ''
+        || asString(st.input['session_pinned']) === 'true' || st.input['session_pinned'] === true;
       // 判定收敛执行层（2026-10-13 用户裁定「排队后再决定路由」）：三无单
       // （无显式 session=也无人挂靠继承、无挂靠、无显式档位、未判定过）在
       // 派发时刻问落点与档位——进件层只收倾向，进件判的是排队前的世界、
@@ -342,7 +354,7 @@ export const makeSteps = (o: {
       // 兜底）互补：那条管「点错名」，这条管「没点名」。判定挂/缺缝=零行
       // 为走 default（fail-open）。留痕=route_decision（路由图同款事件）。
       const tInput = (w.meta['template_input'] ?? {}) as JsonRecord;
-      if (asString(st.input['session']).trim() === '' && asString(st.input['resolved_session']).trim() === ''
+      if (!pinned && asString(st.input['session']).trim() === '' && asString(st.input['resolved_session']).trim() === ''
         && asString(tInput['relates_to']).trim() === '' && asString(tInput['model_tier']).trim() === '') {
         let tierReasons: Record<string, string> | null = null;
         if (deps.taskRoute !== undefined) {
@@ -387,16 +399,10 @@ export const makeSteps = (o: {
       // 闸门等批准都算），不再只看「正在跑的步」——等批准的会话不再被当
       // 空闲往里堆活。自排除：本单自己锚在目标会话且非终态，不排除=每次
       // 派发都自触发改道。
-      const isBoundSession = (deps.routing.boundAgents ?? []).some((b) => b.session === session);
-      // 干预钉住（2026-09-28 四件套）：人点名的会话不被忙闲改道换人——排队
-      // 等它空闲（派发器会等就绪），宁可慢不换人（换人=上下文丢失，双投
-      // 事故同族观感）。ovSession 是本次派发消费到的干预值（局部变量——
-      // 上面 setStepInput 的写入不会反映进函数开头的步快照）；历史钉住
-      // （重派场景）读 input 快照兜底。
-      const pinned = ovSession !== ''
-        || asString(st.input['session_pinned']) === 'true' || st.input['session_pinned'] === true;
+      const isBoundSession = boundNames.has(session);
+      // 钉住（上方定义）不被忙闲改道换人——排队等它空闲（派发器会等
+      // 就绪），宁可慢不换人（换人=上下文丢失，双投事故同族观感）。
       if (!isBoundSession && !pinned && store.sessionHasOpenWork(session, w.id)) {
-        const boundNames = new Set((deps.routing.boundAgents ?? []).map((b) => b.session));
         const home = (deps.routing.agents ?? []).find((a) => a.session === session)?.company ?? '';
         // high 档孪生不做改道目标（成本纪律「非必要不高智能」，0930 与
         // routeTaskMenu 对齐）；候选自排除 w 本体（重派/再派发时本单已锚在
@@ -441,7 +447,7 @@ export const makeSteps = (o: {
       // 带偏（当时把「缺路由兜底」误导向「上游播种断链」追了半天）。
       const diag = session === ''
         ? `路由无落点：default_session 未配置（顶层 default_session / legacy email.default_session 均空）——本步 input.keys=[${Object.keys(st.input).join(',')}]`
-        : `missing plan input（上游播种检查：本步 input.keys=[${Object.keys(st.input).join(',')}]}）`;
+        : `missing plan input（上游播种检查：本步 input.keys=[${Object.keys(st.input).join(',')}]）`;
       // 确定性自愈（断点十一②）：session 有着落而 plan 空、且本步无 prompt 兜底
       // ——上游播种断链的确定形态，不需要人裁：从紧邻上游步（steps[seq-2]）的
       // input.plan/prompt 取值重臂一次，留 step_self_heal 审计事件；output 打
@@ -499,9 +505,14 @@ export const makeSteps = (o: {
           // 同 completeAgentStep 的 P1-2 守卫：转派步不被同步派发路径的
           // 结算播种覆盖（带 handoff_domain 标记的步整体跳过）。
           if (next && asString(next.input['handoff_domain']) === '') {
-            const seed: Record<string, JsonValue> = { plan: asString(st.input['plan']), output: res.value };
-            const s = asString(st.output['session']) || asString(st.input['session']);
-            if (s !== '') seed['session'] = s;
+            // 播种与 completeAgentStep 同形：plan 回退渲染 prompt（模板流
+            // input.plan 为空，断点七键位不一致事故同源）；session 用实际
+            // 派发落点——override/判定/改道只活在局部 session 与库内
+            // resolved_session，st 旧快照的 input.session 读不到。
+            const seed: Record<string, JsonValue> = {
+              plan: asString(st.input['plan']) || renderSeedPlan(st, asString(st.input['prompt'])),
+              output: res.value, session,
+            };
             st0.setStepInput(next.id, seed);
           }
           st0.setStepStatus(st.id, 'completed');
@@ -613,10 +624,11 @@ export const makeSteps = (o: {
       return;
     }
     // 主题（2026-09-20 R3 NEW-1 收口）：meta.from 在位=回信流，subject 与
-    // cc/to 同一优先级锁——种子已定 Re: 原题，这里兜住 amend 整包替换 send 步
+    // cc/to 同一优先级锁——种子已定 Re: 原题（replySubject 同判：去重已带
+    // 的 Re: 前缀、空题兜「(无主题)」），这里兜住 amend 整包替换 send 步
     // input 后改 subject 的最后一道通道（审计在种子侧，此处静默锁）。
     const metaFrom = asString(w.meta['from']).trim();
-    const subject = metaFrom !== '' ? `Re: ${asString(w.meta['subject'])}` : asString(st.input['subject']);
+    const subject = metaFrom !== '' ? replySubject(asString(w.meta['subject'])) : asString(st.input['subject']);
     // 正文契约铁律（2026-09-15 断点九①，wf_f4abf29e4e28 实发事故）：nodes 模式
     // （动态进件/任务单——会话汇报可能直接冲正文的事故面）正文只认 body_ref
     // （manifest body 工件哈希取件）。内联回退只保留给 ladder 模板流（draft 步
@@ -737,7 +749,7 @@ export const makeSteps = (o: {
     // retry 改 send 步 input.cc 的通道（审计在种子侧 envelope_cc_override_
     // ignored 留痕；任务流 nodes 播种的 cc 照常出门）。
     const ccIn = st.input['cc'];
-    const cc = asString(w.meta['from']).trim() !== ''
+    const cc = metaFrom !== ''
       ? []
       : Array.isArray(ccIn)
         ? ccIn.filter((x): x is string => typeof x === 'string' && x.trim() !== '')
@@ -817,11 +829,11 @@ export const makeSteps = (o: {
     const messageId = res.value.messageId;
     st0.setStepOutput(st.id, {
       to, message_id: messageId, sent_at: rfc3339(now()),
-      ...(cc.length > 0 ? { cc: cc } : {}),
+      ...(cc.length > 0 ? { cc } : {}),
       ...(bodyVia !== '' ? { body_via: bodyVia } : {}),
     });
     st0.appendEvent('workflow', st.workflowId, 'email_sent', {
-      to, message_id: messageId, ...(cc.length > 0 ? { cc: cc as unknown as JsonValue } : {}),
+      to, message_id: messageId, ...(cc.length > 0 ? { cc } : {}),
     });
     growReferences(st.workflowId, messageId);
     st0.setStepStatus(st.id, 'completed');
@@ -849,5 +861,5 @@ export const makeSteps = (o: {
     store.saveCaseFile(workflowId, appendReference(cf, messageId, now()));
   };
 
-  return { openGate, runAgentStep, runSendStep, resolveBodyText, gateWorkflowActive, renderSeedPlan };
+  return { openGate, runAgentStep, runSendStep, gateWorkflowActive, renderSeedPlan };
 };

@@ -3,6 +3,7 @@
 
 import type { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
+import { parseCallMode } from '@juli-os/agents';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
@@ -57,10 +58,22 @@ export const registerChatRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
 
   app.post('/api/chat/call', async (c) => {
     const body = await readBody(c);
-    const mode = bodyStr(body, 'mode', 'plan');
-    const call = rt.openVoiceCall(mode as 'chat' | 'plan' | 'query');
+    // mode 白名单收口：bodyStr 来的是任意字符串，原 `as CallMode` 强转对伪值
+    // 是谎言——createVoiceCall 查 callModeConfigs[mode] 得 undefined，通话一开
+    // 全部 turn 抛 500，且 voiceState 无出径（无挂断端点）只能重启。走包内
+    // parseCallMode（唯一事实源，伪值回退 plan）。
+    const mode = parseCallMode(bodyStr(body, 'mode', 'plan'));
+    const call = rt.openVoiceCall(mode);
     if (!call) return c.json({ error: 'orchestrator not configured (missing llm key)' }, 503);
     return c.json({ ok: true, mode: call.mode });
+  });
+
+  // 挂断（P0，2026-10-27）：此前 voiceState.call 有进无出——通话一开
+  // turn/confirm/deny 永久 409 直到进程重启。幂等：无在途通话也回 ok
+  // （客户端挂断不依赖服务端在途状态，重复点/迟到包无害）。
+  app.post('/api/chat/call/hangup', (c) => {
+    rt.closeVoiceCall();
+    return c.json({ ok: true });
   });
 
   app.post('/api/chat/confirm', async (c) => {
@@ -196,15 +209,19 @@ export const registerChatRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
     if (rt.voiceCall) return c.json({ error: 'voice call active — end it first' }, 409);
     // 计划卡「本单免批」勾选（2026-10-07）：客户端 control 面，LLM 计划块
     // 里写什么都不认——只有 confirm body 的人为勾选生效。
-    const body = (await readBody(c).catch(() => ({}))) as Record<string, unknown>;
-    const intakeConfirm = rt.chatIntakeFor(convOf(c));
+    const body = await readBody(c);
+    const conv = convOf(c);
+    const intakeConfirm = rt.chatIntakeFor(conv);
     if (!intakeConfirm) return c.json({ error: 'chat intake not configured (missing llm key)' }, 503);
     const r = await intakeConfirm.confirm({ autoApprove: body['auto_approve'] === true });
-    mirrorChatEvents(r.events, convOf(c));
+    mirrorChatEvents(r.events, conv);
     return c.json({ events: r.events, runId: r.runId });
   });
 
   app.post('/api/chat/intake/deny', (c) => {
+    // 围栏补齐（对齐 turn/confirm）：deny 也镜像 chatHub 帧——开着通话一样
+    // 串台，不设防就是半开围栏。
+    if (rt.voiceCall) return c.json({ error: 'voice call active — end it first' }, 409);
     const intakeDeny = rt.chatIntakeFor(convOf(c));
     if (!intakeDeny) return c.json({ error: 'chat intake not configured (missing llm key)' }, 503);
     const r: { events: unknown[] } = intakeDeny.deny();

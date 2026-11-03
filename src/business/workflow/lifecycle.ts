@@ -25,7 +25,6 @@ export interface Lifecycle {
   closeWorkflow(workflowId: string, note: string, by: string): Promise<void>;
   forceClose(workflowId: string, note: string, by: string): Promise<void>;
   cancelStep(stepId: string, note: string, by: string): Promise<void>;
-  finalSweepInbox(workflowId: string): Promise<void>;
 }
 
 export const makeLifecycle = (o: {
@@ -73,7 +72,7 @@ export const makeLifecycle = (o: {
     }
   };
 
-  /** 收口（人工结案）：failed 尸体的去向动作——下游 pending 全部 cancelled，
+  /** 收口（人工结案）：failed 尸体的去向动作——在途步全部 cancelled，
    * 审计全留，什么都不删。与 resolve 的区别：resolve 作用在等待中的闸门上，
    * close 作用在已经 failed 的整条流水上（僵尸转人工后的处置出口）。 */
   const closeWorkflow = async (workflowId: string, note: string, by: string): Promise<void> => {
@@ -81,7 +80,10 @@ export const makeLifecycle = (o: {
     if (!w) throw new Error(`workflow ${workflowId} not found`);
     if (w.status !== 'failed') throw new Error(`workflow ${workflowId} is not failed (status=${w.status})`);
     for (const s of store.stepsForWorkflow(workflowId)) {
-      if (s.status === 'pending' || s.status === 'running') store.setStepStatus(s.id, 'cancelled');
+      // 与 forceClose 同口径（isActiveStepStatus）：failed 单可带 waiting_human
+      // 问询闸（noteAwaiting 挂闸后步失败镜像 failed），漏掉=cancelled 单上
+      // 永远挂着等人步，且 approve 已被 gateWorkflowActive 拒——死等。
+      if (isActiveStepStatus(s.status)) store.setStepStatus(s.id, 'cancelled');
     }
     store.setWorkflowStatus(workflowId, 'cancelled');
     store.appendEvent('workflow', workflowId, 'workflow_closed', { note, by, at: rfc3339(now()) });
@@ -113,9 +115,8 @@ export const makeLifecycle = (o: {
     const two = (n: number): string => String(n).padStart(2, '0');
     const t = title.trim() !== '' ? title
       : `${tpl.name} · ${two(at.getMonth() + 1)}-${two(at.getDate())} ${two(at.getHours())}:${two(at.getMinutes())}`;
-    // from/subject 进 meta：send 步的收件人被结构性锁在 meta.from——手动起流
-    // 声明了 from 就获得完整答复能力（含发送），与邮件进件同一约束。
     // zombie_policy 同建流物化：模板快照语义的补全（见 zombiePolicyFor）。
+    // from/subject/auto_approve/in_reply_to 四键抽取见 copySendMeta（注释在彼）。
     const meta: Record<string, JsonValue> = {
       template_key: tpl.key, template_hash: tpl.hash, template_input: input,
       ...o.zombie.zombiePolicyMeta(tpl),
@@ -133,7 +134,6 @@ export const makeLifecycle = (o: {
         meta['relates_to_unknown'] = relatesTo;
       }
     }
-    // from/subject/auto_approve/in_reply_to 四键抽取见 copySendMeta（注释在彼）。
     copySendMeta(input, meta);
     // nodes 模式:阶梯不预建——节点由动作(claim/deliver/send…)追加,
     // 模板只是词汇表;workflow 在显式 settle 前保持 running。
@@ -218,17 +218,17 @@ export const makeLifecycle = (o: {
         const parentIds = Array.isArray(pt['feedback_record_ids'])
           ? (pt['feedback_record_ids'] as unknown[]).filter((x): x is string => typeof x === 'string')
           : [];
-        const parentId1 = typeof pt['feedback_record_id'] === 'string' ? pt['feedback_record_id'] : '';
+        const parentRecId = typeof pt['feedback_record_id'] === 'string' ? pt['feedback_record_id'] : '';
         const ownIds = Array.isArray(input['feedback_record_ids'])
           ? (input['feedback_record_ids'] as unknown[]).filter((x): x is string => typeof x === 'string')
           : [];
         const merged = [...new Set([...ownIds, ...parentIds])];
-        const id1 = asString(input['feedback_record_id']) !== '' ? asString(input['feedback_record_id'])
-          : parentId1 !== '' ? parentId1 : merged[0] ?? '';
-        if (id1 !== '' || merged.length > 0) {
+        const ownRecId = asString(input['feedback_record_id']);
+        const recId = ownRecId !== '' ? ownRecId : parentRecId !== '' ? parentRecId : merged[0] ?? '';
+        if (recId !== '' || merged.length > 0) {
           meta['template_input'] = {
             ...input,
-            ...(id1 !== '' ? { feedback_record_id: id1 } : {}),
+            ...(recId !== '' ? { feedback_record_id: recId } : {}),
             ...(merged.length > 0 ? { feedback_record_ids: merged } : {}),
           };
           meta['feedback_anchor_inherited_from'] = parent.id;
@@ -372,6 +372,19 @@ export const makeLifecycle = (o: {
         const existing = steps.find((s) => s.kind === 'send' && isLiveNodeStatus(s.status));
         if (existing) return existing;
       }
+      // 闸门摘要前置警告（wf_f9abb08092cc 呈现面断裂的源头治理，2026-11-03）：
+      // 无 draft/plan/note/deliverables 的闸门，推送横幅与审批卡将无内容可渲染
+      // （宪法 §3 已约定挂闸必带 draft）。不拦挂闸（纯确认空闸仍是 agent 的
+      // 合法动作），但 log 告警 + 事件留痕，复盘排障有案可查。
+      if (def.kind === 'gate') {
+        const inp = def.input ?? {};
+        const hasSummary = asString(inp['draft']) !== '' || asString(inp['plan']) !== ''
+          || asString(inp['note']) !== '' || Array.isArray(inp['deliverables']);
+        if (!hasSummary) {
+          log.warn(`[engine] 闸门「${def.title}」无 draft/plan/note/deliverables——审批卡将无内容可渲染（workflow ${workflowId}）`);
+          store.appendEvent('workflow', workflowId, 'gate_missing_summary', { title: def.title });
+        }
+      }
       // 任务流发送闸门拒收（wf_505578377218 静默事故的第一道闸）：无原始
       // 发件人（meta.from）却不申报收件人（envelope.to）= 批准后无处可发。
       // 当场打回让 agent 补报（客户库可查地址）——闸门开不起来，就没有
@@ -418,9 +431,9 @@ export const makeLifecycle = (o: {
       if (o.queue.activeIds.has(workflowId)) {
         await o.advanceLocked(workflowId);
       }
-      // 返回调用方请求的那个节点（自动配对时链尾是 send，不能张冠李戴）。
-      const fresh = store.stepsForWorkflow(workflowId);
-      return fresh.find((s) => s.seq === lastSeq + 1) ?? fresh[fresh.length - 1]!;
+      // 返回调用方请求的那个节点（自动配对时链尾是 send，不能张冠李戴）：
+      // 新节点 seq 恒为 lastSeq+1（insertStepsAt 锁内同步落定），断言命中。
+      return store.stepsForWorkflow(workflowId).find((s) => s.seq === lastSeq + 1)!;
     });
     if (!o.queue.activeIds.has(workflowId)) o.queue.enqueueFront(workflowId);
     return inserted;
@@ -512,8 +525,7 @@ export const makeLifecycle = (o: {
     const sendGate = steps.find((s) => s.kind === 'gate' && isSendGateDecision(s.title, s.input) && s.status === 'completed');
     if (sendGate !== undefined) {
       const sends = steps.filter((s) => s.kind === 'send');
-      const honored = sends.some((s) => s.status === 'completed') ||
-        sends.some((s) => s.status === 'cancelled');
+      const honored = sends.some((s) => s.status === 'completed' || s.status === 'cancelled');
       if (!honored) {
         throw new Error(`发送闸门「${sendGate.title}」已批准但从未发送（send 未完成也未取消）— 先让 send 完成，或 force-close 显式放弃`);
       }
@@ -531,5 +543,5 @@ export const makeLifecycle = (o: {
     await o.withLock(workflowId, () => settleLocked(workflowId, by));
   };
 
-  return { startFlow, startTask, appendNode, settle, closeWorkflow, forceClose, cancelStep, finalSweepInbox };
+  return { startFlow, startTask, appendNode, settle, closeWorkflow, forceClose, cancelStep };
 };

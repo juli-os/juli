@@ -10,7 +10,7 @@
 #           linux-arm64 prebuilt and must compile from source. Installing
 #           toolchains in slim requires apt, and apt in slim is what this
 #           image keeps as simple as possible (see below).
-#   build — compile engine (dist/) and web cockpit (web-dist/).
+#   build — compile engine (dist/) and web cockpit (web/dist/).
 #   final — node:22-slim + tmux/procps (apt) + Claude Code CLI (npm -g).
 #
 # apt note: bookworm sources are plain HTTP on purpose. Debian repositories are
@@ -54,7 +54,7 @@ RUN npm install -g @anthropic-ai/claude-code --no-fund --no-audit
 RUN mkdir -p /root/.claude \
   && printf '%s\n' '{' '  "hasCompletedOnboarding": true,' '  "theme": "dark",' '  "projects": {' '    "/app": { "hasTrustVoted": true, "hasTrustDialogAccepted": true, "allowedTools": [] }' '  }' '}' > /root/.claude.json
 COPY --from=build /app/dist ./dist
-COPY --from=build /app/web-dist ./web-dist
+COPY --from=build /app/web/dist ./web/dist
 # CLI 源码（setup/doctor 走 npx tsx 直跑 TS，imports ../src/*；引擎本体在 dist/）
 COPY cli ./cli
 COPY src ./src

@@ -27,7 +27,7 @@ export const INTAKE_PROMPT = `[任务] 阅读下面这封来信，输出结构�
 {{.Input.body}}`;
 
 export const gateSummary = (st: Step): string =>
-  asString(st.input['draft']) || asString(st.input['plan']) || st.title;
+  asString(st.input['draft']) || asString(st.input['plan']) || asString(st.input['note']) || st.title;
 
 /** 工作区锚定：任务卡头部钉上项目名与绝对路径——agent 的相对路径有了唯一
  * 解释基准（ACP 同步与 tmux 异步两条派发路径共用同一措辞）。ws 空 = 不锚。 */

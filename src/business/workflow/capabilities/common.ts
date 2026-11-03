@@ -4,7 +4,7 @@
 import { asString, truncate } from '../../../platform/shared/json.ts';
 import { type Clock, type JsonRecord } from '@juli-os/artifacts';
 import { type LifecycleStore, type Step, type Workflow } from '@juli-os/ledger';
-import type { ArtifactPort, LlmPort } from '../../../contracts/ports.ts';
+import type { ArtifactPort } from '../../../contracts/ports.ts';
 
 // ---- 引擎提供给能力处理函数的接缝 ---------------------------------------------
 
@@ -12,19 +12,12 @@ export interface StepCtx {
   readonly workflow: Workflow;
   readonly step: Step;
   readonly store: LifecycleStore;
-  readonly llm: LlmPort | null;
   readonly artifacts?: ArtifactPort | null;
   readonly externalLink?: ((a: { readonly id: string; readonly name: string; readonly key: string }) => Promise<string | null>) | null;
-  readonly model: string;
   readonly clock: Clock;
-  readonly log: (msg: string) => void;
   /** 带超时+429 退避的补全调用；失败抛错（runLlmStep 统一结算）。 */
   completeLlm(system: string, user: string, maxTokens?: number, model?: string, ref?: string): Promise<string>;
-  /** 最近一个已完成 llm 步的 response 文本——模板流的自然工单。 */
-  latestLLMResponse(workflowId: string): string;
   stepEvent(st: Step, type: string, payload?: JsonRecord): void;
-  /** 持锁推进（调用方已持有工作流锁时用）。 */
-  advanceLocked(workflowId: string): Promise<void>;
   /** 把本步结果追加进案卷（triage→extract、draft→draft）。 */
   appendStepToCaseFile(w: Workflow, st: Step): void;
 }

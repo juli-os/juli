@@ -123,9 +123,8 @@ export const runTriage = async (ctx: StepCtx, routing: {
 
   // 分类/回复：on 采纳时取判定答案（引擎已校验），否则取 LLM 抽取。
   const category = applied ? jCat.answer : asString(out['category']);
-  const needsReplyRaw = out['needs_reply'];
-  const llmNeedsReply = needsReplyRaw === null || needsReplyRaw === undefined
-    ? true : needsReplyRaw !== false;
+  // 非 false 一律视为需回复——缺省/畸形（含字符串 "false"）fail-safe：宁多问不漏回。
+  const llmNeedsReply = out['needs_reply'] !== false;
   const needsReply = applied ? jRep.answer === 'true' : llmNeedsReply;
 
   // shadow 对账（判定完成后落账）：jev×LLM 同题对答案+一致旗——影子期的
@@ -159,7 +158,7 @@ export const runTriage = async (ctx: StepCtx, routing: {
   // 忠实反映邮件意图（无添加/遗漏/扭曲）——给闸门审批人的并行信号。on+高
   // 置信不忠实=闸门 input 打 align_flag 提示重点核对（只标注，人审照常）。
   if (judgment !== undefined) {
-    const outcome = await judgment.ask('align_needed',
+    const align = await judgment.ask('align_needed',
       { subject, body: body.slice(0, 1200), summary: asString(out['summary']).slice(0, 500) },
       {
         fidelity: {
@@ -167,16 +166,16 @@ export const runTriage = async (ctx: StepCtx, routing: {
           instructions: "Does the summary faithfully reflect what the email asks for, without adding, omitting, or distorting the sender's intent?",
         },
       });
-    if (outcome !== null && outcome.ok) {
-      const p = { mode: outcome.mode, scenario: 'align_needed', answer: outcome.answer ?? '', confidence: outcome.confidence ?? 0, provider: outcome.provider, ...usageOf(outcome) };
-      if (outcome.mode === 'on' && outcome.answer === 'false' && (outcome.confidence ?? 0) >= outcome.threshold) {
+    if (align !== null && align.ok) {
+      const p = { mode: align.mode, scenario: 'align_needed', answer: align.answer ?? '', confidence: align.confidence ?? 0, provider: align.provider, ...usageOf(align) };
+      if (align.mode === 'on' && align.answer === 'false' && (align.confidence ?? 0) >= align.threshold) {
         ctx.stepEvent(st, 'align_flagged', p);
-        if (next) store.setStepInput(next.id, { align_flag: true, align_confidence: outcome.confidence ?? 0 });
+        if (next) store.setStepInput(next.id, { align_flag: true, align_confidence: align.confidence ?? 0 });
       } else {
         ctx.stepEvent(st, 'align_judgment', p);
       }
-    } else if (outcome !== null) {
-      ctx.stepEvent(st, 'align_judgment', { mode: outcome.mode, scenario: 'align_needed', error: outcome.error ?? '' });
+    } else if (align !== null) {
+      ctx.stepEvent(st, 'align_judgment', { mode: align.mode, scenario: 'align_needed', error: align.error ?? '' });
     }
   }
 };

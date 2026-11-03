@@ -23,10 +23,7 @@ export const stripSignature = (body: string): string => {
   if (i >= 0) s = s.slice(0, i).trimEnd();
   else if (s.startsWith('此致')) return '';
   const j = s.lastIndexOf('\n本邮件由');
-  if (j >= 0) {
-    const tail = s.slice(j + 1);
-    if (tail.startsWith('本邮件由') && tail.length < 60) s = s.slice(0, j).trimEnd();
-  }
+  if (j >= 0 && s.slice(j + 1).length < 60) s = s.slice(0, j).trimEnd();
   return s;
 };
 

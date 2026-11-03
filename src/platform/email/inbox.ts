@@ -66,7 +66,8 @@ export const decodeRfc2047 = (raw: string): string => {
   return raw.replace(/=\?([^?]+)\?([BbQq])\?([^?]*)\?=/g, (_m, _cs: string, enc: string, data: string) => {
     try {
       if (enc.toUpperCase() === 'B') return Buffer.from(data, 'base64').toString('utf8');
-      return decodeURIComponent(data.replace(/=/g, '%').replace(/%2C/gi, ',').replace(/_/g, ' '));
+      // =XX→%XX 后 decodeURIComponent 自会还原（含逗号），只补 Q 的 _ =空格。
+      return decodeURIComponent(data.replace(/=/g, '%').replace(/_/g, ' '));
     } catch {
       return '';
     }
@@ -75,14 +76,22 @@ export const decodeRfc2047 = (raw: string): string => {
 
 const parseWithMailparser = async (raw: Buffer): Promise<InboxMessage> => {
   const parsed = await simpleParser(raw);
-  const attachments: Attachment[] = (parsed.attachments ?? []).map((a) => ({
-    filename: a.filename || 'attachment',
-    mime: a.contentType || 'application/octet-stream',
-    size: a.size ?? a.content?.length ?? 0,
-    content: (a.size ?? 0) > MAX_ATTACHMENT_BYTES ? undefined : a.content,
-    tooLarge: (a.size ?? 0) > MAX_ATTACHMENT_BYTES,
-  }));
+  const attachments: Attachment[] = (parsed.attachments ?? []).map((a) => {
+    // size/content/tooLarge 同一 size 口径：缺 size 时以字节长度兜底，
+    // 超限判定不因字段缺失失守（三处各算各的会自相矛盾）。
+    const size = a.size ?? a.content?.length ?? 0;
+    return {
+      filename: a.filename || 'attachment',
+      mime: a.contentType || 'application/octet-stream',
+      size,
+      content: size > MAX_ATTACHMENT_BYTES ? undefined : a.content,
+      tooLarge: size > MAX_ATTACHMENT_BYTES,
+    };
+  });
   const date = parsed.date ?? new Date(0);
+  // Invalid Date（getTime=NaN）与 0 同判「无日期」，与宽松兜底同口径——
+  // 否则 toISOString() 抛异常会把整封好邮件打到宽松路径丢附件。
+  const dateMs = date.getTime();
   const headerOf = (name: string): string => {
     const v = parsed.headers.get(name);
     if (typeof v === 'string') return v.trim();
@@ -100,7 +109,7 @@ const parseWithMailparser = async (raw: Buffer): Promise<InboxMessage> => {
     subject: parsed.subject ?? '',
     inReplyTo: headerOf('in-reply-to'),
     references: headerOf('references'),
-    date: date.getTime() === 0 ? '' : date.toISOString(),
+    date: dateMs === 0 || Number.isNaN(dateMs) ? '' : date.toISOString(),
     body,
     messageId: (parsed.messageId ?? '').trim(),
     attachments,

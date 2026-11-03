@@ -1,8 +1,7 @@
 // share：把案卷工件经 ExternalLink 接缝换成可访问 URL——质量闸门审的是
 // 真实可达的链接，不是本地路径。share_url 记忆化：已分享过的不重传。
 
-import { asRecord, type JsonRecord } from '@juli-os/artifacts'
-import { rfc3339 } from '@juli-os/artifacts';
+import { asRecord, rfc3339, type JsonRecord } from '@juli-os/artifacts';
 import type { StepCtx } from './common.ts';
 
 /** share：把案卷工件经 ExternalLink 接缝换成可访问 URL——质量闸门审的是
@@ -20,9 +19,16 @@ export const runShare = async (ctx: StepCtx): Promise<void> => {
       continue;
     }
     if (!externalLink) continue;
-    const u = await externalLink(a).catch(() => null);
+    // 异常消息不吞：failed 记录带真实原因（网关炸了≠空 URL），诊断面才可用。
+    let u: string | null = null;
+    let err = 'empty share url';
+    try {
+      u = await externalLink(a);
+    } catch (e) {
+      err = e instanceof Error ? e.message : String(e);
+    }
     if (u === null || u === '') {
-      failed.push({ name: a.name, error: 'empty share url' });
+      failed.push({ name: a.name, error: err });
       continue;
     }
     artifacts?.updateMeta(a.id, { share_url: u });

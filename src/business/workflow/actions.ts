@@ -197,8 +197,9 @@ export const makeGateActions = (o: {
     });
   };
 
-  /** 回修(HITL 回环):审阅不满意 → 前一步带着 feedback 重做,闸门退回
-   * pending 待再次开启;轮次 +1,上一轮成本留账(价目表"含 3 轮"的工程形态)。
+  /** 回修(HITL 回环):审阅不满意 → 沿链最近的 instructable 步带着 feedback
+   * 重做(无则显式拒驳,见锁内注释),闸门退回 pending 待再次开启;轮次 +1,
+   * 上一轮成本留账(价目表"含 3 轮"的工程形态)。
    * 重开时 openGate 检测 input.feedback 强制重算 checks——新正文的红线状态
    * 不许沿用上一轮的绿灯。 */
   const rework = async (gateId: string, feedback: string, by: string): Promise<void> => {
@@ -209,23 +210,33 @@ export const makeGateActions = (o: {
     }
     await gateAction(gateId, async (st) => {
       const steps = store.stepsForWorkflow(st.workflowId);
-      const prev = steps[st.seq - 2];
+      // 回修目标（wf_f9abb08092cc 死循环修复，2026-11-03）：不再只看相邻一步——
+      // gate∉可派发表的链形（agent→gate→gate）里，驳回意见必须沿链向前找到
+      // 最近的 instructable 步才有人重做。running/waiting_human 是在途步不许抢；
+      // cancelled/skipped 是人弃/人跳的步不复活。全链无可回修步=驳回不会带来
+      // 任何变化，先判后动零状态变更、显式拒驳，审批人改用对齐/批准/拒决。
+      const target = steps.slice(0, st.seq - 1).reverse()
+        .find((s) => INSTRUCTABLE_STEP_KINDS.includes(s.kind)
+          && s.status !== 'running' && s.status !== 'waiting_human'
+          && s.status !== 'cancelled' && s.status !== 'skipped');
+      if (!target) {
+        throw new Error('本闸无可回修步（链上没有可重做的 agent/verify/llm/draft 步）——驳回不会带来任何变化；请用「对齐」锚定修正意见，或直接批准/拒决');
+      }
       store.setStepInput(st.id, { feedback });
       o.journal.recordDecision(st.workflowId, st.seq, 'rework', feedback, by);
       store.setStepStatus(st.id, 'pending');
-      if (prev && INSTRUCTABLE_STEP_KINDS.includes(prev.kind)) {
-        const hist = Array.isArray(prev.input['feedback_history']) ? prev.input['feedback_history'] : [];
-        store.setStepInput(prev.id, {
-          feedback,
-          feedback_history: [...hist, feedback] as JsonValue[],
-        });
-        store.setStepStatus(prev.id, 'pending');
-      }
+      const hist = Array.isArray(target.input['feedback_history']) ? target.input['feedback_history'] : [];
+      store.setStepInput(target.id, {
+        feedback,
+        feedback_history: [...hist, feedback] as JsonValue[],
+        rework_from_gate: st.seq,
+      });
+      store.setStepStatus(target.id, 'pending');
       const w = store.getWorkflow(st.workflowId);
       const round = Number(w?.meta['round'] ?? 1) + 1;
       store.updateWorkflowMeta(st.workflowId, { round });
-      store.appendEvent('workflow', st.workflowId, 'gate_rework', { gate: st.title, feedback, by, round });
-      o.journal.stepEvent(st, 'gate_rework', { feedback, by, round });
+      store.appendEvent('workflow', st.workflowId, 'gate_rework', { gate: st.title, feedback, by, round, target_seq: target.seq });
+      o.journal.stepEvent(st, 'gate_rework', { feedback, by, round, target_seq: target.seq });
       // 推进 fire-and-forget（同 approve）：重做链的派发不进 HTTP 等待。
       o.queue.continueWorkflow(st.workflowId);
     });
@@ -250,7 +261,12 @@ export const makeGateActions = (o: {
           bytes: Buffer.from(`# 对齐修正(${st.title})\n\n${text}\n\n— ${by}, ${rfc3339(now())}\n`),
           stepId: st.id,
           meta: { actor: by, view_role: 'report', gate_seq: st.seq },
-        }).catch(() => null);
+        }).catch((e: unknown) => {
+          // 登记失败不拦对齐本身（降级为无 amendment_ref），但原因必须留痕——
+          // 修正工件是审计面，凭空消失无从追查（对齐 agentSettle 的 sweep_failed）。
+          log.error(`amendment artifact register failed (workflow ${st.workflowId} step ${st.id}): ${e instanceof Error ? e.message : String(e)}`);
+          return null;
+        });
         if (row !== null) amendmentRef = { id: row.id, sha256: row.sha256 };
       }
       const out: Record<string, JsonValue> = { aligned: true, amendment: text, by, at: rfc3339(now()) };

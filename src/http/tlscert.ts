@@ -23,14 +23,12 @@ export const ensureSelfSignedCert = (dataDir: string, cn: string): TlsMaterial =
       // 保留 stderr 摘要（openssl/mkdir 报错在 stderr），截 200 字符——裸
       // execSync 异常的 message 只有 "Command failed"，排障时等于瞎的。
       const raw = (e as { stderr?: Buffer | string } | null)?.stderr;
-      const detail = typeof raw === 'string'
-        ? raw
-        : raw !== undefined
-          ? raw.toString()
-          : e instanceof Error
-            ? e.message
-            : String(e);
-      throw new Error(`自签证书生成失败（openssl）：${detail.slice(0, 200)}`);
+      // stderr 可能是 null/undefined/空串（openssl 缺失、被信号杀）——先归一，
+      // 空则回退异常 message，别让排障信息退化成光杆前缀。
+      const stderrText = typeof raw === 'string' ? raw : raw != null ? raw.toString() : '';
+      const fallback = e instanceof Error ? e.message : String(e);
+      const detail = (stderrText !== '' ? stderrText : fallback).slice(0, 200);
+      throw new Error(`自签证书生成失败（openssl）：${detail}`);
     }
   }
   chmodSync(keyPath, 0o600);

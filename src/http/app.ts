@@ -5,7 +5,7 @@
 
 import { Hono } from 'hono';
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join, normalize, resolve } from 'node:path';
+import { dirname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { safeEqual } from '../platform/shared/secure.ts';
 import type { Runtime } from '../runtime.ts';
@@ -22,16 +22,16 @@ import { registerEventsRoutes } from './routes/events.ts';
 import { registerBusinessRoutes } from './businessRoutes.ts';
 import { VERSION } from '../contracts/version.ts';
 
-/** web/dist 解析：编译产物同级 → cwd；找不到返回 null（API-only 模式）。 */
-const resolveWebDist = (): string | null => {
+/** web/dist 解析：编译产物同级 → cwd → web/dist 兜底；找不到返回 null（API-only 模式）。 */
+const resolveWebDist = (): { dir: string; candidate: number } | null => {
   const here = dirname(fileURLToPath(import.meta.url)); // dist/http
   const candidates = [
     resolve(here, '..', 'web-dist'),
     resolve(process.cwd(), 'web-dist'),
     resolve(here, '..', '..', 'web', 'dist'),
   ];
-  for (const dir of candidates) {
-    if (existsSync(join(dir, 'index.html'))) return dir;
+  for (const [i, dir] of candidates.entries()) {
+    if (existsSync(join(dir, 'index.html'))) return { dir, candidate: i + 1 };
   }
   return null;
 };
@@ -59,8 +59,12 @@ export const createHttpApp = (rt: Runtime): Hono<AppEnv> => {
   app.use('/api/*', async (c, next) => {
     // 工件内容分享链接：签名+限时即可（收件人没有 Bearer）。
     const artMatch = c.req.path.match(/^\/api\/artifacts\/([^/]+)\/content$/);
-    if (artMatch !== null && share.shareVerify(decodeURIComponent(artMatch[1]!), c.req.query('share'))) {
-      return next();
+    if (artMatch !== null) {
+      // 畸形百分号编码 decode 会 throw URIError——按无分享签名处理走常规认证，
+      // 绝不让客户端输入炸成 500。
+      let artId = artMatch[1]!;
+      try { artId = decodeURIComponent(artId); } catch { /* 畸形 id */ }
+      if (share.shareVerify(artId, c.req.query('share'))) return next();
     }
     if (!rt.authenticator) return next(); // 未配置任何认证 = 开放模式（本机调试）
     const auth = c.req.header('authorization') ?? '';
@@ -103,6 +107,11 @@ export const createHttpApp = (rt: Runtime): Hono<AppEnv> => {
 
   // ---- 静态托管（web/dist SPA 壳；/api 与 /healthz 之外 SPA 回退）------------
   const webRoot = resolveWebDist();
+  // 启动留痕（b43 R1）：web-dist 两候选缺席时会静默兜底 web/dist（可能是过期旧壳），
+  // 这正是 10-23 那类「无声 UI 回退」事故无日志可查的后门——命中面必须启动可见。
+  console.log(
+    `[web] 静态托管 ${webRoot === null ? '未命中（API-only 模式）' : `webRoot=${webRoot.dir}（候选 ${webRoot.candidate}/3）`}`,
+  );
   const MIME: Record<string, string> = {
     '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css',
     '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon',
@@ -117,15 +126,13 @@ export const createHttpApp = (rt: Runtime): Hono<AppEnv> => {
       // 带 extension 的请求按静态文件解析（含路径穿越守卫）；其余回退 SPA 壳。
       const wantsFile = path !== '/' && /\.[a-z0-9]+$/i.test(path);
       const rel = wantsFile ? normalize(path).replace(/^([/\\])+/, '') : 'index.html';
-      const abs = resolve(webRoot, rel);
-      if (!abs.startsWith(webRoot)) return c.notFound();
-      if (!existsSync(abs)) {
-        // 入口 HTML 禁缓存（web-dist 陷阱根治）：bundle 文件名带哈希可长缓存，
-        // 壳本身必须每次回源——否则发新版后浏览器还在跑旧壳引用旧 bundle。
-        return wantsFile ? c.notFound() : new Response(readFileSync(join(webRoot, 'index.html'), 'utf8'), {
-          headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' },
-        });
-      }
+      const abs = resolve(webRoot.dir, rel);
+      // 分隔符边界：裸 startsWithout 会放行同名前缀兄弟目录（web-dist-x/…）。
+      if (!abs.startsWith(webRoot.dir + sep)) return c.notFound();
+      // 缺文件一律 404：非文件路径 rel 恒为 index.html，旧代码在此分支对刚判
+      // 缺失的路径再 readFileSync（壳被换下的窗口期必 throw 变 500）；正常路径
+      // 的壳禁缓存在下方主路径统一处理。
+      if (!existsSync(abs)) return c.notFound();
       const ext = abs.slice(abs.lastIndexOf('.'));
       const body = readFileSync(abs);
       const headers: Record<string, string> = { 'content-type': MIME[ext] ?? 'application/octet-stream' };

@@ -2,8 +2,19 @@
 // clarify（白名单只读查询）到 target 清晰，亮 brief 预览卡，点「开单」走
 // startTask 正门（POST /api/chat/intake/*，与旧表单同一契约）——创建动词
 // 是人按按钮，机器只申报。提交后深链 #/lifecycle?w={id} 展开该单节点流
-// （与表单时代同一落点）。v1 同步 JSON 往返（无 WS 流式）；语音输入是
-// iOS 端的模态，web 端文本先行。
+// （与表单时代同一落点）。v1 同步 JSON 往返（无 WS 流式）。
+//
+// 语音输入（2026-10-21 用户裁决「语音是流程里的一个功能，不是单独页面」）：
+// composer 左侧 🎤 按住说话——juli-voice 本地转写（voice-input.ts，stt 模式），
+// 松手成稿直接作为一轮对话进件，开单助手照常 clarify/出卡；iOS 的 Azure STT
+// 语音优先发单是对位形态。
+//
+// 「call 效果」（2026-10-21 用户裁决：异步开单/异步 tool 调用/异步思考）：
+// 挂 /ws/chat?conv= 帧流（服务端早已逐帧镜像，iOS 一直这么渲染），thinking
+// 流式行、assistant chunk 原位合并、🔧 工具行、计划卡、开单回执全部边到边
+// 上屏；POST 回包降级为兜底（WS 没通）与终稿校正。判定在 chat-live.ts
+// （零 DOM，vitest），这里只执行。开单不再跳页：卡片原位「开单中…」→
+// 系统行 + 单子卡，对话继续。
 //
 // 10-06 重设计（js-261006-s0msv9，用户裁定）：满高聊天面（main.chatfull，
 // 沿会话 fullbleed 先例）——线程是真正的滚动容器（锚底从此生效）、合成器
@@ -22,6 +33,13 @@
 import { api, getToken } from '../api.ts';
 import { esc } from '../esc.ts';
 import { statusChip } from '../ui.ts';
+import { chatReconnectDelayMs, chatWsUrl, classifyConfirmUtterance, createLiveChat, speechText, toolNameOf } from '../chat-live.ts';
+import type { LiveOp } from '../chat-live.ts';
+import { mountVoiceInput } from '../voice-input.ts';
+import { getSharedVoiceSession } from '../voice-session.ts';
+import { getVoiceCall, mountVoiceCallUI } from '../voice-call.ts';
+import { convId, loadTranscript, resetConversation, saveTranscript, TS_LIMIT } from '../chat-transcript.ts';
+import type { TsMsg } from '../chat-transcript.ts';
 
 interface IntakeLanding {
   readonly session: string;
@@ -165,32 +183,8 @@ const renderMd = (src: string): string => {
   return out.join('');
 };
 
-// ---- 本地 transcript（2026-10-07 用户实报「chat 不记录历史」；照 iOS
-// chat-transcript.json 同语义：写穿透、500 条上限、含附件元数据；工具活动
-// 行是过程帧不落档。服务端 chathub 环形 200 条只服务 WS 断线补帧——web 是
-// 同步回合无断档，本地档即唯一历史源。 ----
-const TS_KEY = 'juli_chat_transcript_v1';
-const TS_LIMIT = 500;
-
-interface TsMsg {
-  readonly role: 'user' | 'assistant' | 'sys';
-  readonly text: string;
-  readonly at: string;
-  readonly atts?: readonly { name: string; mime: string }[];
-}
-
-const loadTranscript = (): TsMsg[] => {
-  try {
-    const v = JSON.parse(localStorage.getItem(TS_KEY) ?? '[]') as TsMsg[];
-    return Array.isArray(v) ? v.filter((m) => typeof m.text === 'string' && (m.role === 'user' || m.role === 'assistant' || m.role === 'sys')) : [];
-  } catch { return []; }
-};
-
-const saveTranscript = (msgs: readonly TsMsg[]): void => {
-  try {
-    localStorage.setItem(TS_KEY, JSON.stringify(msgs.slice(-TS_LIMIT)));
-  } catch { /* 隐私模式/配额——历史是增强不是地基，写失败不炸对话 */ }
-};
+// ---- 本地 transcript：实现收编进 chat-transcript.ts（2026-10-27 通话后台
+// 保持抽出）——通话中心与视图是同一档的两个消费者，单一事实源必须单处持有。 ----
 
 // 视图内 scope 样式（style.css 承壳层几何 main.chatfull；气泡/合成器住这里）。
 // 颜色一律引 :root 真实 token，零裸 hex——test/chat-view-css.test.ts 守卫。
@@ -222,6 +216,11 @@ const CHAT_CSS = `
 .chat-code code { background: none; padding: 0; }
 .chat-code-lang { display: block; font-size: var(--fs-micro); color: var(--muted); margin-bottom: 6px; }
 .chat-tool { align-self: flex-start; font-size: var(--fs-micro); color: var(--muted); padding: 1px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+.chat-thinking { align-self: flex-start; max-width: 78%; font-size: var(--fs-small); color: var(--muted); font-style: italic; padding: 4px 12px; border-left: 2px solid var(--line); white-space: pre-wrap; word-break: break-word; }
+.chat-thinking::before { content: '💭 '; font-style: normal; }
+.chat-msg.assistant.streaming::after { content: '▍'; color: var(--c-orange); animation: chat-blink 1s steps(2) infinite; }
+@keyframes chat-blink { to { opacity: 0; } }
+.chat-plan.pending .row button { opacity: .55; cursor: default; }
 .chat-atts { display: flex; gap: 6px; flex-wrap: wrap; }
 .chat-att-chip { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-micro); color: var(--muted); padding: 3px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--card); max-width: 240px; }
 .chat-att-chip .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -242,6 +241,8 @@ const CHAT_CSS = `
 .chat-tray { display: flex; gap: 6px; flex-wrap: wrap; }
 .chat-tray:empty { display: none; }
 .chat-input { display: flex; gap: 10px; align-items: flex-end; }
+.chat-voice-slot { display: contents; }
+.chat-call-slot { display: contents; }
 .chat-input textarea { flex: 1; resize: none; min-height: 44px; max-height: 160px; padding: 11px 14px;
   border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: var(--ink);
   font: inherit; line-height: 1.6; field-sizing: content; }
@@ -255,21 +256,10 @@ const EMPTY_HTML = `
           说一句话，juli 问清楚后给你一张单子卡——确认才开单。
         </div>`;
 
-// conv 分线程（2026-10-17）：本浏览器的会话线程 id——服务端按 conv 隔离
-// intake 上下文/相位/暂存计划，诊断注入与多端并行不再串台。「新对话」=
-// 换 id（旧线程留在服务端按 LRU 自然过期）。
-const CONV_KEY = 'juli_conv';
-const newConvId = (): string => `web-${(crypto.randomUUID ? crypto.randomUUID() : String(Date.now()))}`;
-const convId = (): string => {
-  let v = localStorage.getItem(CONV_KEY) ?? '';
-  if (!/^[A-Za-z0-9_-]{1,64}$/.test(v)) {
-    v = newConvId();
-    localStorage.setItem(CONV_KEY, v);
-  }
-  return v;
-};
+// conv 分线程：实现收编进 chat-transcript.ts（同 transcript，2026-10-27）——
+// 通话后台轮次与视图必须发同一线程，切回 /chat 才看得到期间发生了什么。
 
-export const chatView = async (el: HTMLElement): Promise<void> => {
+export const chatView = async (el: HTMLElement): Promise<(() => void) | void> => {
   let plan: IntakePlan | null = null;
   let busy = false;
   let pendingAtts: PendingAttach[] = [];
@@ -287,12 +277,14 @@ export const chatView = async (el: HTMLElement): Promise<void> => {
         <h1>发单</h1>
         <p class="sub">说一句话，juli 问清楚后给你一张单子卡——确认才开单。</p>
         <button class="mini ghost" id="c-new" title="换一条全新对话线程（服务端上下文重开；旧线程按容量自然过期）">新对话</button>${transcript.length > 0 ? '<button class="mini ghost" id="c-clear" title="清空本浏览器的历史记录（服务端与其它设备不受影响）">清空</button>' : ''}
+        <span id="c-call" class="chat-call-slot"></span>
       </div>
       <div class="chat-thread" id="c-thread">${EMPTY_HTML}
       </div>
       <div id="c-plan"></div>
       <div class="chat-tray" id="c-tray"></div>
       <div class="chat-input">
+        <span class="chat-voice-slot" id="c-voice"></span>
         <button class="btn" id="c-attach" title="附件（≤5 件，每件 ≤10MB）">📎</button>
         <input type="file" id="c-file" multiple hidden
           accept=".png,.jpg,.jpeg,.gif,.webp,.heic,.pdf,.txt,.md,.json,.csv,.docx,.xlsx,.pptx,.zip" />
@@ -312,6 +304,66 @@ export const chatView = async (el: HTMLElement): Promise<void> => {
   const attachBtn = el.querySelector('#c-attach') as HTMLButtonElement;
   const fileInput = el.querySelector('#c-file') as HTMLInputElement;
   const tray = el.querySelector('#c-tray') as HTMLElement;
+
+  // 语音输入（2026-10-21）：按住说话→松手成稿→直接作为一轮进件（voice-first；
+  // 回合在途时只落 composer 不抢发，fire 的 busy 守卫同口径）。会话与通话本体
+  // 都是页面级单例（2026-10-27 通话后台保持，缺陷单 wf_efccc6271097）：切页只
+  // 拆 UI/接线，麦克风与 WS 不断——通话进行中切页照常聆听/进件/朗读，回到本页
+  // transcript 回放补齐期间轮次；全局 pill（main.ts 挂载）接管切页后的可见面。
+  const voiceSession = getSharedVoiceSession();
+  const call = getVoiceCall();
+  const voiceSlot = el.querySelector('#c-voice') as HTMLElement;
+  const voiceInputCbs = {
+    onLive: (t: string) => { status.textContent = t; },
+    onFinal: (t: string) => {
+      input.value = t;
+      if (!busy) void fire();
+    },
+  };
+  let voiceCleanup: (() => void) = () => {};
+  const remountVoiceInput = (): void => {
+    voiceCleanup();
+    if (call.active()) { voiceSlot.style.display = 'none'; return; } // 通话中不挂 PTT：mountVoiceInput 即抢 session 路由，会把转写从通话侧夺走
+    voiceSlot.style.display = '';
+    voiceCleanup = mountVoiceInput(voiceSlot, voiceInputCbs, voiceSession);
+  };
+  remountVoiceInput();
+
+  // 通话开单（2026-10-21 用户裁定）：连续聆听，轮次/思考/工具照常异步流式
+  // （chat-live），回复朗读（speechSynthesis），计划卡在场说「确认」即开单。
+  let callActive = call.active(); // 通话中重进本页：朗读接线立即接上
+  const maybeSpeak = (text: string): void => {
+    if (callActive) call.speak(speechText(text));
+  };
+  call.setViewHandlers({
+    onUserText: (t) => {
+      if (t === '') return;
+      // 计划卡在场：纯确认/纯否决短句走语音裁决（仍走 confirmPlan 正门）；
+      // 其余（含长句里的「确认」）一律当修订轮次——误开单的代价远大于多说一轮。
+      if (plan !== null && !busy) {
+        const intent = classifyConfirmUtterance(t);
+        if (intent === 'confirm') {
+          appendMsg('sys', `📞 语音确认：「${t}」`);
+          void confirmPlan();
+          return;
+        }
+        if (intent === 'deny') {
+          appendMsg('sys', `📞 语音取消：「${t}」`);
+          void denyPlan();
+          return;
+        }
+      }
+      input.value = t;
+      if (!busy) void fire();
+    },
+    onNote: (t) => { status.textContent = t; },
+    onActiveChange: (active) => {
+      callActive = active;
+      if (active) { voiceCleanup(); voiceSlot.style.display = 'none'; renderPlan(); } // 通话接管会话路由；计划卡补通话提示
+      else remountVoiceInput(); // 挂断后输入按钮接管回路由
+    },
+  });
+  const voiceCall = mountVoiceCallUI(el.querySelector('#c-call') as HTMLElement, call);
 
   // 消息流锚定最底（0930 用户裁决；10-06 起线程是滚动容器，锚底真正生效）。
   const scrollBottom = (): void => {
@@ -376,6 +428,24 @@ export const chatView = async (el: HTMLElement): Promise<void> => {
     persist();
   };
 
+  // 后台轮次回放（2026-10-27 通话后台保持）：通话切页期间的轮次由核心后台
+  // 执行器写穿透，本视图在场时收到通知就整线重放——transcript 是唯一事实源，
+  // 重放幂等，不做增量拼接（增量=与 WS 流式渲染双重渲染的重复气泡风险）。
+  // busy 在途时不打断本回合，标脏到回合收尾再放。
+  let externalDirty = false;
+  const replayThread = (): void => {
+    transcript = loadTranscript();
+    thread.innerHTML = EMPTY_HTML;
+    thinkingRow = null;
+    stream = null;
+    lastFinal = null;
+    for (const m of transcript) renderMsg(m.role, m.text, m.atts);
+  };
+  call.setOnExternalTranscript(() => {
+    if (busy) { externalDirty = true; return; }
+    replayThread();
+  });
+
   const renderPlan = (): void => {
     planSlot.innerHTML = '';
     if (!plan) return;
@@ -388,6 +458,7 @@ export const chatView = async (el: HTMLElement): Promise<void> => {
       ${plan.landing && plan.landing.session
         ? `<p class="landing">落点：<span class="sess">${esc(plan.landing.session)}</span>${plan.landing.note ? `<span class="note">${esc(plan.landing.note)}</span>` : ''}</p>`
         : ''}
+      ${callActive ? '<p class="landing">📞 通话中：说「确认」开单，说「取消」放弃（点按钮也行）</p>' : ''}
       <label class="chat-auto" title="这一单的非发送闸门由 juli 自动批准（by=juli-auto，账本留痕）；问询与外发邮件仍会等你">
         <input type="checkbox" id="c-autoap" /> 本单免批（外发邮件仍会等我）
       </label>
@@ -401,6 +472,17 @@ export const chatView = async (el: HTMLElement): Promise<void> => {
     scrollBottom();
   };
 
+  /** 工具活动行：只读白名单查询的透明化（不渲染参数与结果原文）。 */
+  const renderToolLine = (name: string): void => {
+    const line = document.createElement('span');
+    line.className = 'chat-tool';
+    line.textContent = `🔧 查询 ${name}`;
+    el.querySelector('#c-empty')?.remove();
+    thread.appendChild(line);
+    scrollBottom();
+  };
+
+  /** POST 回包整包渲染（WS 帧没到时的兜底路径；帧到过的操作不走这里）。 */
   const applyEvents = (events: readonly IntakeEvent[]): void => {
     for (const e of events) {
       if (e.type === 'chat:plan') {
@@ -414,17 +496,168 @@ export const chatView = async (el: HTMLElement): Promise<void> => {
       } else if (e.type === 'chat:error') {
         appendMsg('sys', `⚠ ${e.data}`);
       } else if (e.type === 'tool_call') {
-        // 工具活动行：只读白名单查询的透明化（不渲染参数与结果原文）。
-        const line = document.createElement('span');
-        line.className = 'chat-tool';
-        line.textContent = `🔧 查询 ${e.data}`;
-        el.querySelector('#c-empty')?.remove();
-        thread.appendChild(line);
+        renderToolLine(toolNameOf(e.data));
+      } else if (e.type === 'chat:dispatched') {
+        thread.appendChild(refCard(e.data));
         scrollBottom();
       }
     }
     renderPlan();
   };
+
+  // ---- call 效果：/ws/chat 帧流实时执行 ------------------------------------------
+  // 判定（流式合并/剥围栏/去重标记）在 chat-live.ts；这里只把 LiveOp 落到 DOM。
+
+  const live = createLiveChat();
+  let liveWs: WebSocket | null = null;
+  let liveAttempt = 0;
+  let liveTimer = 0;
+  let disposed = false;
+  let thinkingRow: HTMLElement | null = null;
+  /** 流式中的 assistant 气泡（done 后定稿：Markdown 重绘 + 落档）。 */
+  let stream: { row: HTMLElement; div: HTMLElement; text: string } | null = null;
+  /** 最近定稿的 assistant 气泡 + 其 transcript 下标（POST 回包校正终稿用）。 */
+  let lastFinal: { div: HTMLElement; tsIndex: number } | null = null;
+  /** 最近一张经 dispatched 帧渲染的开单回执卡 id（confirmPlan 兜底去重用）。 */
+  let dispatchedId: string | null = null;
+
+  /** 定稿流式气泡：Markdown 重绘+落档；返回定稿文本（空=没有流式气泡）。 */
+  const finalizeStream = (): string => {
+    if (stream === null) return '';
+    const s = stream;
+    stream = null;
+    s.div.classList.remove('streaming');
+    s.div.classList.add('chat-md');
+    s.div.innerHTML = renderMd(s.text);
+    for (const id of wfRefs(s.text)) s.row.appendChild(refCard(id));
+    transcript.push({ role: 'assistant', text: s.text, at: new Date().toISOString() });
+    persist();
+    lastFinal = { div: s.div, tsIndex: transcript.length - 1 };
+    scrollBottom();
+    return s.text;
+  };
+
+  const applyLive = (op: LiveOp): void => {
+    switch (op.kind) {
+      case 'thinking': {
+        if (thinkingRow === null) {
+          el.querySelector('#c-empty')?.remove();
+          thinkingRow = document.createElement('div');
+          thinkingRow.className = 'chat-thinking';
+          thread.appendChild(thinkingRow);
+        }
+        // 思考可长达数千字：只滚尾部，整段留给服务端账本
+        thinkingRow.textContent = op.text.length > 240 ? `…${op.text.slice(-240)}` : op.text;
+        if (busy) status.textContent = '💭 思考中…';
+        scrollBottom();
+        break;
+      }
+      case 'assistant_chunk': {
+        thinkingRow?.remove();
+        thinkingRow = null;
+        if (op.fresh || stream === null) {
+          el.querySelector('#c-empty')?.remove();
+          const row = document.createElement('div');
+          row.style.cssText = 'display:flex;flex-direction:column;gap:6px;align-items:inherit';
+          const div = document.createElement('div');
+          div.className = 'chat-msg assistant streaming';
+          div.textContent = op.text;
+          row.appendChild(div);
+          thread.appendChild(row);
+          stream = { row, div, text: op.text };
+        } else {
+          stream.text += op.text;
+          stream.div.textContent = stream.text;
+        }
+        if (busy) status.textContent = '回复中…';
+        scrollBottom();
+        break;
+      }
+      case 'turn_done': {
+        thinkingRow?.remove();
+        thinkingRow = null;
+        maybeSpeak(finalizeStream());
+        break;
+      }
+      case 'tool':
+        renderToolLine(op.name);
+        if (busy) status.textContent = `🔧 查询 ${op.name}…`;
+        break;
+      case 'plan':
+        if (op.plan === null) {
+          appendMsg('sys', '⚠ 计划卡数据变形（服务端帧 JSON 解析失败）——再发一轮触发重提议');
+          break;
+        }
+        plan = op.plan;
+        renderPlan();
+        break;
+      case 'phase':
+        if (op.phase !== 'proposed') { plan = null; renderPlan(); }
+        break;
+      case 'system':
+        appendMsg('sys', op.text);
+        break;
+      case 'error':
+        thinkingRow?.remove();
+        thinkingRow = null;
+        finalizeStream();
+        appendMsg('sys', `⚠ ${op.text}`);
+        break;
+      case 'dispatched':
+        plan = null;
+        renderPlan();
+        dispatchedId = op.id; // 回执卡已由帧渲染（confirmPlan 回包兜底据此去重）
+        thread.appendChild(refCard(op.id));
+        scrollBottom();
+        if (callActive) call.speak('已开单。');
+        break;
+    }
+  };
+
+  /** 终稿校正：服务端 reply 是剥净围栏的权威文本——chunk 边界切断围栏/漏帧
+   * 时以它为准（DOM + transcript 同步）。 */
+  const healAssistant = (reply: string): void => {
+    if (reply === '') return;
+    if (lastFinal === null) { appendMsg('assistant', reply); return; }
+    const entry = transcript[lastFinal.tsIndex];
+    if (entry !== undefined && entry.role === 'assistant' && entry.text === reply) return;
+    lastFinal.div.innerHTML = renderMd(reply);
+    if (entry !== undefined && entry.role === 'assistant') {
+      transcript[lastFinal.tsIndex] = { ...entry, text: reply };
+      persist();
+    }
+  };
+
+  const connectLive = (): void => {
+    if (disposed) return;
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const sock = new WebSocket(chatWsUrl(proto, location.host, convId(), getToken()));
+    liveWs = sock;
+    sock.onopen = () => { if (liveWs === sock) liveAttempt = 0; };
+    sock.onmessage = (m: MessageEvent<string>) => {
+      if (liveWs !== sock || disposed) return;
+      try {
+        for (const op of live.handle(JSON.parse(m.data) as { type: string; data?: string })) applyLive(op);
+      } catch { /* 非 JSON 帧丢弃 */ }
+    };
+    sock.onclose = () => {
+      if (liveWs !== sock) return;
+      liveWs = null;
+      // done 帧无缓冲无回放：掉线即定稿流式中的气泡（iOS handleDisconnect 同款）
+      for (const op of live.disconnected()) applyLive(op);
+      if (disposed) return;
+      liveTimer = window.setTimeout(connectLive, chatReconnectDelayMs(liveAttempt++));
+    };
+  };
+  const reconnectLive = (): void => {
+    window.clearTimeout(liveTimer);
+    const s = liveWs;
+    liveWs = null;
+    try { s?.close(); } catch { /* 未连 */ }
+    liveAttempt = 0;
+    connectLive();
+  };
+  connectLive();
 
   // ---- 附件托盘 ---------------------------------------------------------------
 
@@ -486,12 +719,30 @@ export const chatView = async (el: HTMLElement): Promise<void> => {
       let refs: AttachRef[] = [];
       for (const a of outAtts) refs = [...refs, await uploadAttach(a)];
       status.textContent = '开单助手思考中…';
+      live.beginOp(); // 自此到的帧=本回合的实时渲染
+      lastFinal = null; // 校正只认本回合定稿的气泡，不许改写上一轮
       const r = await api.post<TurnResponse>(`/api/chat/intake/turn?conv=${convId()}`, {
         input: text === '' ? '[附件]' : text,
         ...(refs.length > 0 ? { attachments: refs } : {}),
       });
-      if (r.reply !== '') appendMsg('assistant', r.reply);
-      applyEvents(r.events);
+      if (live.liveSeen()) {
+        // WS 已边到边渲染：只做收口与校正，不重渲染（去重）
+        if (!live.sawDone()) for (const op of live.handle({ type: 'done' })) applyLive(op);
+        healAssistant(r.reply);
+        // 计划卡帧若漏（done 无缓冲、帧序竞态）以回包补——卡是开单入口，不能少
+        if (plan === null) {
+          const pe = r.events.find((e) => e.type === 'chat:plan');
+          if (pe !== undefined) applyEvents([pe, { type: 'chat:phase', data: 'proposed' }]);
+        }
+        // 已知残差（chat-live 同披露）：endOp 后才迟到的 WS chunk 会以新气泡
+        // 落地成碎片——双连接乱序的极窄时序，transcript 重载后自愈。
+      } else {
+        if (r.reply !== '') {
+          appendMsg('assistant', r.reply);
+          maybeSpeak(r.reply);
+        }
+        applyEvents(r.events);
+      }
       status.textContent = '';
     } catch (e) {
       status.textContent = `发送失败：${e instanceof Error ? e.message : String(e)}`;
@@ -499,41 +750,64 @@ export const chatView = async (el: HTMLElement): Promise<void> => {
       pendingAtts = [...outAtts, ...pendingAtts].slice(0, ATTACH_MAX_COUNT);
       renderTray();
     }
+    live.endOp();
     busy = false;
     send.disabled = false;
     newChatBtn.disabled = false;
+    if (externalDirty) { externalDirty = false; replayThread(); } // 在途期间后台轮次落档了：收尾重放补齐
   };
 
+  // 异步开单（2026-10-21 call 效果）：不跳页。卡片原位「开单中…」，回执
+  // （dispatched/system 帧或回包）到了换成系统行 + 单子卡，对话继续——
+  // 深链流水页的入口就是那张卡。
   const confirmPlan = async (): Promise<void> => {
     if (!plan || busy) return;
     busy = true;
     newChatBtn.disabled = true; // 同 fire：在途守卫静默，禁用即反馈
     status.textContent = '开单中…';
+    const card = planSlot.querySelector<HTMLElement>('.chat-plan');
+    card?.classList.add('pending');
+    for (const b of card?.querySelectorAll('button') ?? []) b.disabled = true;
+    const confirmBtn = card?.querySelector<HTMLButtonElement>('#c-confirm') ?? null;
+    if (confirmBtn !== null) confirmBtn.textContent = '开单中…';
+    live.beginOp();
     try {
       const autoAp = planSlot.querySelector<HTMLInputElement>('#c-autoap')?.checked === true;
       const r = await api.post<{ events: readonly IntakeEvent[]; runId: string | null }>(`/api/chat/intake/confirm?conv=${convId()}`, {
         auto_approve: autoAp,
       });
-      applyEvents(r.events);
+      if (!live.liveSeen()) applyEvents(r.events);
+      else if (r.runId !== null && dispatchedId !== r.runId) {
+        // liveSeen 但 dispatched 帧丢了：回包补卡（与 fire 的 plan 卡兜底同款
+        // 「卡是开单入口，不能少」）；帧确实到过则 dispatchedId === r.runId 不重卡。
+        thread.appendChild(refCard(r.runId));
+        scrollBottom();
+      }
       if (r.runId) {
         status.textContent = `✓ 已开单 ${r.runId}`;
-        location.hash = `/lifecycle?w=${r.runId}`; // 深链展开该单节点流
-        return; // 页面即切走，收尾交给路由
+        if (plan !== null) { plan = null; renderPlan(); } // 帧漏了也不留一张「开单中」的死卡
+      } else {
+        status.textContent = '开单失败，请重试或继续对话';
+        renderPlan(); // 恢复可点
       }
-      status.textContent = '开单失败，请重试或继续对话';
     } catch (e) {
       status.textContent = `开单失败：${e instanceof Error ? e.message : String(e)}`;
+      renderPlan();
     }
+    live.endOp();
     busy = false;
     newChatBtn.disabled = false;
+    if (externalDirty) { externalDirty = false; replayThread(); }
   };
 
   const denyPlan = async (): Promise<void> => {
     if (busy) return;
+    live.beginOp();
     try {
       const r = await api.post<{ events: readonly IntakeEvent[] }>(`/api/chat/intake/deny?conv=${convId()}`);
-      applyEvents(r.events);
+      if (!live.liveSeen()) applyEvents(r.events);
     } catch { /* 回到讨论态失败也不阻塞继续对话 */ }
+    live.endOp();
   };
 
   send.addEventListener('click', () => void fire());
@@ -553,14 +827,18 @@ export const chatView = async (el: HTMLElement): Promise<void> => {
   // conv 分线程（2026-10-17）：「新对话」=换 conv id（服务端线程+本地回显双清）。
   newChatBtn.addEventListener('click', () => {
     if (busy) return; // 回合在途禁换线程：在途请求的 conv 已定格，清空后旧响应会血染新线程（R1-F3）
-    localStorage.setItem(CONV_KEY, newConvId());
+    resetConversation(); // conv id 与本地档同源收口（通话后台轮次同走新线程）
     transcript = [];
-    saveTranscript(transcript);
     thread.innerHTML = EMPTY_HTML;
     plan = null;
     planSlot.innerHTML = '';
     status.textContent = '';
+    thinkingRow = null;
+    stream = null;
+    lastFinal = null;
+    call.syncPlanPending(false); // 旧线程的计划相位随线程作废
     el.querySelector('#c-clear')?.remove();
+    reconnectLive(); // 帧流按 conv 过滤：换线程=换订阅
   });
   const clearBtn = el.querySelector<HTMLButtonElement>('#c-clear');
   if (clearBtn !== null) {
@@ -570,6 +848,11 @@ export const chatView = async (el: HTMLElement): Promise<void> => {
       saveTranscript(transcript);
       clearBtn.remove();
       thread.innerHTML = EMPTY_HTML;
+      // 引用随 DOM 一起清（照 newChat 三行，R1 P1#3）：lastFinal 残留会让下一
+      // 回合的 healAssistant 改写已脱离文档的旧气泡——屏上无泡、落档也跳过。
+      thinkingRow = null;
+      stream = null;
+      lastFinal = null;
     });
   }
 
@@ -578,4 +861,22 @@ export const chatView = async (el: HTMLElement): Promise<void> => {
     const s = await api.get<StateResponse>(`/api/chat/intake/state?conv=${convId()}`);
     if (s.plan) { plan = s.plan; renderPlan(); }
   } catch { /* 未配置 LLM 时端点 503——视图保持空线程 */ }
+  call.syncPlanPending(plan !== null); // 相位投影交核心：本页切走后语音确认裁决要用
+
+  // 清理口（帧流 WS + 视图接线）：#/chat 页由 main.ts 路由切换时调用，抽屉
+  // 形态由 orderfab 关闭时调用。通话本体/会话/朗读都不在此收口（2026-10-27
+  // 后台保持：生命周期=页面，缺陷单 wf_efccc6271097）——切页只拆视图面，
+  // 通话照常聆听/进件/朗读，轮次由核心后台执行器接管。
+  return () => {
+    disposed = true;
+    window.clearTimeout(liveTimer);
+    const s = liveWs;
+    liveWs = null;
+    try { s?.close(); } catch { /* 未连 */ }
+    voiceCall(); // 横幅/按钮 DOM 随视图退场（返回的 detach 口，不动通话）
+    voiceCleanup(); // PTT 拆（通话中本就不在场，幂等）
+    call.syncPlanPending(plan !== null); // 相位投影随切页移交
+    call.setViewHandlers(null); // 轮次回落后台执行器
+    call.setOnExternalTranscript(null);
+  };
 };

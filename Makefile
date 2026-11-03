@@ -6,7 +6,7 @@ test:       ## Full test suite
 	npm test
 typecheck:  ## tsc, both projects
 	npm run typecheck
-web:        ## Build web cockpit -> web-dist (served by the engine)
+web:        ## Build web cockpit -> web/dist (legacy fallback shell; live = webapp/scripts/swap-web-dist.sh)
 	npm run web
 web-dev:    ## Web dev server
 	npm run web:dev

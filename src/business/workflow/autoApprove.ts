@@ -89,15 +89,15 @@ const TERMINAL = new Set(WORKFLOW_STATUSES.filter((s) => s.terminal).map((s) => 
 const PER_ORDER_RULE: AutoApproveRule = { id: '本单免批', includeSend: false };
 
 const ctxOf = (w: Workflow, gate: Step): AutoApproveCtx => {
-  const input = (gate.input ?? {});
-  const assigned = typeof w.meta?.['assigned_session'] === 'string' ? (w.meta['assigned_session']) : '';
+  const input = gate.input;
+  const assigned = typeof w.meta['assigned_session'] === 'string' ? w.meta['assigned_session'] : '';
   const q = input['question_options'];
-  const session = (w.session ?? '') !== '' ? (w.session ?? '') : assigned;
+  const session = w.session !== '' ? w.session : assigned;
   return {
     kind: w.kind,
     title: w.title,
     session,
-    sender: typeof w.meta?.['from'] === 'string' ? (w.meta['from']) : '',
+    sender: typeof w.meta['from'] === 'string' ? w.meta['from'] : '',
     delivery: gateDelivery(input),
     isQuestion: Array.isArray(q) && q.length > 0,
   };
@@ -133,7 +133,7 @@ export const autoApproveSweep = async (deps: AutoApproveSweepDeps): Promise<numb
     // 单子级免批标记（2026-10-07 用户裁定：前端按单开关，不走全局配置）：
     // meta.auto_approve===true 时无视 config mode 直接进自动面（人在这单上
     // 明确说过「不用问我」）；硬边界（问询/外发）仍然钉死——同 config 路径。
-    const perOrder = (w.meta?.['auto_approve'] ?? null) === true;
+    const perOrder = w.meta['auto_approve'] === true;
     for (const st of deps.store.stepsForWorkflow(w.id)) {
       if (st.kind !== 'gate' || st.status !== 'waiting_human') continue;
       const ctx = ctxOf(w, st);
@@ -142,7 +142,9 @@ export const autoApproveSweep = async (deps: AutoApproveSweepDeps): Promise<numb
       if (ctx.isQuestion) continue; // 硬边界①双保险（per-order 路径必须重判）
       if (ctx.delivery === 'email' && !rule.includeSend) continue; // 硬边界②
       const note = `自动批准：${ruleNote(rule)}`;
-      if (cfg.mode === 'shadow') {
+      // shadow 只拦规则路径：per-order 是人在这单上的明确指令（「不用问我」），
+      // 人的意志即批准——观察模式不拦截（2026-10-28 R&R 对齐 127 行注释声明）。
+      if (!perOrder && cfg.mode === 'shadow') {
         deps.store.appendEvent('workflow', w.id, 'gate_auto_approve_shadow', { gate: st.title, step_id: st.id, note });
         deps.log.info(`[auto-approve][shadow] ${w.id}「${st.title}」将被自动批准——${ruleNote(rule)}`);
         acted++;

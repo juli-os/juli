@@ -94,6 +94,8 @@ export const sessionsView = async (el: HTMLElement): Promise<(() => void) | void
     ro = null;
     // keydown 挂在常驻 mount 上，innerHTML='' 摘不掉——不显式移除则每次
     // 换会话叠加一个旧监听（旧 t 已 dispose、ws 是共享变量，粘贴会被叠发）。
+    // 手工验讫 2026-10-21 R1：add/remove 对称 capture=true（视图链拉 xterm
+    // 进 node 不稳，DOM 级回归不可行——FIXES R1-FX P2#6）。
     if (keydown !== null) { mount.removeEventListener('keydown', keydown, true); keydown = null; }
     ws?.close();
     ws = null;

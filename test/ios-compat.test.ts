@@ -257,6 +257,37 @@ describe('artifacts 族', () => {
     rtPw.stop();
   });
 
+  it('share：PB-only（有 authenticator 无本地密码）签发 400 人话，不留「能签不能开」死链（b46 R1-FX P2#2）', async () => {
+    // 认证链需过 PB token 才能 POST share：stub auth-refresh（下方 OSS 用例
+    // 同款 globalThis.fetch 手法）。开放模式照签（authenticator=null 不触发
+    // 守卫）由上方「真实 share」用例继续钉——守卫条件是 PB-only 形态，不是
+    // 裸 password===''（打死开放模式本地链 = 功能回归）。
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ record: { id: 'pb-u', email: 'u@x.com' } }), { status: 200 }));
+    const rtPb = createRuntime(configSchema.parse({
+      data_dir: mkdtempSync(join(tmpdir(), 'juli-sh-pb-')),
+      pb_url: 'http://pb.test', // pb_url 在场 + password 缺省空 = PB-only 形态
+    }));
+    try {
+      const appPb = createHttpApp(rtPb);
+      const widPb = rtPb.store.createWorkflow({ kind: 'email', title: 'pb-share', meta: { from: 'pb@x.com' } }).id;
+      const putPb = await rtPb.artifactLedger.putAndRegister({
+        workflowId: widPb, role: 'agent_output', name: 'pb.html', bytes: Buffer.from('<p>pb</p>'),
+      });
+      const res = await appPb.request('/api/artifact/share', {
+        method: 'POST', body: JSON.stringify({ id: putPb.id }),
+        headers: { 'content-type': 'application/json', authorization: 'Bearer pb-token' },
+      });
+      expect(res.status).toBe(400);
+      const { error } = await res.json() as { error: string };
+      expect(error).toContain('本地密码'); // 人话错误：签发方（分享按钮）拿到明确失败
+    } finally {
+      globalThis.fetch = realFetch;
+      rtPb.stop();
+    }
+  });
+
   it('share：OSS 已配 → presign share 域外链（10y）优先于 HMAC 本地链（Go 时代行为回归）', async () => {
     // iPhone 经 frp 直连时,请求 origin 是自签证书的 IP:端口——收件人打不开
     // (2026-09-30 用户实报)。配了 s3+share_domain,分享必须出 example 形态链。

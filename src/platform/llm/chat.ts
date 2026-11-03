@@ -23,10 +23,10 @@ const errorFrom = async (res: Response): Promise<Error> => {
 
 // ---- Anthropic Messages 协议 ----------------------------------------------------
 
-export const createAnthropicChat = (opts: ProviderOpts, doFetch: FetchImpl = defaultFetch): ChatLlmPort => ({
+export const createAnthropicChat = (opts: ProviderOpts, doFetch: FetchImpl = opts.fetchImpl ?? defaultFetch): ChatLlmPort => ({
   name: 'anthropic',
   async chat(req) {
-    const url = opts.baseUrl && opts.baseUrl !== ''
+    const url = opts.baseUrl
       ? `${opts.baseUrl.replace(/\/$/, '')}/v1/messages` : 'https://api.anthropic.com/v1/messages';
     const system = req.messages.find((m) => m.role === 'system')?.content ?? '';
     const body: Record<string, unknown> = {
@@ -94,10 +94,10 @@ export const createAnthropicChat = (opts: ProviderOpts, doFetch: FetchImpl = def
 
 // ---- OpenAI Chat Completions 协议（BigModel/GLM 兼容）---------------------------
 
-export const createOpenAiChat = (opts: ProviderOpts, doFetch: FetchImpl = defaultFetch): ChatLlmPort => ({
+export const createOpenAiChat = (opts: ProviderOpts, doFetch: FetchImpl = opts.fetchImpl ?? defaultFetch): ChatLlmPort => ({
   name: 'openai',
   async chat(req) {
-    const url = opts.baseUrl && opts.baseUrl !== ''
+    const url = opts.baseUrl
       ? `${opts.baseUrl.replace(/\/$/, '')}/chat/completions` : 'https://api.openai.com/v1/chat/completions';
     const messages: Record<string, unknown>[] = [];
     for (const m of req.messages) {

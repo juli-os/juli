@@ -21,7 +21,7 @@ export interface JudgmentScenarioDeps {
  * 观察面与离线对账源；字段序即留痕 schema，两场景不得各自漂移）。 */
 export const judgmentEventOf = (scenario: string, outcome: JudgmentOutcome) => ({
   scenario, mode: outcome.mode, provider: outcome.provider,
-  ok: outcome.ok === true, answer: outcome.answer ?? '', confidence: outcome.confidence ?? 0,
+  ok: outcome.ok, answer: outcome.answer ?? '', confidence: outcome.confidence ?? 0,
   threshold: outcome.threshold, error: outcome.error ?? '',
   model: outcome.model ?? '', input_tokens: outcome.inputTokens ?? 0,
   output_tokens: outcome.outputTokens ?? 0, duration_ms: outcome.durationMs ?? 0,

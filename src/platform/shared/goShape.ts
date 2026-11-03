@@ -68,7 +68,7 @@ export const stepToGo = (
   workflow_id: st.workflowId,
   seq: st.seq,
   kind: st.kind,
-  title: st.title || undefined,
+  title: nonEmpty(st.title),
   status: st.status,
   input: nonEmptyObject(st.input),
   output: nonEmptyObject(st.output),
@@ -76,5 +76,5 @@ export const stepToGo = (
   updated_at: st.updatedAt,
   started_at: nonEmpty(st.startedAt),
   completed_at: nonEmpty(st.completedAt),
-  summary: st.summary || undefined,
+  summary: nonEmpty(st.summary),
 });

@@ -73,9 +73,8 @@ export const costContextOf = (
     }, '');
   if (approvedGateAt !== '') {
     const active = w.status === 'running' || w.status === 'queued';
-    const runEnd = active
-      ? (lastActivityAt > (w.updatedAt ?? '') ? lastActivityAt : (w.updatedAt ?? ''))
-      : (w.updatedAt ?? '');
+    const end = w.updatedAt ?? '';
+    const runEnd = active && lastActivityAt > end ? lastActivityAt : end;
     if (runEnd !== '' && runEnd > approvedGateAt) windows.push([approvedGateAt, runEnd]);
   }
   return { sessions, effWindows: windows };

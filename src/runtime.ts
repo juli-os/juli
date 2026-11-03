@@ -107,6 +107,11 @@ export interface Runtime {
   readonly internalDomains: readonly string[];
   readonly voiceCall: VoiceCall | null;
   openVoiceCall(mode: CallMode): VoiceCall | null;
+  /** 挂断（P0，2026-10-27）：voiceState.call 唯一置空口——此前有进无出，
+   * 通话一开 /api/chat 的 turn/confirm/deny 永久 409 直到进程重启。幂等：
+   * 无在途通话为无害 no-op。包内 VoiceCall 是纯状态机（无计时器/连接等
+   * 持有资源），置空即收口。 */
+  closeVoiceCall(): void;
   confirmVoicePlan(): Promise<VoiceEvent[]>;
   denyVoicePlan(): Promise<VoiceEvent[]>;
   /** 开单对话（09-29）：clarify loop + 白名单只读工具 + 确认开单走 startTask
@@ -700,7 +705,9 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
           for (const w of store.listWorkflows(200)) {
             if (terminalStatuses.has(w.status)) continue;
             const assigned = typeof w.meta?.['assigned_session'] === 'string' ? (w.meta['assigned_session']) : '';
-            for (const sess of [w.session ?? '', assigned]) {
+            // 同一单每会话至多计一次：session===assigned_session（点名落同会话，
+            // 常态）时数组直加会双计——sessionHasOpenWork 的 SQL OR 口径只计一次。
+            for (const sess of new Set([w.session ?? '', assigned])) {
               if (sess !== '') inflight.set(sess, (inflight.get(sess) ?? 0) + 1);
             }
           }
@@ -715,7 +722,12 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
           const midnight = new Date();
           midnight.setHours(0, 0, 0, 0);
           const todayStart = midnight.toISOString();
-          const todayRow = usage.byLocalDay(1).at(-1);
+          // byLocalDay 只含有用量的天：at(-1) 在今天尚零用量时会错拿昨天整行
+          // （todayTokens 名不符实）——按本地日期取行（1 天窗口必含今天全天），
+          // 取不到=今天真零用量。
+          const two = (n: number): string => String(n).padStart(2, '0');
+          const todayKey = `${midnight.getFullYear()}-${two(midnight.getMonth() + 1)}-${two(midnight.getDate())}`;
+          const todayRow = usage.byLocalDay(1).find((r) => r.day === todayKey);
           return {
             version: VERSION,
             startedAt: new Date(BOOT_MS).toISOString(),
@@ -793,6 +805,13 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
     cur[segs[segs.length - 1]!] = value;
   };
 
+  // 认证器：config 冻结、无热改键——装配期一次成型（此前 getter 每请求重建）。
+  const authImpls: Authenticator[] = [];
+  if (config.password !== '') authImpls.push(createLocalAuthenticator(config.password));
+  if (config.pb_url !== '') authImpls.push(createPbAuthenticator({ url: config.pb_url, collection: config.pb_collection }));
+  const authenticator: Authenticator | null =
+    authImpls.length > 0 ? createCompositeAuthenticator(authImpls) : null;
+
   return {
     config,
     home,
@@ -822,12 +841,7 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
     get templateFiles() { return loaded.files; },
     get lastImapPoll() { return mailSource?.status().lastPoll ?? null; },
 
-    get authenticator(): Authenticator | null {
-      const impls: Authenticator[] = [];
-      if (config.password !== '') impls.push(createLocalAuthenticator(config.password));
-      if (config.pb_url !== '') impls.push(createPbAuthenticator({ url: config.pb_url, collection: config.pb_collection }));
-      return impls.length > 0 ? createCompositeAuthenticator(impls) : null;
-    },
+    authenticator,
     get voiceCall() { return voiceState.call; },
     get channels(): readonly InboundChannel[] {
       return [mailSource, ...extraChannels].filter((c): c is InboundChannel => c !== null);
@@ -850,7 +864,7 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
       return { events, reply };
     },
     openVoiceCall(mode: CallMode) {
-      if (!orchestrator || llm === null) return null;
+      if (!orchestrator) return null;
       voiceState.call = createVoiceCall(mode, {
         llm: makeChatLlm(),
         model: ai.model,
@@ -866,6 +880,14 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
       });
       log.info(`[voice] 通话开始（mode=${mode}）`);
       return voiceState.call;
+    },
+
+    closeVoiceCall(): void {
+      // P0（2026-10-27）：通话有进无出——全仓曾无任何置回 null 的路径。
+      // 幂等：无在途通话直接返回（挂断端点对空态也回 ok）。
+      if (voiceState.call === null) return;
+      voiceState.call = null;
+      log.info('[voice] 通话结束');
     },
 
     async confirmVoicePlan(): Promise<VoiceEvent[]> {
@@ -925,6 +947,18 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
         retentionDays = patch['ledger_retention_days'];
         hotApplied['ledger_retention_days'] = patch['ledger_retention_days'];
         applied.push('ledger_retention_days');
+      }
+      const queuePatch = patch['queue'];
+      if (isPlainRecord(queuePatch) && typeof queuePatch['concurrency'] === 'number') {
+        const n = Math.floor(queuePatch['concurrency']);
+        // 收单台并发热改（2026-10-27 配置化）：范围与 schema 同口径（1..16）；
+        // 上调即泵等待队，下调不抢占（queue.setConcurrency 语义）。值域外的
+        // 请求不应用也不标记 applied——PUT 落盘侧 zod 会拒，这里防御重复。
+        if (n >= 1 && n <= 16) {
+          engine.setQueueConcurrency(n);
+          hotApplied['queue.concurrency'] = n;
+          applied.push('queue.concurrency');
+        }
       }
       const aaPatch = patch['auto_approve'];
       if (aaPatch !== undefined) {
@@ -1112,7 +1146,7 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
           log,
         }),
       ];
-      log.info(`juli-service 已启动：data_dir=${dataDir} templates=${Object.keys(registry).length}`);
+      log.info(`juli-service 已启动：data_dir=${dataDir} templates=${Object.keys(loaded.templates).length}`);
     },
 
     attachWs(server: import('node:http').Server): void {

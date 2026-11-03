@@ -5,7 +5,7 @@
 
 import { ImapFlow, type FetchMessageObject, type MailboxLockObject } from 'imapflow';
 import { err, ok, toResult, type Result } from '@juli-os/artifacts';
-import { decodeRfc2047, parseFullMessage, type InboxMessage } from './inbox.ts';
+import { decodeRfc2047, MAX_SOURCE_BYTES, parseFullMessage, type InboxMessage } from './inbox.ts';
 
 export interface ImapParams {
   /** imaps://host:993、imap://host:port（明文，本地/测试）、或裸 host:port（TLS） */
@@ -104,7 +104,8 @@ export const dialImap = async (p: ImapParams, password: string): Promise<Result<
             continue;
           }
           // 50MB 封顶：超大的邮件不值这个内存（ sane 的由附件上限管）。
-          const capped = source.length > 50 << 20 ? source.subarray(0, 50 << 20) : source;
+          const maxBytes = MAX_SOURCE_BYTES;
+          const capped = source.length > maxBytes ? source.subarray(0, maxBytes) : source;
           const parsed = await parseFullMessage(capped);
           if (parsed.ok) {
             // 正文头是权威：部分服务器 ENVELOPE 是 NIL，回信线程依赖它。

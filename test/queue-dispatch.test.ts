@@ -216,3 +216,31 @@ describe('收单台', () => {
     expect(w.engine.queueStatus().active).not.toContain(q.id);
   });
 });
+
+// ---- queue 配置化（2026-10-27）：可变并发 ---------------------------------------
+// 同会话避让不在此层（2026-10-27 裁定，见 queue.ts pump 注释）：挂靠继承单
+// 由引擎路由（routeTask 忙闲改道）决定去留，队列级扣留会把它卡死——本组
+// 只钉 setConcurrency（上调即泵／下调不抢占／queueStatus 快照）。
+
+describe('queue 配置化', () => {
+  const hangAdvance = () => new Promise<void>(() => {}); // 永不收口 = 一直占位
+
+  const wfWith = (store: ReturnType<typeof createLedgerStore>, sess: string) =>
+    store.createWorkflow({ kind: 'adhoc', title: `t-${sess}`, status: 'queued', meta: { assigned_session: sess } });
+
+  it('setConcurrency 上调即泵：等待单立刻补位；下调不抢占（在跑照旧）', async () => {
+    const { clock } = makeClock();
+    const store = createLedgerStore(':memory:', { clock, ids: seqIds() });
+    const { makeQueue } = await import('../src/business/workflow/queue.ts');
+    const q = makeQueue({ store, queueConcurrency: 1, late: { advance: hangAdvance } });
+    const a = wfWith(store, 's-a'); const b = wfWith(store, 's-b'); const c = wfWith(store, 's-c');
+    q.enqueueBack(a.id); q.enqueueBack(b.id); q.enqueueBack(c.id);
+    expect(q.queueStatus().active).toEqual([a.id]); // 并发 1
+    q.setConcurrency(3);
+    expect([...q.queueStatus().active].sort()).toEqual([a.id, b.id, c.id].sort()); // 补位
+    q.setConcurrency(1);
+    expect(q.queueStatus().active.length).toBe(3); // 不抢占
+    expect(q.queueStatus().concurrency).toBe(1);
+  });
+
+});

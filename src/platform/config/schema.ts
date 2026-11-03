@@ -6,7 +6,7 @@ import { execSync } from 'node:child_process';
 import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { z } from 'zod';
-import { createReadFile } from '../shared/fsutil.ts';
+import { readFileSafe } from '../shared/fsutil.ts';
 
 const authzModeSchema = z.enum(['allowlist', 'open']);
 
@@ -371,7 +371,6 @@ export const configSchema = z.object({
   ledger_retention_days: z.number().int().default(0),
   pb_url: z.string().default(''),
   pb_collection: z.string().default('users'),
-  high_cost_models: z.array(z.string()).default([]),
 });
 
 export type Config = Readonly<z.infer<typeof configSchema>>;
@@ -406,6 +405,17 @@ const envOverrides = (env: Readonly<Record<string, string | undefined>>): Partia
     v === undefined ? undefined : v.split(',').map((s) => s.trim()).filter(Boolean);
   const port = (v: string | undefined): number | undefined => (v === undefined ? undefined : Number(v));
   const flag = (v: string | undefined): boolean | undefined => (v === undefined ? undefined : v === 'true');
+  // 收单台并发 env 侧校验（b46 R1-FX P2#1）：与文件/PUT 同口径（zod
+  // `.int().min(1).max(16)`，见下方 queue schema）——非整数或出域一律当作
+  // 未设不应用（NaN/'3.7'/'100'/-5 → 回落文件值，与 PUT 被拒后配置不变同效）。
+  // 不 clamp：三入口统一「出域配置不生效」，静默改写显式配置会掩盖错配。
+  // '3.7' 按非整数拒（.int() 口径；热改侧 Math.floor 是运行时便捷，配置入口
+  // 不放宽——runtime.applySettings 注释同口径）。
+  const rawConcurrency = port(get('JULI_QUEUE_CONCURRENCY'));
+  const queueConcurrency =
+    rawConcurrency !== undefined && Number.isInteger(rawConcurrency) && rawConcurrency >= 1 && rawConcurrency <= 16
+      ? rawConcurrency
+      : undefined;
   return {
     llm_provider: get('JULI_LLM_PROVIDER', 'MAKRO_LLM_PROVIDER'),
     llm_model: get('JULI_LLM_MODEL', 'MAKRO_LLM_MODEL'),
@@ -420,6 +430,8 @@ const envOverrides = (env: Readonly<Record<string, string | undefined>>): Partia
     email_authz_deny: list(get('JULI_EMAIL_AUTHZ_DENY', 'MAKRO_EMAIL_AUTHZ_DENY')),
     tls_enabled: flag(get('JULI_TLS_ENABLED')),
     tls_port: port(get('JULI_TLS_PORT')),
+    // 收单台并发（2026-10-27 配置化）：env 整对象替换（queue 段仅此一键）。
+    queue: queueConcurrency === undefined ? undefined : { concurrency: queueConcurrency },
   };
 };
 
@@ -447,7 +459,7 @@ export const danglingFeedbackRoutes = (
   config: Config,
 ): readonly { readonly prefix: string; readonly session: string }[] => {
   const declared = new Set(config.agents.map((a) => a.session));
-  return (config.feedback_routing?.rules ?? []).filter((r) => !declared.has(r.session));
+  return config.feedback_routing.rules.filter((r) => !declared.has(r.session));
 };
 
 /** 敏感值掩码哨兵：GET 出来的形态；PUT 里出现即剔除，绝不落盘。 */
@@ -470,7 +482,7 @@ const isSecretPath = (path: string): boolean => SECRET_PATHS.includes(path);
 export const maskConfig = (config: unknown): Record<string, unknown> => {
   const walk = (node: unknown, path: string): unknown => {
     if (node === null || typeof node !== 'object') return node;
-    if (Array.isArray(node)) return [...node]; // 数组也拷贝——返回值与入参零共享
+      if (Array.isArray(node)) return node.map((v) => walk(v, path)); // 数组也深拷贝——返回值与入参零共享
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(node)) {
       const p = path === '' ? k : `${path}.${k}`;
@@ -522,7 +534,7 @@ type SaveConfigResult = { readonly ok: true } | { readonly ok: false; readonly e
  *  不剔除文件里的未知键（zod 只做守门；真实值恰为哨兵的极端情形被丢弃，可接受）。 */
 export const saveConfigFile = (deps: SaveConfigDeps, patch: unknown): SaveConfigResult => {
   const path = configFilePath(deps.home, deps.dataDir);
-  const read = deps.readFile ?? createReadFile();
+  const read = deps.readFile ?? readFileSafe;
   let current: unknown = {};
   const raw = read(path);
   if (raw !== null) {
@@ -559,7 +571,7 @@ export const saveConfigFile = (deps: SaveConfigDeps, patch: unknown): SaveConfig
 /** 纯加载：读文件（缺省容忍）→ zod 校验 → 环境覆盖 → 冻结。 */
 export const loadConfig = (deps: LoadConfigDeps): Config => {
   // 默认真读磁盘（注入仅测试用）——冒烟抓过"默认空读导致 config.json 被忽略"。
-  const read = deps.readFile ?? createReadFile();
+  const read = deps.readFile ?? readFileSafe;
   // 双认空串作未设（|| 而非 ??）：与 envOverrides get / 写侧落盘定位同语义，
   // JULI=''×MAKRO 设时读写不打同一个文件就是分家。
   const path = configFilePath(deps.home, deps.env['JULI_DATA_DIR'] || deps.env['MAKRO_DATA_DIR']);

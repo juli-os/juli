@@ -229,7 +229,7 @@ export const registerAgentsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
     const body = await readBody(c);
     const text = bodyStr(body, 'text');
     if (text === '') return c.json({ error: 'text required' }, 400);
-    const res = await rt.tmux.sendText(c.req.param('name') ?? '', text);
+    const res = await rt.tmux.sendText(name, text);
     return res.ok ? c.json({ ok: true }) : c.json({ error: res.error.message }, 400);
   });
 
@@ -347,8 +347,11 @@ export const registerAgentsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
       };
     });
     const companies = [...new Set(nodes.filter((n) => n.company !== '' && n.clone_of === null).map((n) => n.company))];
-    const domains = [...new Set(decls.filter((d) => d.domain !== '').map((d) => `${d.company}|${d.domain}`))]
-      .map((k) => { const [company, name] = k.split('|'); return { company, name }; });
+    // 去重键只担身份，值直取声明字段——旧实现按 '|' 回拆 key，company 含 '|'
+    // 时会错位成 (company 前段, company 后段)。
+    const domains = [...new Map(decls
+      .filter((d) => d.domain !== '')
+      .map((d) => [`${d.company}|${d.domain}`, { company: d.company, name: d.domain }])).values()];
     // 活动回放：route_decision（最近分发）+ route_fallback/session_bound_route（审计行）。
     const evs = rt.store.listEvents(1500);
     const recent = evs
@@ -375,10 +378,8 @@ export const registerAgentsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
   app.get('/api/agents/:id', (c) => c.json({ error: 'no acp threads' }, 404));
   app.delete('/api/agents/:id', (c) => c.body(null, 204));
 
-  // 会话产物（Go artifact_service 语义：中心目录扁平列表，裸数组）。
-  // 数据源两处：遗留 makro 中心库（~/.makro/artifacts/<session>/）+ juli
-  // 自有产物库（排除 customers/——那是客户合同文档，走客户详情页）。
-  // iOS 会话页辅助动作（juli 语义下为已确认空操作）。
+  // iOS 会话页辅助动作（juli 语义下为已确认空操作）。会话产物列表自本分册
+  // 拆至 routes/artifacts.ts（/api/artifacts，walkArtifacts 双源投影）。
   app.post('/api/sessions/:name/viewed', (c) => c.body(null, 204));
   app.post('/api/sessions/:name/start-agent', (c) => c.body(null, 204));
 

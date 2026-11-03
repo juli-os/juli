@@ -10,8 +10,8 @@ import { STEP_KINDS, type StepKind } from '@juli-os/ledger';
 import type { JsonRecord, JsonValue } from '@juli-os/artifacts';
 
 // enum 从账本的 StepKind 派生：两处词汇表漂移 = 编译错，不是运行时惊喜。
-export const stepKindSchema = z.enum([...STEP_KINDS] as [StepKind, ...StepKind[]]);
-export type StepKindName = z.infer<typeof stepKindSchema>;
+const stepKindSchema = z.enum([...STEP_KINDS] as [StepKind, ...StepKind[]]);
+type StepKindName = z.infer<typeof stepKindSchema>;
 
 const templateStepSchema = z.object({
   id: z.string().default(''),
@@ -29,7 +29,7 @@ const templateStepSchema = z.object({
   }).optional(),
 });
 
-export const templateSchema = z.object({
+const templateSchema = z.object({
   key: z.string().default(''),
   name: z.string().default(''),
   trigger: z.string().default('manual'),
@@ -79,8 +79,6 @@ export interface Template {
   /** 模板内容 sha256 前 12 位——创建工作流时钉进 meta，快照可审计。 */
   readonly hash: string;
 }
-
-export const TRIGGER_EMAIL = 'email';
 
 /** 模板步的声明式配置物化进持久 input：创建出来的步行就是该流水的快照——
  * 之后的模板编辑绝不改在途流，靠的就是这里把配置抄进步 input。步级 zombie

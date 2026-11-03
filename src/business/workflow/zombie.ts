@@ -153,12 +153,14 @@ export const makeZombie = (o: {
       if (st === null) return;
       const w = store.getWorkflow(st.workflowId);
       if (w === null || w.status !== 'running') return;
+      // hook 等输入标记：粘性豁免直到任何心跳——先于查重标记（闸已在而心跳
+      // 已清标记的二次 Notification 也要重新豁免，查重只免重复挂闸）。
+      awaitingByHook.add(session);
       // 去重：本单已有等人的问询闸 → 不重复挂（CC 每权限请求一发）。
       const steps = store.stepsForWorkflow(w.id);
       const existing = steps.find((g) => g.kind === 'gate' && g.status === 'waiting_human'
         && asString(g.input['question_session']) === session);
       if (existing !== undefined) return;
-      if (!awaitingByHook.has(session)) awaitingByHook.add(session);
       // 采集问题+选项：pane（菜单编号行=选择题）+ hook message（问题人话）。
       const fpFn = deps.zombieFingerprint ?? deps.captureOutput;
       let pane = '';
@@ -197,6 +199,12 @@ export const makeZombie = (o: {
   };
 
   const sweepZombies = async (): Promise<void> => {
+    // 终态步的等待通知去重条目随扫剪掉：步结算后无人再触发删除（指纹变化
+    // 只在 running 期能观察到）——不剪就是随历史单无限增长的常驻 Map。
+    for (const id of awaitingNotified.keys()) {
+      const s = store.getStep(id);
+      if (!s || s.status !== 'running') awaitingNotified.delete(id);
+    }
     const running = store.listSteps('running', 200);
     for (const st of running) {
       if (st.kind !== 'agent' && st.kind !== 'verify') continue;
@@ -219,9 +227,11 @@ export const makeZombie = (o: {
           const prev = lastFp.get(session);
           lastFp.set(session, fp);
           if (prev === undefined) firstSeen = true;
-          else if (fp !== prev) touchSession(session);
-          // 指纹变了 = 人已回答或 agent 已继续 → 清等待通知去重。
-          if (prev !== undefined && fp !== prev) awaitingNotified.delete(st.id);
+          else if (fp !== prev) {
+            touchSession(session);
+            // 指纹变了 = 人已回答或 agent 已继续 → 清等待通知去重。
+            awaitingNotified.delete(st.id);
+          }
         }
       }
       // 等输入豁免（2026-09-28 提问卡单修复）：agent 在等人在终端回答（权限/

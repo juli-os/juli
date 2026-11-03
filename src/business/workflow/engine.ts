@@ -33,9 +33,8 @@
 // completeAgentStep→settle→queue……）。装配期用一个 late 持有器破环——
 // 各模块拿到的 late 引用最后统一回填真身，装配期调用即抛错（fail loud）。
 
-import { type Clock, type IdGen, systemClock } from '@juli-os/artifacts';
+import { type Clock, type IdGen, type JsonRecord, type JsonValue, systemClock } from '@juli-os/artifacts';
 import { holdVerdict, validHoldWindow, type HoldWindowConfig } from '../../platform/shared/windowHold.ts';
-import type { JsonRecord, JsonValue } from '@juli-os/artifacts'
 import { consoleLogger, type Logger } from '../../platform/events/bus.ts';
 import type { LifecycleStore } from '@juli-os/ledger';
 import { type Step, type StepKind, type Workflow } from '@juli-os/ledger';
@@ -147,7 +146,7 @@ export interface EngineDeps {
 export interface Engine {
   // 触发
   onEmailReceived(m: EmailMessage): Promise<void>;
-  /** 泛化入站：按渠道名路由到 trigger 匹配的模板（email 渠道走专用路径）。 */
+  /** 泛化入站：dedup+authz 后事件直达 nodes（email 渠道走专用路径；无模板 trigger 路由）。 */
   onInbound(m: InboundMessage): Promise<void>;
   startEmailWorkflow(m: EmailMessage): Promise<Workflow>;
   startFlow(templateKey: string, title: string, input: JsonRecord, onlySteps?: readonly string[]): Promise<Workflow>;
@@ -164,8 +163,10 @@ export interface Engine {
   cancelStep(stepId: string, note: string, by: string): Promise<void>;
   // 推进
   advance(workflowId: string): Promise<void>;
-  /** 收单台快照：并发上限 / 正占位 / 等待中（按队序）/ 窗口 hold 中。 */
+  /** 收单台快照：并发上限 / 正占位 / 等待中（按队序）/ hold 中（忙会话/人工压单/窗口）。 */
   queueStatus(): { concurrency: number; active: readonly string[]; waiting: readonly string[]; held: readonly string[] };
+  /** 运行时调收单台并发（queue 配置化，2026-10-27）：透传 queue.setConcurrency。 */
+  setQueueConcurrency(n: number): void;
   /** hold 放行泵（runtime 60s 心跳调）：窗口关后把 hold 中的单按原队序放行。
    * 窗口未关/无 hold 单时零操作（pump 幂等）。 */
   holdSweep(): void;
@@ -177,7 +178,7 @@ export interface Engine {
   /** 统一干预（四件套）：session（改派+钉住不被改道）/context（追加上下文，
    * 派发时拼进任务卡，one-shot）/priority（即时写）/时机（hold_until 压单
    * 或 dispatch_now 立即放行）。前两类存 meta.override 由派发点消费销账；
-   * 后两类即时生效。任何状态可设——「状态迁移时人插得进手」的落点。 */
+   * 后两类即时生效。running/queued 态可设——「状态迁移时人插得进手」的落点。 */
   setOverride(workflowId: string, patch: {
     readonly session?: string; readonly context?: string;
     readonly priority?: 'high' | 'normal';
@@ -323,14 +324,14 @@ export const createEngine = (deps: EngineDeps): Engine => {
         const occupied = store.listWorkflows(500).some((x) => x.id !== workflowId && x.status === 'running'
           && (x.session === sess || (x.meta?.['assigned_session'] ?? '') === sess));
         if (occupied) {
-        const pinV = st.input['session_pinned'];
-        const pinned = pinV === true || pinV === 'true';
-        const boundNames = (deps.routing.boundAgents ?? []).map((b) => b.session);
-        const idleAlt = (deps.routing.agents ?? []).some((a) =>
-          a.session !== '' && a.session !== sess && !boundNames.includes(a.session)
-          && a.model_tier !== 'high' && avail.includes(a.session)
-          && !store.sessionHasOpenWork(a.session, workflowId));
-        if (pinned || boundNames.includes(sess) || !idleAlt) return true;
+          const pinV = st.input['session_pinned'];
+          const pinned = pinV === true || pinV === 'true';
+          const boundNames = (deps.routing.boundAgents ?? []).map((b) => b.session);
+          const idleAlt = (deps.routing.agents ?? []).some((a) =>
+            a.session !== '' && a.session !== sess && !boundNames.includes(a.session)
+            && a.model_tier !== 'high' && avail.includes(a.session)
+            && !store.sessionHasOpenWork(a.session, workflowId));
+          if (pinned || boundNames.includes(sess) || !idleAlt) return true;
         }
       }
     }
@@ -413,8 +414,9 @@ export const createEngine = (deps: EngineDeps): Engine => {
     cancelStep: lifecycle.cancelStep,
     advance,
     queueStatus: queue.queueStatus,
+    setQueueConcurrency: queue.setConcurrency,
     holdSweep: () => queue.pump(),
-    noteAwaiting: (session, message) => zombie.noteAwaiting(session, message),
+    noteAwaiting: zombie.noteAwaiting,
     setOverride: (workflowId, patch, by) => {
       const w = store.getWorkflow(workflowId);
       if (w === null || (w.status !== 'running' && w.status !== 'queued')) return;

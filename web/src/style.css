@@ -301,7 +301,7 @@ h2 { font-size: var(--fs-panel-title); font-weight: 700; margin: 0 0 10px; }
 
 /* ---- 设计系统基元（ui.ts，板「00 · 设计系统」）---------------------------
    kicker / 状态点 / 状态 chip / 能力 chip / 统计卡 / 面板头。八屏内新代码
-   一律用这些基元；着色只走 --st-*/--c-* 变量，状态语义无第二种表达。 */
+   一律用这些基元；着色只走 --st-* 与 --c-* 变量，状态语义无第二种表达。 */
 .kicker {
   font-family: var(--font-mono); font-size: var(--fs-micro); font-weight: 500;
   letter-spacing: 2px; color: var(--c-orange);

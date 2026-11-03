@@ -9,9 +9,7 @@
 // （system prompt + 计划块暂存 + 确认派发），事件形状沿用 voice.ts 的
 // chat:X 线上协议——/ws/chat 的 iOS 客户端零改动吃到。
 
-import { createOrchestrator, type Orchestrator, type OrchestratorEvent } from '@juli-os/agents';
-import type { Tool } from '@juli-os/agents';
-import { type ChatLlmPort } from '@juli-os/agents';
+import { createOrchestrator, type ChatLlmPort, type Orchestrator, type OrchestratorEvent, type Tool } from '@juli-os/agents';
 import type { Result } from '@juli-os/artifacts';
 
 export interface IntakeLanding {
@@ -51,7 +49,16 @@ export interface ChatIntakeEvent {
  * 路由层镜像进 chatHub 供 /ws/chat 客户端渲染）+ 进件事件（chat:X 计划卡相位）。 */
 export type ChatIntakeStreamEvent = ChatIntakeEvent | OrchestratorEvent;
 
-const INTAKE_PLAN_RE = /```intake-plan\s*([\s\S]*?)\s*```/;
+const INTAKE_PLAN_RE = /```intake-plan(?![a-z0-9-])\s*([\s\S]*?)\s*```/;
+// 2026-10-27 手机「JSON 堆 + 卡不弹」事故：glm-5.3-flash 四次提议三次漏写闭合
+// 围栏（JSON 完整、结尾断在 `"}`）。提取/在场只认闭合围栏 → 卡永不弹，且
+// 半开形态连 hasIntakePlanBlock 都不认 →「JSON 炸了」告警也被静默吞。半开
+// 容差：在场 = 围栏起笔在场；提取 = 闭合围栏失配时退半开围栏取尾段，
+// firstBalancedObject 兜住尾部手抖。提取/在场三条正则统一词边界（同
+// strip 防 ```plaintext 撞名——漏边界则 ```intake-plans 撞名块会被提取
+// 成卡而 strip 不剥，JSON 糊屏经 typo 围栏名回归）。
+const INTAKE_PLAN_OPEN_RE = /```intake-plan(?![a-z0-9-])[ \t]*\r?\n?([\s\S]*)$/;
+const INTAKE_PLAN_HAS_RE = /```intake-plan(?![a-z0-9-])/;
 
 /** 从任意文本里提取第一个平衡的 {...}（边界纪律：LLM 输出=外部数据，尾巴
  * 带 `};`/换行废话等手抖属常态——2026-10-17「开单卡不弹」事故：严格
@@ -86,8 +93,8 @@ const firstBalancedObject = (raw: string): Record<string, unknown> | null => {
 
 export const extractIntakePlanBlock = (text: string): StagedIntakePlan | null => {
   const m = INTAKE_PLAN_RE.exec(text);
-  if (!m) return null;
-  const raw = m[1]!.trim();
+  const raw = (m !== null ? m[1]! : INTAKE_PLAN_OPEN_RE.exec(text)?.[1] ?? '').trim();
+  if (raw === '') return null;
   let v: Record<string, unknown> | null = null;
   try {
     v = JSON.parse(raw) as Record<string, unknown>;
@@ -106,13 +113,25 @@ export const extractIntakePlanBlock = (text: string): StagedIntakePlan | null =>
   };
 };
 
-/** 计划块是否在场（与解析成败无关）——turn 侧用它区分「没提议」和「提议了
- * 但 JSON 炸了」（后者必须显性告警，不能再无声吞）。 */
-export const hasIntakePlanBlock = (text: string): boolean => INTAKE_PLAN_RE.test(text);
+/** 计划块是否在场（与解析成败无关）——2026-10-27 起半开围栏也算在场：turn
+ * 侧用它区分「没提议」和「提议了但 JSON 炸了」（后者必须显性告警，不能再无声吞）。 */
+export const hasIntakePlanBlock = (text: string): boolean => INTAKE_PLAN_HAS_RE.test(text);
+
+// b44 R2 NEW-γ：摘要面剥除与 webapp 客户端 stripPlanFences（chat-live.ts）
+// 逐字符同法——全局、双名（intake-plan|plan）、半开围栏也剥。否则 LLM 输出
+// ```plan 围栏或双 intake-plan 时服务端 reply 残留围栏 ≠ 客户端剥净稿，
+// heal 把围栏 JSON 原文写回 DOM/transcript 显示面。b45 R1-FX P2：围栏名加
+// 词边界 (?![a-z0-9-])——```plaintext/```plantuml 等前缀撞名块不误吃，
+// 三处正则（本文件/webapp chat-live/web chat-live）+ parity 测试字面量同步。
+// 提取/在场判定
+// （extractIntakePlanBlock / hasIntakePlanBlock）保持 INTAKE_PLAN_RE 原语义：
+// 它们要「第一处 intake-plan 内容」的进件语义，不随 strip 的显示面对齐。
+const INTAKE_PLAN_STRIP_RE_FULL = /```(?:intake-plan|plan)(?![a-z0-9-])\s*[\s\S]*?```/g;
+const INTAKE_PLAN_STRIP_RE_OPEN = /```(?:intake-plan|plan)(?![a-z0-9-])\s*[\s\S]*$/g;
 
 /** 摘要面剥掉计划块（朗读 / 回显不念 JSON）。 */
 export const stripIntakePlanBlock = (text: string): string =>
-  text.replace(INTAKE_PLAN_RE, '').trim();
+  text.replace(INTAKE_PLAN_STRIP_RE_FULL, '').replace(INTAKE_PLAN_STRIP_RE_OPEN, '').trim();
 
 export const INTAKE_SYSTEM_PROMPT = [
   '你是 juli 的开单助手。用户（juli 的运营者）会用一段话——常是语音转写——说出想做的事；你的唯一目标：把这一单聊清楚，然后提议开单。',
@@ -187,7 +206,6 @@ export interface ChatIntake {
   confirm(opts?: { autoApprove?: boolean }): Promise<ChatIntakeConfirm>;
   deny(): ChatIntakeTurn;
   state(): ChatIntakeState;
-  reset(): void;
 }
 
 export const createChatIntake = (deps: ChatIntakeDeps): ChatIntake => {
@@ -232,8 +250,20 @@ export const createChatIntake = (deps: ChatIntakeDeps): ChatIntake => {
     }
     let lastText = '';
     await orch.handle((opts?.voice === true ? VOICE_TURN_PREFIX : '') + input, (e) => {
+      // b44 R1 P1：累积而非赋值——orchestrator 每个 LLM 回合发一个独立完整
+      // text 事件（text→tool_call→text 是常态），赋值让 reply 只剩末段：
+      // 客户端 heal 以 reply 为权威会把多段合并稿改写成只剩末段（DOM+transcript
+      // 双丢前段）。'\n\n' 连接与客户端 mergeAssistant 分段口一致，heal 后
+      // last.text === reply 恒成立（幂等 no-op）。单段回复字节级不变。
+      // 2026-10-27 手机 JSON 堆事故：展示面净稿出闸——流式 text 事件剥掉计划
+      // 块再进流（旧 iOS 客户端逐 chunk 剥不掉跨段/半开围栏，围栏+JSON 原文
+      // 直接糊屏）；lastText 累积仍用原文（提取语义见 INTAKE_PLAN_OPEN_RE 注）。
+      if (e.type === 'text' && e.content !== '') {
+        lastText = lastText === '' ? e.content : `${lastText}\n\n${e.content}`;
+        push({ ...e, content: stripIntakePlanBlock(e.content) });
+        return;
+      }
       push(e);
-      if (e.type === 'text' && e.content !== '') lastText = e.content;
     });
     const plan = extractIntakePlanBlock(lastText);
     if (plan === null && hasIntakePlanBlock(lastText)) {
@@ -320,11 +350,6 @@ export const createChatIntake = (deps: ChatIntakeDeps): ChatIntake => {
     },
     state() {
       return { phase, plan: staged };
-    },
-    reset() {
-      staged = null;
-      phase = 'discuss';
-      orch.reset();
     },
   };
 };

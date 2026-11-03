@@ -117,6 +117,20 @@ describe('autoApproveSweep 行为（真实 store + 注入 approve）', () => {
     rt.stop();
   });
 
+  it('per-order 免批不受 shadow 拦截：全局影子模式下人标记的单照批（2026-10-28 裁定）', async () => {
+    const rt = setup();
+    const wId = makeWaitingGate(rt);
+    rt.store.updateWorkflowMeta(wId, { auto_approve: true });
+    const calls: string[] = [];
+    const n = await autoApproveSweep({ store: rt.store, config: () => cfg('shadow', [{}]), approve: async (id) => { calls.push(id); }, log: console });
+    expect(n).toBe(1);
+    expect(calls).toHaveLength(1); // 真批，不是 shadow 留痕
+    const evts = rt.store.db.prepare("SELECT type FROM events WHERE entity_id=? AND type LIKE 'gate_auto%'").all(wId) as { type: string }[];
+    expect(evts.map((e) => e.type)).toContain('gate_auto_approved');
+    expect(evts.map((e) => e.type)).not.toContain('gate_auto_approve_shadow');
+    rt.stop();
+  });
+
   it('问询闸门与外发闸门在 sweep 层同样被硬边界拦住', async () => {
     const rt = setup();
     makeWaitingGate(rt, { question_options: ['A', 'B'] });

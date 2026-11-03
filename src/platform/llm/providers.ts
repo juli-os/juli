@@ -13,7 +13,6 @@ export interface ProviderOpts {
   readonly baseUrl?: string;
   readonly model?: string;
   readonly fetchImpl?: FetchImpl;
-  readonly timeoutMs?: number;
 }
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
@@ -21,7 +20,7 @@ const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
 
 export const createAnthropicProvider = (opts: ProviderOpts): LlmPort => {
   const doFetch = opts.fetchImpl ?? defaultFetch;
-  const url = opts.baseUrl && opts.baseUrl !== '' ? `${opts.baseUrl.replace(/\/$/, '')}/v1/messages` : ANTHROPIC_URL;
+  const url = opts.baseUrl ? `${opts.baseUrl.replace(/\/$/, '')}/v1/messages` : ANTHROPIC_URL;
   return {
     async complete(req: CompletionRequest): Promise<Result<CompletionResult, Error>> {
       const body = {
@@ -41,7 +40,7 @@ export const createAnthropicProvider = (opts: ProviderOpts): LlmPort => {
         signal: req.signal ?? null,
       }), 'anthropic request failed');
       if (!res.ok) return res;
-      return parseJsonResponse(res.value, 200, (data) => {
+      return parseJsonResponse(res.value, (data) => {
         const content = data['content'];
         if (!Array.isArray(content)) throw new Error('anthropic: no content array');
         const text = content
@@ -63,7 +62,7 @@ export const createAnthropicProvider = (opts: ProviderOpts): LlmPort => {
 
 export const createOpenAiProvider = (opts: ProviderOpts): LlmPort => {
   const doFetch = opts.fetchImpl ?? defaultFetch;
-  const url = opts.baseUrl && opts.baseUrl !== ''
+  const url = opts.baseUrl
     ? `${opts.baseUrl.replace(/\/$/, '')}/chat/completions`
     : OPENAI_URL;
   return {
@@ -81,7 +80,7 @@ export const createOpenAiProvider = (opts: ProviderOpts): LlmPort => {
         signal: req.signal ?? null,
       }), 'openai request failed');
       if (!res.ok) return res;
-      return parseJsonResponse(res.value, 200, (data) => {
+      return parseJsonResponse(res.value, (data) => {
         const choices = data['choices'];
         if (!Array.isArray(choices) || choices.length === 0) throw new Error('openai: no choices');
         const first = choices[0] as { message?: { content?: string } };
@@ -98,10 +97,9 @@ export const createOpenAiProvider = (opts: ProviderOpts): LlmPort => {
  * （引擎的 429 退避靠消息里的 "429" 判定）。 */
 const parseJsonResponse = async <T>(
   res: Response,
-  expectStatus: number,
   extract: (data: Record<string, unknown>) => T,
 ): Promise<Result<T, Error>> => {
-  if (res.status !== expectStatus) {
+  if (res.status !== 200) {
     const body = await res.text().catch(() => '');
     return err(new Error(`llm http ${res.status}: ${body.slice(0, 300)}`));
   }

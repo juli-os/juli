@@ -25,7 +25,11 @@ gcloud run deploy juli \
 gcloud run domain-mappings create --service juli --domain juli.example.com
 ```
 
-(Or `gcloud run services replace service.yaml` for the declarative form.)
+(Or `gcloud run services replace service.yaml` for the declarative form —
+caveat: `service.yaml` does not carry the `JULI_PASSWORD` secret reference, and
+the engine refuses to listen on 0.0.0.0 without a password; attach the secret
+separately, e.g. `gcloud run services update juli --set-secrets
+JULI_PASSWORD=juli-password:latest --region asia-east1`.)
 
 ## Notes
 

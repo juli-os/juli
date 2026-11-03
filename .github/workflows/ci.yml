@@ -21,6 +21,11 @@ jobs:
       - run: npx vitest run
       - run: npm run web
       - run: npx tsc -p tsconfig.build.json
+      # deploy/aws 的 schema 校验前置（R1 P1#3 防回归）：SG description 含 `>`
+      # 这类字符白名单违规，apply 前的 validate 就该挡住，不能等到部署日。
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform -chdir=deploy/aws init -backend=false
+      - run: terraform -chdir=deploy/aws validate
 
   docker:
     runs-on: ubuntu-latest
@@ -43,8 +48,10 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          # PR 事件 ref_name=NN/merge 含 / 非法 Docker tag——PR 下出 pr-<N>，
+          # push（限 main 与 v* tag，ref_name 均不含 /）原样用 ref_name。
           tags: |
             ghcr.io/juli-os/juli:latest
-            ghcr.io/juli-os/juli:${{ github.ref_name }}
+            ghcr.io/juli-os/juli:${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.number) || github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

@@ -27,6 +27,7 @@ Outputs the ALB DNS name; point your domain's CNAME at it.
   replication needed.
 - SQLite on EFS is fine at one writer; do not raise `desired_count`.
 - `juli_password` goes through AWS Secrets Manager (created by this stack) and
-  is injected into the task definition; it never lands in tf state in plaintext
-  after first apply if you use the `ephemeral` pattern — for the MVP keep state
-  in a private bucket (`backend.tf` is left to you).
+  is injected into the task definition. As written, `main.tf` uses
+  `aws_secretsmanager_secret_version`, so the secret value does land in tf
+  state — keep state in a private bucket (`backend.tf` is left to you), or
+  switch to Terraform's `ephemeral` resources to keep it out of state.

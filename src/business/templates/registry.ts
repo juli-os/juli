@@ -1,6 +1,6 @@
-// 模板注册表：磁盘目录（~/.juli-service/pipelines/）是作者层事实源；目录为
-// 空时用内嵌默认集 seed。SetTemplates 原子换掉整个活跃集合——管理 UI 的
-// 保存/停用/删除全部经此收口。
+// 模板注册表：磁盘目录（~/.juli-service/pipelines/）是作者层事实源；目录不
+// 存在（首次运行）时用内嵌默认集 seed。SetTemplates 原子换掉整个活跃集合
+// ——管理 UI 的保存/停用/删除全部经此收口。
 
 import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -9,11 +9,13 @@ import { DEFAULT_TEMPLATE_FILES } from './defaultTemplates.ts';
 
 export const pipelinesDir = (dataDir: string): string => join(dataDir, 'pipelines');
 
-/** 模板文件名白名单（save/read 共用；字符类不含「/」，天然防路径穿越）。 */
-const TEMPLATE_FILE_NAME_RE = /^[\w.-]+\.ya?ml$/;
+/** 模板文件名白名单（save/read/delete 共用；字符类不含「/」，天然防路径穿越）。 */
+export const TEMPLATE_FILE_NAME_RE = /^[\w.-]+\.ya?ml$/;
 
 export interface RegistryLoadResult {
   readonly templates: Readonly<Record<string, Template>>;
+  /** 模板 key → 源文件名（GET /api/pipelines 用它回编辑器的取件名，文件名
+   * 不必等于 key.yaml——save 侧允许任意白名单名，这里就是唯一真相）。 */
   readonly files: Readonly<Record<string, string>>;
   readonly errors: readonly string[];
 }
@@ -42,8 +44,10 @@ export const loadTemplates = (dir: string): RegistryLoadResult => {
   for (const name of names) {
     try {
       const t = tryParseTemplate(readFileSync(join(dir, name), 'utf8'));
-      if (t) templates[t.key] = t;
-      else errors.push(`${name}: 解析失败（见 template 校验规则）`);
+      if (t) {
+        templates[t.key] = t;
+        files[t.key] = name;
+      } else errors.push(`${name}: 解析失败（见 template 校验规则）`);
     } catch (e) {
       errors.push(`${name}: ${String(e)}`);
     }
@@ -61,7 +65,10 @@ export const saveTemplateFile = (dir: string, fileName: string, yaml: string): s
   return null;
 };
 
+/** 文件名过与 save/read 同一道白名单：rename 是变更操作，校验不能只押在
+ * HTTP 路由层（守卫漏一处就是路径穿越）。 */
 export const deleteTemplateFile = (dir: string, fileName: string): void => {
+  if (!TEMPLATE_FILE_NAME_RE.test(fileName)) return;
   const p = join(dir, fileName);
   if (existsSync(p)) {
     // 停用区：可审计的软删除（对齐 Go 的 disabled/ 目录约定）。

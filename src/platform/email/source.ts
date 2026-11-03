@@ -56,6 +56,7 @@ export const createMailSource = (deps: SourceDeps): MailSource => {
   let processed = 0;
   let timer: NodeJS.Timeout | null = null;
   let stopped = true;
+  let polling = false; // 一轮在途不并发再入：同邮箱双拉=同一封双摄取竞态
   // 间隔放闭包变量而非常量——Settings 页热改时 tick 重排读到的就是新值。
   let intervalSec = deps.intervalSec && deps.intervalSec > 0 ? deps.intervalSec : 60;
   const now = (): Date => deps.clock?.now() ?? new Date();
@@ -93,12 +94,19 @@ export const createMailSource = (deps: SourceDeps): MailSource => {
           deps.log(`[inbox] 渠道拒绝发件人 ${e.from}: ${reason}`);
           continue;
         }
-        if (e.uid !== 0 && !(await deps.ledgerSeen(inboxDedupKey({
-          uid: e.uid, from: e.from, subject: e.subject, date: e.date,
-          messageId: e.messageId, body: '', attachments: [],
-        })))) {
-          newUids.push(e.uid);
+        if (e.uid === 0) continue; // 无 UID 的信封无法定点拉取
+        // 探针故障按未见过放行（errs-open，与链尾 withDedupe 同极性）：
+        // 不设防的异常会把整轮轮询炸掉——账本抖动即摄取停摆。
+        let seen = false;
+        try {
+          seen = await deps.ledgerSeen(inboxDedupKey({
+            uid: e.uid, from: e.from, subject: e.subject, date: e.date,
+            messageId: e.messageId, body: '', attachments: [],
+          }));
+        } catch (ex) {
+          deps.log(`[inbox] 阶段一去重探针失败（放行）: ${String(ex)}`);
         }
+        if (!seen) newUids.push(e.uid);
       }
       const bodies = await clt.fetchBodies(newUids);
       if (!bodies.ok) {
@@ -128,6 +136,17 @@ export const createMailSource = (deps: SourceDeps): MailSource => {
     }
   };
 
+  // 节拍入口：上一轮仍在途则跳过本拍（公共 pollOnce 不受此限，直调即真跑）。
+  const tickPoll = async (): Promise<void> => {
+    if (polling) return;
+    polling = true;
+    try {
+      await pollOnce();
+    } finally {
+      polling = false;
+    }
+  };
+
   return {
     name: 'email',
     pollOnce,
@@ -137,10 +156,10 @@ export const createMailSource = (deps: SourceDeps): MailSource => {
       stopped = false;
       deps.log(`[inbox] 轮询启动（interval=${intervalSec}s, host=${deps.params.host}）`);
       // 启动即轮询一次（积压清空），此后按节拍。
-      void pollOnce().catch((e) => deps.log(`[inbox] poll: ${String(e)}`));
+      void tickPoll().catch((e) => deps.log(`[inbox] poll: ${String(e)}`));
       const tick = (): void => {
         if (stopped) return;
-        void pollOnce().catch((e) => deps.log(`[inbox] poll: ${String(e)}`));
+        void tickPoll().catch((e) => deps.log(`[inbox] poll: ${String(e)}`));
         timer = setTimeout(tick, intervalSec * 1000);
       };
       timer = setTimeout(tick, intervalSec * 1000);

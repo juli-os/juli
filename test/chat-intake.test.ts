@@ -88,6 +88,22 @@ describe('chatIntake loop', () => {
     expect(intake.state()).toEqual({ phase: 'discuss', plan: null });
   });
 
+  // b44 R1 P1 回归：多段回复（text→tool_call→text 是编排器常态）。reply 必须是
+  // 全段累积（'\n\n' 连接，与客户端 mergeAssistant 分段口同形），未修时只剩末段、
+  // 客户端 heal 会把多段合并稿改写成只剩末段（DOM+transcript 双丢前段）。
+  it('多段回合：reply 累积全段而非只剩末段', async () => {
+    const { llm } = fakeLlm([
+      { content: '先查一下在办单子。', toolCalls: [{ id: 't1', name: 'list_tasks', arguments: '{}' }] },
+      { content: '查到了：3 单在办。' },
+    ]);
+    const intake = createChatIntake({ llm, model: 'fake', tools: [], startTask: fakeStartTask().fn });
+    const t = await intake.turn('现在有哪些单子在办？');
+    expect(t.reply).toBe('先查一下在办单子。\n\n查到了：3 单在办。');
+    const types = t.events.map((e) => e.type);
+    expect(types).toContain('tool_call');
+    expect(types.filter((x) => x === 'text')).toHaveLength(2);
+  });
+
   it('收敛回合暂存：末尾计划块 → chat:plan + chat:phase(proposed)，reply 剥掉块', async () => {
     const { llm } = fakeLlm([{ content: `这一单要做的就是产线介绍。${PLAN_BLOCK}` }]);
     const intake = createChatIntake({ llm, model: 'fake', tools: [], startTask: fakeStartTask().fn });
@@ -115,6 +131,35 @@ describe('chatIntake loop', () => {
     expect(intake.state().phase).toBe('discuss');
     expect(intake.state().plan).toBeNull();
     expect(t.events.map((e) => e.type)).toContain('chat:phase');
+  });
+
+  // 2026-10-27 手机「JSON 堆 + 卡不弹」事故回归（loop 级）：模型漏写闭合围栏
+  // 时卡照常暂存；且流式 text 事件以净稿出闸（围栏+JSON 不进 /ws/chat ——
+  // 旧 iOS 客户端逐 chunk 剥不掉跨段/半开围栏，原文会直接糊屏）。
+  it('半开围栏提议：卡照常暂存，流式 text 净稿无围栏（2026-10-27 事故回归）', async () => {
+    const { llm } = fakeLlm([{ content: '复述这一单。\n```intake-plan\n{"title":"t","summary":"s","brief":"b"}' }]);
+    const intake = createChatIntake({ llm, model: 'fake', tools: [], startTask: fakeStartTask().fn });
+    const streamed: string[] = [];
+    const t = await intake.turn('开这一单', {
+      onEvent: (e) => { if (e.type === 'text') streamed.push(e.content); },
+    });
+    expect(intake.state().phase).toBe('proposed');
+    expect(intake.state().plan?.title).toBe('t');
+    expect(t.events.map((e) => e.type)).toContain('chat:plan');
+    expect(t.reply).not.toContain('intake-plan');
+    expect(streamed.join('')).not.toContain('intake-plan'); // 流式净稿
+    expect(streamed.join('')).toContain('复述这一单'); // 正文原样
+  });
+  it('流式净稿：闭合计划块的 text 事件同样剥净再出闸', async () => {
+    const { llm } = fakeLlm([{ content: `这一单要做的就是产线介绍。${PLAN_BLOCK}` }]);
+    const intake = createChatIntake({ llm, model: 'fake', tools: [], startTask: fakeStartTask().fn });
+    const streamed: string[] = [];
+    const t = await intake.turn('客户是 Casey，周四上门', {
+      onEvent: (e) => { if (e.type === 'text') streamed.push(e.content); },
+    });
+    expect(t.reply).toContain('产线介绍');
+    expect(streamed.join('')).not.toContain('intake-plan');
+    expect(streamed.join('')).toContain('产线介绍');
   });
 
   it('confirm = 开单正门：startTask(title, brief) 恰一次，dispatched/system 事件带 runId', async () => {
@@ -333,6 +378,87 @@ describe('extractIntakePlanBlock / stripIntakePlanBlock', () => {
   });
   it('strip 只去块，保留正文', () => {
     expect(stripIntakePlanBlock(`前文。${PLAN_BLOCK}后文`)).toBe('前文。后文');
+  });
+
+  // 2026-10-27 手机「JSON 堆 + 卡不弹」事故回归：glm-5.3-flash 多次漏写闭合
+  // 围栏（JSON 完整、结尾断在 `"}`）——旧提取只认闭合围栏 → 卡永不弹；旧
+  // 在场判定同漏 → 「JSON 炸了」告警也被静默吞。
+  it('半开围栏：JSON 完整 → 照常提取（闭合围栏缺失不再吞卡）', () => {
+    const p = extractIntakePlanBlock('复述这一单。\n```intake-plan\n{"title":"t","summary":"s","brief":"b"}');
+    expect(p).not.toBeNull();
+    expect(p?.title).toBe('t');
+    expect(p?.brief).toBe('b');
+  });
+  it('半开围栏：JSON 尾部手抖 → firstBalancedObject 兜住', () => {
+    const p = extractIntakePlanBlock('```intake-plan\n{"title":"t","summary":"s","brief":"b"};\n后缀废话');
+    expect(p?.title).toBe('t');
+  });
+  it('半开围栏：JSON 截断 → 提取 null 但在场=true（告警路径覆盖半开）', () => {
+    expect(extractIntakePlanBlock('```intake-plan\n{"title":"t","brief":"b')).toBeNull();
+    expect(hasIntakePlanBlock('```intake-plan\n{"title":"t"')).toBe(true);
+  });
+  it('在场判定词边界：```plaintext / ```plantuml 不算计划块', () => {
+    expect(hasIntakePlanBlock('```plaintext\nhello\n```')).toBe(false);
+    expect(hasIntakePlanBlock('```plantuml\nx\n```')).toBe(false);
+    expect(hasIntakePlanBlock('```intake-plan\n{}')).toBe(true);
+  });
+
+  // b44 R2 NEW-γ：strip 与 webapp 客户端 stripPlanFences（chat-live.ts）同口径
+  // ——全局、双名（intake-plan|plan）、半开围栏也剥。此前服务端只剥第一处、
+  // 只认 intake-plan：LLM 输出 ```plan 围栏或双块时 reply 残留围栏 ≠ 客户端
+  // 剥净稿，heal 把围栏 JSON 原文写回显示面。对照函数=客户端实现的逐字复刻。
+  it('strip 与客户端 stripPlanFences 同口径：```plan 双名/全局多块/半开围栏也剥（b44 R2 NEW-γ）', () => {
+    const clientStrip = (text: string): string => {
+      // b45 R1-FX P2：围栏名加词边界（与三处源正则同步，漏改对照即红）
+      let out = text.replace(/```(?:intake-plan|plan)(?![a-z0-9-])\s*[\s\S]*?```/g, '');
+      out = out.replace(/```(?:intake-plan|plan)(?![a-z0-9-])\s*[\s\S]*$/g, ''); // 半开（流式中）
+      return out.trim();
+    };
+    const shapes = [
+      '看一下\n```plan\n{"title":"x"}\n```\n好的', // ```plan 双名
+      `前文。${PLAN_BLOCK}中段${PLAN_BLOCK}后文`, // 双 intake-plan（全局多块）
+      '回复到一半\n```intake-plan\n{"title":"x"', // 半开围栏
+      `开场${PLAN_BLOCK}\n\`\`\`plan\n{"brief":"y"}\n\`\`\`\n收尾`, // 混合双名双块
+    ];
+    for (const s of shapes) {
+      expect(stripIntakePlanBlock(s), `形态不一致：${s.slice(0, 30)}…`).toBe(clientStrip(s));
+    }
+    // 行为抽查：围栏剥净、正文原样保留（前后正文间的换行不动、首尾 trim——
+    // 口径与客户端逐字节一致，上方对照断言已证）。
+    expect(stripIntakePlanBlock('看一下\n```plan\n{"title":"x"}\n```\n好的')).toBe('看一下\n\n好的');
+    expect(stripIntakePlanBlock('回复到一半\n```intake-plan\n{"title":"x"')).toBe('回复到一半');
+  });
+
+  // b45 R1-FX P2：围栏名加词边界 (?![a-z0-9-])——```plaintext/```plantuml 等
+  // 以 plan 为前缀的普通语言块不再被误吃（此前 FULL 从 ```plan 起配到最近 ```、
+  // OPEN 尾块把剩余全文剥到串尾：代码内容被吞）；真计划围栏（双名×完整/半开）
+  // 照常剥，行为零回退。不剥形态同样过 clientStrip 对照（口径一致性含「不动」）。
+  it('strip 词边界：```plaintext / ```plantuml 不误吃，```plan / ```intake-plan 照常剥（b45 R1-FX P2）', () => {
+    const clientStrip = (text: string): string => {
+      let out = text.replace(/```(?:intake-plan|plan)(?![a-z0-9-])\s*[\s\S]*?```/g, '');
+      out = out.replace(/```(?:intake-plan|plan)(?![a-z0-9-])\s*[\s\S]*$/g, '');
+      return out.trim();
+    };
+    // 前缀撞名：完整块与半开尾块两形态都原样保留（含块内正文与围栏本身）
+    expect(stripIntakePlanBlock('a\n```plaintext\nhi\n```\nb')).toBe('a\n```plaintext\nhi\n```\nb');
+    expect(stripIntakePlanBlock('说明如下\n```plaintext\nhello')).toBe('说明如下\n```plaintext\nhello');
+    expect(stripIntakePlanBlock('a\n```plantuml\n@startuml')).toBe('a\n```plantuml\n@startuml');
+    expect(stripIntakePlanBlock('流程\n```plantuml\n@startuml\nA->B\n```*\n完')).toBe(
+      '流程\n```plantuml\n@startuml\nA->B\n```*\n完',
+    );
+    // 真计划围栏照常剥（双名 × 完整/半开）
+    expect(stripIntakePlanBlock('a\n```plan\n{"title":"x"}\n```\nb')).toBe('a\n\nb');
+    expect(stripIntakePlanBlock('a\n```intake-plan\n{"title":"x"\n')).toBe('a');
+    // 对照（不剥与剥的形态同口径）
+    const shapes = [
+      'a\n```plaintext\nhi\n```\nb',
+      'a\n```plantuml\n@startuml',
+      'a\n```plan\n{"title":"x"}\n```\nb',
+      'a\n```intake-plan\n{"title":"x"',
+    ];
+    for (const s of shapes) {
+      expect(stripIntakePlanBlock(s), `形态不一致：${s.slice(0, 30)}…`).toBe(clientStrip(s));
+    }
   });
 });
 

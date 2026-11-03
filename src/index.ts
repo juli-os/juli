@@ -60,7 +60,10 @@ if (tlsEnabled) {
 const shutdown = (): void => {
   consoleLogger.info('收到退出信号，停机中…');
   rt.stop();
-  for (const s of servers) s.close(() => process.exit(0));
+  // 等所有 server 收完再退——TLS 模式有两台，任一台 close 回调里直接 exit
+  // 会把另一台的在途连接（keep-alive/SSE）拦腰掐断。
+  void Promise.all(servers.map((s) => new Promise<void>((resolve) => s.close(() => resolve()))))
+    .then(() => process.exit(0));
   setTimeout(() => process.exit(0), 2000).unref();
 };
 process.on('SIGINT', shutdown);

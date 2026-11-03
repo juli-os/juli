@@ -14,9 +14,11 @@ export interface SmtpConfig {
   readonly from: string;
 }
 
+/** host[:port] → 裸 host（loopback 判定用）：单冒号=端口分隔剥掉；
+ *  IPv6 字面量多冒号整体保留，[IPv6]:port 去括号取括号内。 */
 const hostPart = (host: string): string => {
-  const h = host.includes(':') && !host.startsWith('[') ? host : host.split(':')[0] ?? host;
-  return h;
+  if (host.startsWith('[')) return host.slice(1, host.indexOf(']')) || host;
+  return (host.match(/:/g)?.length ?? 0) === 1 ? host.split(':')[0] ?? host : host;
 };
 
 export const createSmtpMailer = (cfg: SmtpConfig): MailerPort | null => {

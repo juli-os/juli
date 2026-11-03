@@ -291,7 +291,7 @@ export const lifecycleView = async (el: HTMLElement): Promise<(() => void) | voi
         <div class="wf-head">
           <h2>${esc(w.title)}</h2> ${statusChip(w.status)}${heldIds.has(w.id) ? ` <span class="chip warn" title="工作窗 hold：高价时段（${esc(holdUntil)}）暂停派发，窗口结束自动放行">⏸ HOLD${holdUntil ? ' · ' + esc(holdUntil) : ''}</span>` : ''}
           <div class="wf-actions">
-            ${w.meta?.['auto_approve'] === true ? `<span class="chip soft" title="本单免批：非发送闸门由 juli-auto 自动批准（问询与外发邮件仍等人）；点右侧「需批」恢复人工">⚡ 自动批准中</span>` : ''}
+            ${w.meta?.['auto_approve'] === true ? `<span class="chip soft" title="本单免批：非发送闸门由 juli-auto 自动批准（问询与外发邮件仍等人；不受全局影子模式影响——人在这单上的指令即批准）；点右侧「需批」恢复人工">⚡ 自动批准中</span>` : ''}
             ${(w.status === 'running' || w.status === 'queued' || w.status === 'waiting_human')
               ? w.meta?.['auto_approve'] === true
                 ? `<button class="mini ghost" data-autoap-off="${w.id}" title="恢复人工批准">需批</button>`

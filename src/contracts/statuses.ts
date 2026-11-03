@@ -7,7 +7,7 @@
 // 名单以真实数据为准（2026-09-21 生产库只读取证）：
 //   workflows:  cancelled 89 / completed 45 / failed 4
 //   workflow_steps DISTINCT: pending / completed / failed / cancelled
-// 加上引擎写入路径声明的全集（types.ts 的 WorkflowStatus / StepStatus，其中
+// 加上引擎写入路径声明的全集（@juli-os/ledger 的 WorkflowStatus / StepStatus，其中
 // queued/running/rejected、步态 waiting_human/skipped 当前库中为 0 行，但
 // 是引擎真实会写的状态——不是发明）。名单外的未知状态：视图显示原文字符串
 // 并归入「其他」分组，绝不隐藏。
@@ -24,7 +24,7 @@ export interface StatusDef {
   readonly label: string;
   /** 语义分组；名单外一律归「其他」（STATUS_GROUP_OTHER）。 */
   readonly group: StatusGroup;
-  /** 终态 = 进入即收口（对齐 types.ts TERMINAL_WORKFLOW_STATUSES）。 */
+  /** 终态 = 进入即收口（对齐 @juli-os/ledger 的 TERMINAL_WORKFLOW_STATUSES）。 */
   readonly terminal: boolean;
 }
 

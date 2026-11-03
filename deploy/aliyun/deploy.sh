@@ -41,12 +41,13 @@ EOF
   exit 0
 fi
 # The remote script fail-closes BEFORE removing the running container if the
-# host password file is missing or empty (never recreate with no password).
+# host password file is missing, empty, has no JULI_PASSWORD=<value> line, or
+# is not mode 600 (never recreate with a broken/leaky password file).
 aliyun ecs SendCommand --region "$REGION" \
   --InstanceId.1 "$ECS_ID" \
   --Type RunShellScript \
   --Name juli-update \
   --Timeout 300 \
-  --CommandContent "$(printf '#!/bin/sh\nset -e\ntest -s /data/juli_password || { echo "ERROR: /data/juli_password missing or empty; write it once on the host (see deploy/aliyun/README.md)"; exit 1; }\ndocker rm -f juli 2>/dev/null || true\ndocker pull %s\ndocker run -d --name juli --restart unless-stopped -p 7170:7070 -v /data:/data --env-file /data/juli_password -e LANG=C.UTF-8 %s' "$REMOTE_REF" "$REMOTE_REF" | base64)" \
+  --CommandContent "$(printf '#!/bin/sh\nset -e\ntest -s /data/juli_password || { echo "ERROR: /data/juli_password missing or empty; write it once on the host (see deploy/aliyun/README.md)"; exit 1; }\ngrep -q "^JULI_PASSWORD=.." /data/juli_password || { echo "ERROR: /data/juli_password has no JULI_PASSWORD=<value> line (bad format); fix it on the host (see deploy/aliyun/README.md)"; exit 1; }\n[ "$(stat -c %%a /data/juli_password)" = "600" ] || { echo "ERROR: /data/juli_password is not mode 600 (perms too loose); chmod 600 it on the host"; exit 1; }\ndocker rm -f juli 2>/dev/null || true\ndocker pull %s\ndocker run -d --name juli --restart unless-stopped -p 7170:7070 -v /data:/data --env-file /data/juli_password -e LANG=C.UTF-8 %s' "$REMOTE_REF" "$REMOTE_REF" | base64)" \
   --jq .InvokeId
 echo "Sent update command to $ECS_ID (check: aliyun ecs DescribeInvocationResults --InvokeId <id>)"

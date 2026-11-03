@@ -103,7 +103,7 @@ export const registerLifecycleRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
     interface OrderAgg {
       id: string; title: string; kind: string; status: string; createdAt: string;
       prompts: number; totalCny: number; unpriced: boolean;
-      byModel: Map<string, { label: string; count: number; totalCny: number }>;
+      byModel: Map<string, { label: string; totalCny: number }>;
     }
     const inRange = rt.store.listWorkflows(5000).filter((w) => since === '' || (w.createdAt ?? '') >= since);
     const orders: OrderAgg[] = [];
@@ -124,11 +124,7 @@ export const registerLifecycleRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
       for (const m of uc.byModel) {
         agg.prompts += m.calls;
         if (m.costCny.total <= 0) continue; // 免费档/无价目不占分桶堆叠（无价目另列）
-        agg.byModel.set(m.model, {
-          label: m.label,
-          count: (agg.byModel.get(m.model)?.count ?? 0) + 1, // 单内同模型一行合并（priceUsage 已按模型聚合）
-          totalCny: (agg.byModel.get(m.model)?.totalCny ?? 0) + m.costCny.total,
-        });
+        agg.byModel.set(m.model, { label: m.label, totalCny: m.costCny.total }); // priceUsage 已按模型 Map 聚合，单内模型唯一
       }
       orders.push(agg);
     }
@@ -197,7 +193,10 @@ export const registerLifecycleRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
   // 引擎抛错 → 400 透传中文消息。五段 try/catch 样板收口成一处。
   // bodyStr 已升 http/helpers.ts 共享（R8 批3）。
 
-  const engineAction = (fn: (id: string, body: JsonRecord) => Promise<JsonRecord | void>) =>
+  // 返回体 object：领域接口对象（Step/Workflow，无索引签名）也可直返——
+  // 此前被 `as unknown as JsonRecord` 双重断言硬塞（R1 P2#7）。不用 unknown：
+  // hono c.json 约束 T extends JSONValue | {}，object 是满足约束的最小放宽。
+  const engineAction = (fn: (id: string, body: JsonRecord) => Promise<object | void>) =>
     async (c: Context): Promise<Response> => {
       try {
         const out = await fn(c.req.param('id') ?? '', await readBody(c));
@@ -305,7 +304,7 @@ export const registerLifecycleRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
     const st = await rt.engine.appendNode(id, {
       kind: kind as StepKind, title, input,
     });
-    return { step: st } as unknown as JsonRecord;
+    return { step: st };
   }));
 
   // 免模板起单（动态模型标准入口）：POST /api/lifecycle/tasks {title, input}
@@ -317,7 +316,7 @@ export const registerLifecycleRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
     // 时刻（engine steps 三无腿，jev 对实时忙闲判）——进件快照过期就此
     // 收口；startTask「入口到 createWorkflow 无 await」不变量随之恢复。
     const w = await rt.engine.startTask(bodyStr(body, 'title'), input);
-    return { workflow: w } as unknown as JsonRecord;
+    return { workflow: w };
   }));
 
   app.post('/api/lifecycle/workflows/:id/settle', engineAction(async (id, body) => {

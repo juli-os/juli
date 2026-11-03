@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import type { Hono } from 'hono';
 import {
   configFilePath, maskConfig, mergeConfigPatch, resolveAiConfig, resolveSecret, saveConfigFile,
+  SECRET_SENTINEL,
 } from '../../platform/config/schema.ts';
 import { createAnthropicChat, createOpenAiChat } from '../../platform/llm/chat.ts';
 import { parseJudgmentConfig } from '@juli-os/routing';
@@ -25,17 +26,18 @@ const readJudgmentRaw = (p: string): Record<string, unknown> | null => {
   }
 };
 
-/** judgment 脱敏：只掩 cloud.token（tokenEnv 是变量名不是秘密）。深拷贝不改原对象。 */
+/** judgment 脱敏：只掩 cloud.token（tokenEnv 是变量名不是秘密）。深拷贝不改原对象。
+ * 哨兵与 config 脱敏同一常量（schema.ts SECRET_SENTINEL）——PUT 侧
+ * mergeConfigPatch 靠字符串相等剔哨兵，两处定义漂移即掩码值透传落盘。 */
 const maskJudgment = (raw: Record<string, unknown>): Record<string, unknown> => {
   const out: Record<string, unknown> = structuredClone(raw);
   const cloud = out['cloud'];
   if (cloud !== null && typeof cloud === 'object' && !Array.isArray(cloud)) {
     const c = cloud as Record<string, unknown>;
-    if (typeof c['token'] === 'string' && c['token'] !== '') c['token'] = SECRET_SENTINEL_J;
+    if (typeof c['token'] === 'string' && c['token'] !== '') c['token'] = SECRET_SENTINEL;
   }
   return out;
 };
-const SECRET_SENTINEL_J = '__MASKED__';
 
 export const registerSettingsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
   // ---- Settings：全量配置脱敏读 + 写回 config.json ------------------------------
@@ -49,7 +51,7 @@ export const registerSettingsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => 
       // 展示路径与下方 PUT 落盘定位同款双认——展示的必须是实写的那个文件。
       file: configFilePath(rt.home, process.env['JULI_DATA_DIR'] || process.env['MAKRO_DATA_DIR']),
       config: view,
-      hot_keys: ['email.poll_interval_sec', 'ledger_retention_days', 'notify.to', 'notify.cc', 'auto_approve'],
+      hot_keys: ['email.poll_interval_sec', 'ledger_retention_days', 'notify.to', 'notify.cc', 'auto_approve', 'queue.concurrency'],
     });
   });
 

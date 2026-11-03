@@ -88,18 +88,18 @@ export const makeJournal = (o: {
 
   const appendStepToCaseFile = (w: Workflow, st: Step): void => {
     if (Object.keys(st.output).length === 0) return;
-    let cf = store.loadCaseFile(w.id);
+    // 只有 triage/draft 有案卷投影——其余 kind（llm/share 等）不回存：原样
+    // save 案卷内容不变，只会白白 bump workflow.updated_at。
     if (st.kind === 'triage') {
-      cf = appendSection(cf, 'extract', {
+      store.saveCaseFile(w.id, appendSection(store.loadCaseFile(w.id), 'extract', {
         category: st.output['category'] ?? null,
         summary: st.output['summary'] ?? null,
         session: st.output['session'] ?? null,
         needs_reply: st.output['needs_reply'] ?? null,
-      }, now());
+      }, now()));
     } else if (st.kind === 'draft') {
-      cf = appendSection(cf, 'draft', { draft: st.output['draft'] ?? null }, now());
+      store.saveCaseFile(w.id, appendSection(store.loadCaseFile(w.id), 'draft', { draft: st.output['draft'] ?? null }, now()));
     }
-    store.saveCaseFile(w.id, cf);
   };
 
   // ---- LLM 补全（180s 超时 + 429 退避重试 ×2）-----------------------------------

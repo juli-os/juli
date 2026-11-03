@@ -1,6 +1,6 @@
 // 进件：邮件（onEmailReceived→startEmailWorkflow 全链：自回环守卫/授权/
 // 线程三级建档/Party 指针/工件物证/绑定路由/route_decision 留痕/首节点
-// 任务卡）与泛化渠道（onInbound：按渠道路由模板的动态进件）。
+// 任务卡）与泛化渠道（onInbound：无模板路由的动态进件，事件直达 nodes）。
 
 import { type Clock } from '@juli-os/artifacts';
 import { truncate } from '../../platform/shared/json.ts';
@@ -20,7 +20,7 @@ import type { Queue } from './queue.ts';
 
 export interface Intake {
   onEmailReceived(m: EmailMessage): Promise<void>;
-  /** 泛化入站：按渠道名路由到 trigger 匹配的模板（email 渠道走专用路径）。 */
+  /** 泛化入站：非 email 渠道动态建单（无模板路由，事件直达 nodes；email 渠道转专用路径）。 */
   onInbound(m: InboundMessage): Promise<void>;
   startEmailWorkflow(m: EmailMessage): Promise<Workflow>;
 }
@@ -54,7 +54,8 @@ export const makeIntake = (o: { readonly deps: EngineDeps;
       });
       return;
     }
-    // 泛化渠道：按 trigger 选模板（无匹配模板 = 渠道未启用，记日志忽略）。
+    // 泛化渠道进件闸：dedup 幂等 + 发件人 authz（模板路由已于 0913 动态
+    // 模型裁决废除——无 trigger 匹配一说，事件直达 nodes，见下方注释）。
     if (store.hasActiveDedup(m.dedupKey)) return;
     const reason = checkAuthz(o.getAuthz(), m.from);
     if (reason !== null) {

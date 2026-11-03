@@ -136,8 +136,8 @@ export const makeInterpreter = (o: {
       }
       return;
     }
-    const w = store.getWorkflow(workflowId);
-    if (!w) return;
+    // w0 即此处的活单快照：自取读后本路径无 await（!st 分支全部 return），
+    // store 又是同步 sqlite——重读只会得到同一对象。
     // 重入守卫：已被认领的步（LLM 在飞、agent 已派发、SMTP 发送中）不许重复
     // 执行——双击的 Approve 或对账器与 hook 的竞态否则会重复派发。等待人工
     // 的闸门豁免：重入即重新推送，是设计行为。
@@ -158,7 +158,10 @@ export const makeInterpreter = (o: {
         o.journal.stepEvent(st, 'step_failed', { error: msg });
         return;
       }
-      const truthy = rendered.trim() !== '' && rendered.toLowerCase() !== 'false' && rendered !== '0';
+      // 归一后再比：三个假值形态（空/false/0）统一吃 trim+小写，避免
+      // ' False '/' 0 ' 这类带空白变体被判真（求值源是任意 JSON 值的字符串化）。
+      const norm = rendered.trim().toLowerCase();
+      const truthy = norm !== '' && norm !== 'false' && norm !== '0';
       if (!truthy) {
         store.setStepOutput(st.id, { skipped: true, when: whenExpr, reason: `条件为假（${rendered || '空'}）` });
         store.setStepStatus(st.id, 'skipped');
@@ -174,23 +177,18 @@ export const makeInterpreter = (o: {
       log.error(`unknown step kind "${st.kind}" (${st.id})`);
       return;
     }
-    await handler(makeCtx(w, st));
+    await handler(makeCtx(w0, st));
   };
 
   const makeCtx = (w: Workflow, st: Step): StepCtx => ({
     workflow: w,
     step: st,
     store,
-    llm: deps.llm,
     artifacts: deps.artifacts,
     externalLink: deps.externalLink,
-    model: deps.model,
     clock: o.clock,
-    log: (m) => log.info(m),
     completeLlm: o.journal.completeLlm,
-    latestLLMResponse: o.journal.latestLLMResponse,
     stepEvent: o.journal.stepEvent,
-    advanceLocked,
     appendStepToCaseFile: o.journal.appendStepToCaseFile,
   });
 
@@ -202,8 +200,8 @@ export const makeInterpreter = (o: {
     verify: o.steps.runAgentStep,
     draft: (ctx) => runWrappedLlm(ctx, () => runDraft(ctx), true),
     send: o.steps.runSendStep,
-    llm: (ctx) => runWrappedLlm(ctx, () => runGenericLlm(ctx), false),
-    share: (ctx) => runWrappedLlm(ctx, () => runShare(ctx), false),
+    llm: (ctx) => runWrappedLlm(ctx, () => runGenericLlm(ctx), false), // 例外：载荷 JSON 键是数据、可合法含 error，不清
+    share: (ctx) => runWrappedLlm(ctx, () => runShare(ctx), true),
   });
 
   /** LLM 类步的统一结算壳：先认领（running）再长调用，崩在半路留下的是

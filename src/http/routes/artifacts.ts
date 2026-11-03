@@ -7,7 +7,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
 import type { Runtime } from '../../runtime.ts';
-import { bodyStr, readBody, makeShareAuth, type AppEnv } from '../helpers.ts';
+import { bodyStr, readBody, makeShareAuth, inlineDisposition, type AppEnv } from '../helpers.ts';
 
 export const registerArtifactsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
   const { shareTtlSec: SHARE_TTL_SEC, shareSign } = makeShareAuth(rt);
@@ -190,7 +190,15 @@ export const registerArtifactsRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
       console.error(`[share] OSS 外链失败，回退本地签名链: ${u.error.message}`);
     }
     const exp = Math.floor(Date.now() / 1000) + SHARE_TTL_SEC;
-    const sig = shareSign(id, exp);
+    let sig: string;
+    try {
+      sig = shareSign(id, exp);
+    } catch (e) {
+      // PB-only（有 authenticator 无本地密码）：验签侧恒拒，签出的链接收件人
+      // 必 401——签发侧对称拒绝（helpers pbOnly 闸），给人话错误不留死链
+      // （b46 R1-FX P2#2）。
+      return c.json({ error: e instanceof Error ? e.message : '分享链接签发失败' }, 400);
+    }
     const origin = new URL(c.req.url).origin; // 绝对 origin；反代场景由 X-Forwarded 头决定时可再扩展
     const url = `${origin}/api/artifacts/${encodeURIComponent(id)}/content?share=${exp}:${sig}`;
     return c.json({ url, expires_in_sec: SHARE_TTL_SEC });
@@ -253,12 +261,9 @@ export const registerArtifactsRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
     const contentType = mime.startsWith('text/') || mime === 'application/json'
       ? `${mime}; charset=utf-8`
       : mime;
-    // 文件名进 disposition（ascii 兜底 + UTF-8 扩展）：裸 inline 时浏览器按
-    // URL 存文件（"content"、无扩展名），下载后本地无法双击打开。
-    const asciiName = String(row['name'] ?? 'artifact').replace(/[^\x20-\x7e]/g, '_').replace(/"/g, '');
     return c.body(new Uint8Array(bytes.value), 200, {
       'content-type': contentType,
-      'content-disposition': `inline; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(String(row['name'] ?? 'artifact'))}`,
+      'content-disposition': inlineDisposition(String(row['name'] ?? 'artifact')),
     });
   });
 };

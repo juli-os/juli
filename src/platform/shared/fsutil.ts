@@ -1,12 +1,10 @@
-// 文件读取的小接缝：注入即 mock（APNs key、配置文件、模板目录的测试面）。
+// 文件读取的小接缝：本件只出生产默认——读失败（缺省/权限）归 null，语义由
+// 调用方定夺。mock 注入点在消费方的 deps.readFile（APNs key、配置文件的
+// 测试面），不在此处。
 
 import { readFileSync } from 'node:fs';
 
-interface ReadFile {
-  (path: string): string | null;
-}
-
-export const createReadFile = (): ReadFile => (path: string): string | null => {
+export const readFileSafe = (path: string): string | null => {
   try {
     return readFileSync(path, 'utf8');
   } catch {

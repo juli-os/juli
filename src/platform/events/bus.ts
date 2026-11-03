@@ -12,7 +12,6 @@ export type BusHandler = (e: BusEvent) => void;
 export interface Bus {
   subscribe(topic: string, h: BusHandler): () => void;
   emit(topic: string, payload: unknown): void;
-  subscriberCount(topic: string): number;
 }
 
 export interface Logger {
@@ -46,7 +45,6 @@ export const createBus = (log: Logger = consoleLogger): Bus => {
         }
       }
     },
-    subscriberCount: (topic) => handlers.get(topic)?.size ?? 0,
   };
 };
 

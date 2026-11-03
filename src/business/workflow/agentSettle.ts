@@ -62,6 +62,52 @@ export const makeAgentSettle = (o: {
     await o.late.settle(w.id, 'auto-send');
   };
 
+  /** 有机回合的交付物收编（wf_f9abb08092cc 根因①，2026-11-03）：闸门批准回流
+   * 产生的回合没有在飞 agent 步（completeAgentStep 只挂在 agent 步结算上），
+   * agent 写进 case-inbox 的方案/工件无人收编——闸门卡空、账本工件为空。本函数
+   * 在有机回合收尾补扫：waiting_human 闸门在位才扫（工件落闸门名下，与
+   * reconcile settleOneFeedbackRun 补扫同型），deliverables/envelope/manifest
+   * merge 进闸门 input（申报键优先，同 openGate 携带侧合并口径）。幂等：sweep
+   * 收编即消费文件（unlink），重入为 0 件 no-op；无等待闸门不扫（不把产出
+   * 错记到无人认领的步上，收口兜底 finalSweepInbox 另有兜底）。 */
+  const sweepWaitingGate = async (session: string): Promise<void> => {
+    const artifacts = deps.artifacts;
+    if (!artifacts || !deps.caseInboxDir) return;
+    const w = claimedContainerFor(session);
+    if (w === null) return;
+    const gate = store.stepsForWorkflow(w.id)
+      .find((s) => s.kind === 'gate' && s.status === 'waiting_human');
+    if (gate === undefined) return;
+    await o.withLock(w.id, async () => {
+      // 锁内重读：等锁期间闸门可能已被 approve/rework 结算掉。
+      const cur = store.getStep(gate.id);
+      if (cur === null || cur.status !== 'waiting_human') return;
+      const res = await artifacts.sweepCaseInbox(w.id, gate.id).catch((e: unknown) => {
+        const msg = e instanceof Error ? e.message : String(e);
+        log.error(`case-inbox organic sweep failed (workflow ${w.id} gate ${gate.id}): ${msg}`);
+        o.journal.stepEvent(cur, 'sweep_failed', { error: msg });
+        return null;
+      });
+      if (res === null || res.count === 0) return;
+      log.info(`case-inbox: 有机回合收编 ${res.count} 件 → 等待闸门 ${gate.title}（${w.id}）`);
+      const prev = Array.isArray(cur.input['deliverables']) ? cur.input['deliverables'] as JsonValue[] : [];
+      const seen = new Set(prev.map((x) => (isDeliverableRef(x) ? x.id : '')));
+      const merged = [...prev, ...res.entries.filter((x) => !seen.has(x.id))] as unknown as JsonValue[];
+      const patch: Record<string, JsonValue> = { deliverables: merged };
+      if (res.has_manifest) patch['manifest'] = true;
+      const declared = cur.input['envelope'];
+      const declaredIsRecord = declared !== null && typeof declared === 'object' && !Array.isArray(declared);
+      if (res.envelope !== null) {
+        patch['envelope'] = declaredIsRecord
+          ? { ...(res.envelope as unknown as JsonRecord), ...(declared as JsonRecord) }
+          : res.envelope as unknown as JsonValue;
+      }
+      if (res.warnings.length > 0) patch['contract_warnings'] = res.warnings;
+      store.setStepInput(gate.id, patch);
+      o.journal.stepEvent(cur, 'gate_deliverables_swept', { count: res.count });
+    });
+  };
+
   const onAgentStopped = async (session: string, status: string, finalMessage?: string): Promise<void> => {
     const st = store.runningAgentStepForSession(session);
     if (!st) {
@@ -69,6 +115,10 @@ export const makeAgentSettle = (o: {
       if (typeof finalMessage === 'string' && finalMessage.trim() !== '') {
         journalSessionTurn(session, 'turn_done', finalMessage);
       }
+      // 回合产出收编（wf_f9abb08092cc 根因①）：闸门回流唤醒的回合没有在飞
+      // agent 步，交付物此前永远停在 case-inbox（fix-plan 未入册事故）。有
+      // 等待闸门即补扫并把结果 merge 进闸门 input——附件卡立即有料。
+      await sweepWaitingGate(session);
       await autoSettleAfterSend(session);
       // apply 链收口：闸门已批、执行回合收工——工件/回挂证据齐则落账。
       await o.late.autoSettleFeedbackRuns().catch(() => undefined);

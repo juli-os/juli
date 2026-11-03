@@ -26,6 +26,10 @@ const frontmostDefault = async (): Promise<boolean> => {
   return out.includes('juli') || out.includes('terminal');
 };
 
+/** AppleScript 字符串转义：反斜杠必须先于引号，否则正文里现成的 `\"` 会被
+ *  补丁拼成 `\\"`（转义反斜杠+裸引号），后半句整段漏出字符串字面量。 */
+const osaStr = (s: string): string => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+
 export const createDesktopNotifier = (deps: NotifyDeps = {}): ((title: string, body: string) => Promise<void>) => {
   const run = deps.run ?? runDefault;
   const frontmost = deps.frontmost ?? frontmostDefault;
@@ -39,7 +43,7 @@ export const createDesktopNotifier = (deps: NotifyDeps = {}): ((title: string, b
       try {
         await run(['terminal-notifier', '-title', title, '-message', body, '-sound', 'default']);
       } catch {
-        await run(['osascript', '-e', `display notification "${body.replace(/"/g, '\\"')}" with title "${title.replace(/"/g, '\\"')}"`]);
+        await run(['osascript', '-e', `display notification "${osaStr(body)}" with title "${osaStr(title)}"`]);
       }
     } catch (e) {
       log(`[notify] ${String(e).slice(0, 120)}`);

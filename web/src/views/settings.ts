@@ -184,7 +184,6 @@ const SECTIONS: readonly SectionSpec[] = [
       { path: 'pb_url', label: 'PocketBase 认证地址', type: 'string' },
       { path: 'pb_collection', label: 'PB collection', type: 'string' },
       { path: 'ledger_retention_days', label: '账本保留天数（0=永久）', type: 'number' },
-      { path: 'high_cost_models', label: '高成本模型（逗号分隔）', type: 'list' },
     ],
   },
   {

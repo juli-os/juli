@@ -55,6 +55,29 @@ describe('loadConfig', () => {
     expect(cfg.listen_port).toBe(7071);
     expect(cfg.data_dir).toBe('/data/makro'); // envOverrides get 同语义兜出 MAKRO
   });
+
+  it('JULI_QUEUE_CONCURRENCY：合法 1..16 整数生效（b46 R1-FX P2#1）', () => {
+    const cfg = loadConfig({
+      env: { JULI_QUEUE_CONCURRENCY: '4' },
+      home: '/home/test',
+      readFile: () => JSON.stringify({ queue: { concurrency: 2 } }),
+    });
+    expect(cfg.queue?.concurrency).toBe(4); // env 整对象替换 queue 段
+  });
+
+  it('JULI_QUEUE_CONCURRENCY 出域/非整数/NaN 一律回落文件值（与 zod .int().min(1).max(16) 同口径）', () => {
+    const file = { queue: { concurrency: 3 } };
+    for (const v of ['100', '-5', '3.7', 'abc']) {
+      const cfg = loadConfig({
+        env: { JULI_QUEUE_CONCURRENCY: v },
+        home: '/home/test',
+        readFile: () => JSON.stringify(file),
+      });
+      expect(cfg.queue?.concurrency, `JULI_QUEUE_CONCURRENCY=${v}`).toBe(3); // 不应用 = 文件值
+    }
+    const bare = loadConfig({ env: { JULI_QUEUE_CONCURRENCY: '100' }, home: '/home/test', readFile: () => null });
+    expect(bare.queue?.concurrency).toBe(1); // 无文件 → zod 默认
+  });
 });
 
 describe('resolveSecret', () => {

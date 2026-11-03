@@ -7,6 +7,7 @@ import { topbar, sidebar, toast } from './ui.ts';
 import { esc } from './esc.ts';
 import { anchorHref } from './anchors.ts';
 import { mountOrderDrawer } from './orderfab.ts';
+import { getVoiceCall, mountVoiceCallPill } from './voice-call.ts';
 import { TOAST_LEVELS, TOAST_TEXT } from './events-meta.ts';
 // 视图路由表/默认页/兜底视图 + 手机门牌：单一事实源在各自注册表文件
 // （开源投影以同形桩替换——公开视图子集与英文门牌）。
@@ -40,6 +41,10 @@ document.getElementById('topbar')!.innerHTML = topbar(route0);
 document.getElementById('sidebar')!.innerHTML = sidebar(route0);
 // 常驻开单（2026-10-14）：左栏顶部主按钮 + 右侧抽屉（orderfab 自含开合）。
 mountOrderDrawer();
+// 通话后台保持（2026-10-27，缺陷单 wf_efccc6271097）：通话进行中切页不断线，
+// 全局 pill 接管切页后的可见面（状态/时长/止播/挂断，点状态回发单页）——
+// 壳层常驻订阅，与 /chat 视图横幅多播并存，切页互不顶掉。
+mountVoiceCallPill(document.body, getVoiceCall());
 // 移动端底部 tab 已随手机 Web 弃用拆除（2026-09-30；手机入口=iOS App）。
 const tokenInput = document.getElementById('token') as HTMLInputElement;
 tokenInput.value = getToken();
