@@ -9,94 +9,119 @@
   docs-as-code authored page (export/overlay/docs/index.html).
   Served by GitHub Pages (legacy branch mode, /docs) at https://juli-os.github.io/juli/
   as the hub linking every component docs site under the same prefix.
+  Visuals follow the juli brand spec (skill: juli-brand) — tangerine accent on warm white.
 -->
 <style>
   :root {
-    --bg: #0d1117; --panel: #161b22; --border: #30363d;
-    --fg: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
+    --c: #D97C26; --c-deep: #B8681A; --c-soft: rgba(217,124,38,.07);
+    --bg: #FAFAF8; --card: #FFFFFF; --ink: #1A1A1A;
+    --body: #5C5A54; --dim: #8E8C84; --faint: #B8B6AE;
+    --line: rgba(26,26,26,.07);
+    --mono: 'SF Mono', 'JetBrains Mono', Menlo, monospace;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    background: var(--bg); color: var(--fg);
-    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg); color: var(--ink);
+    font: 400 16px/1.75 -apple-system, 'PingFang SC', 'Helvetica Neue', Arial, sans-serif;
     display: flex; flex-direction: column; min-height: 100vh;
   }
-  main { flex: 1; width: 100%; max-width: 960px; margin: 0 auto; padding: 4rem 1.5rem 3rem; }
-  header h1 { font-size: 2rem; font-weight: 700; letter-spacing: -0.02em; }
-  header h1 span { color: var(--accent); }
-  header p.lede { color: var(--muted); margin-top: 0.75rem; max-width: 42rem; }
+  main { flex: 1; width: 100%; max-width: 960px; margin: 0 auto; padding: 64px 24px 48px; }
+
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand img { width: 40px; height: 40px; mix-blend-mode: multiply; }
+  .brand .name { font-size: 17px; font-weight: 600; letter-spacing: -0.2px; }
+  .brand .name .dot { display: inline-block; width: 8px; height: 8px; background: var(--c); border-radius: 50%; margin: 0 7px 1px 10px; }
+
+  .kicker { font-family: var(--mono); font-size: 12px; font-weight: 500; color: var(--c); letter-spacing: 2px; margin-top: 56px; }
+  h1 { font-size: clamp(34px, 5.5vw, 52px); font-weight: 700; line-height: 1.2; letter-spacing: -1.2px; margin-top: 8px; }
+  .lede { color: var(--body); margin-top: 16px; max-width: 65ch; }
+  .lede code { font-family: var(--mono); font-size: 14px; color: var(--ink); background: var(--c-soft); border-radius: 6px; padding: 1px 7px; }
+
   .grid {
-    display: grid; gap: 1rem; margin-top: 2.5rem;
-    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    display: grid; gap: 16px; margin-top: 48px;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   }
   a.card {
-    display: block; background: var(--panel); border: 1px solid var(--border);
-    border-radius: 10px; padding: 1.25rem 1.4rem; color: inherit;
-    text-decoration: none; transition: border-color .15s ease, transform .15s ease;
+    display: block; background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; padding: 32px; color: inherit; text-decoration: none;
+    transition: all .25s cubic-bezier(.4,0,.2,1);
   }
-  a.card:hover, a.card:focus-visible { border-color: var(--accent); transform: translateY(-2px); }
-  .card h2 { font-size: 1.05rem; font-weight: 600; }
-  .card h2 code { color: var(--accent); font-size: 1rem; }
-  .card .tier { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin-top: 0.15rem; }
-  .card p { color: var(--muted); font-size: 0.9rem; margin-top: 0.6rem; }
-  .card .go { display: inline-block; margin-top: 0.8rem; color: var(--accent); font-size: 0.85rem; }
+  a.card:hover, a.card:focus-visible {
+    border-color: rgba(217,124,38,.25); transform: translateY(-3px);
+    box-shadow: 0 12px 40px -12px rgba(26,26,26,.08);
+  }
+  .card code.pkg { font-family: var(--mono); font-size: 16px; font-weight: 600; color: var(--ink); }
+  .card .tier {
+    font-family: var(--mono); font-size: 11px; font-weight: 500;
+    color: var(--c); letter-spacing: 2px; text-transform: uppercase; margin-top: 8px;
+  }
+  .card p { color: var(--body); font-size: 15px; margin-top: 12px; }
+  .card .go {
+    display: inline-block; margin-top: 16px; font-family: var(--mono);
+    font-size: 12px; color: var(--dim); transition: color .25s cubic-bezier(.4,0,.2,1);
+  }
+  a.card:hover .go { color: var(--c-deep); }
+
   footer {
-    border-top: 1px solid var(--border); padding: 1.25rem 1.5rem;
-    color: var(--muted); font-size: 0.85rem; text-align: center;
+    border-top: 1px solid var(--line); padding: 24px;
+    color: var(--faint); font-size: 14px; font-weight: 300; text-align: center;
   }
-  footer a { color: var(--muted); }
-  footer a:hover { color: var(--accent); }
-  @media (prefers-color-scheme: light) {
-    :root { --bg: #f6f8fa; --panel: #ffffff; --border: #d0d7de; --fg: #1f2328; --muted: #59636e; }
-  }
+  footer a { color: var(--dim); text-decoration: none; }
+  footer a:hover { color: var(--c-deep); }
+  footer .sep { margin: 0 10px; }
 </style>
 </head>
 <body>
 <main>
-  <header>
-    <h1>juli <span>·</span> docs hub</h1>
-    <p class="lede">
-      One place for every component documentation site of the
-      <strong>juli-os</strong> ladder — all hosted under the same
-      <code>juli-os.github.io</code> prefix. Pick a layer, stay in one tab.
-    </p>
-  </header>
+  <div class="brand">
+    <img src="data:image/png;base64,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" alt="juli logo" width="40" height="40">
+    <span class="name">juli<span class="dot"></span>docs hub</span>
+  </div>
+
+  <div class="kicker">// DOCUMENTATION HUB</div>
+  <h1>Every component,<br>one stop.</h1>
+  <p class="lede">
+    All component documentation sites of the <strong>juli-os</strong> ladder live under the same
+    <code>juli-os.github.io</code> prefix. Pick a layer below — no hopping around.
+  </p>
+
   <nav class="grid" aria-label="Component documentation sites">
     <a class="card" href="https://juli-os.github.io/agents/" target="_blank" rel="noopener">
-      <h2><code>@juli-os/agents</code></h2>
+      <code class="pkg">@juli-os/agents</code>
       <div class="tier">L0 · agent execution</div>
       <p>Sandboxed agent runtimes, tmux sessions, tool hooks — the execution floor.</p>
-      <span class="go">Open docs →</span>
+      <span class="go">open docs →</span>
     </a>
     <a class="card" href="https://juli-os.github.io/ledger/" target="_blank" rel="noopener">
-      <h2><code>@juli-os/ledger</code></h2>
+      <code class="pkg">@juli-os/ledger</code>
       <div class="tier">L1 · workflow ledger</div>
       <p>Append-only workflow and event journal — replayable, one source of truth.</p>
-      <span class="go">Open docs →</span>
+      <span class="go">open docs →</span>
     </a>
     <a class="card" href="https://juli-os.github.io/artifacts/" target="_blank" rel="noopener">
-      <h2><code>@juli-os/artifacts</code></h2>
+      <code class="pkg">@juli-os/artifacts</code>
       <div class="tier">L2 · deliverables</div>
       <p>Hash-registered deliverables with provenance, disk and S3 backends.</p>
-      <span class="go">Open docs →</span>
+      <span class="go">open docs →</span>
     </a>
     <a class="card" href="https://juli-os.github.io/routing/" target="_blank" rel="noopener">
-      <h2><code>@juli-os/routing</code></h2>
+      <code class="pkg">@juli-os/routing</code>
       <div class="tier">L4 · dispatch</div>
       <p>Multi-agent dispatch decisions as pure functions — declarative, replayable.</p>
-      <span class="go">Open docs →</span>
+      <span class="go">open docs →</span>
     </a>
     <a class="card" href="https://github.com/juli-os/juli" target="_blank" rel="noopener">
-      <h2><code>juli-service</code></h2>
+      <code class="pkg">juli-service</code>
       <div class="tier">the engine</div>
       <p>Email-in workflow engine wiring the ladder together — source and docs live in the project repository.</p>
-      <span class="go">Open repository →</span>
+      <span class="go">open repository →</span>
     </a>
   </nav>
 </main>
 <footer>
   <a href="https://github.com/juli-os" target="_blank" rel="noopener">github.com/juli-os</a>
-  · MIT licensed · pages generated from code, never hand-maintained
+  <span class="sep">·</span>MIT licensed
+  <span class="sep">·</span>pages generated from code, never hand-maintained
 </footer>
 </body>
 </html>
