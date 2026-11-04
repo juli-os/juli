@@ -69,6 +69,19 @@
   footer a { color: var(--dim); text-decoration: none; }
   footer a:hover { color: var(--c-deep); }
   footer .sep { margin: 0 10px; }
+
+  section.arch { margin-top: 72px; }
+  section.arch h2 { font-size: 24px; font-weight: 700; letter-spacing: -0.5px; margin-top: 8px; }
+  section.arch .note { color: var(--body); font-size: 14px; margin-top: 8px; max-width: 65ch; }
+  .diagram {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    margin-top: 24px; padding: 24px 16px; overflow-x: auto;
+  }
+  .diagram .caption {
+    font-family: var(--mono); font-size: 11px; color: var(--dim);
+    letter-spacing: 1.5px; text-transform: uppercase; margin-top: 14px; text-align: center;
+  }
+  .mermaid { display: flex; justify-content: center; }
 </style>
 </head>
 <body>
@@ -117,11 +130,79 @@
       <span class="go">open repository →</span>
     </a>
   </nav>
+
+  <section class="arch" aria-label="System architecture">
+    <div class="kicker">// SYSTEM ARCHITECTURE</div>
+    <h2>How the pieces fit.</h2>
+    <p class="note">
+      The engine composes the ladder at one place (its runtime composition root); the four
+      packages stay independent of each other. Terminal backends are swappable behind one
+      orthogonal factory — <code>tmux</code> today, <code>herdr</code> workspaces as the alternative.
+    </p>
+
+    <div class="diagram">
+      <pre class="mermaid">
+flowchart LR
+  engine["juli-service engine<br/>composition root · HTTP · business"]
+  agents["@juli-os/agents<br/>terminals · dispatch · orchestration"]
+  ledger["@juli-os/ledger<br/>workflow journal"]
+  artifacts["@juli-os/artifacts<br/>deliverables · result/ok"]
+  routing["@juli-os/routing<br/>judgment · routing"]
+  engine --> agents
+  engine --> ledger
+  engine --> artifacts
+  engine --> routing
+  fab["createAgentBackend<br/>one orthogonal seam"]
+  tmux["tmux"]
+  herdr["herdr workspaces"]
+  agents --> fab
+  fab --> tmux
+  fab --> herdr
+      </pre>
+      <div class="caption">five repos · four independent packages · two terminal backends</div>
+    </div>
+
+    <div class="diagram">
+      <pre class="mermaid">
+flowchart LR
+  mail["email intake"] --> intake
+  chat["chat /ws/chat"] --> intake
+  voice["voice calls"] --> intake
+  intake["standard intake"] --> rt["routeTask"]
+  rt --> eng["engine<br/>serial queue + release gates"]
+  eng --> disp["ready dispatch"]
+  disp --> term["terminal backend"]
+  term --> agent["claude agent"]
+  agent --> hooks["CC hooks settle"] --> ledger2["ledger"]
+  ledger2 --> eng
+  eng --> art["artifacts"]
+  eng --> push["push notify"]
+      </pre>
+      <div class="caption">runtime data flow — conversation creates work, gates release it</div>
+    </div>
+  </section>
 </main>
 <footer>
   <a href="https://github.com/juli-os" target="_blank" rel="noopener">github.com/juli-os</a>
   <span class="sep">·</span>MIT licensed
   <span class="sep">·</span>pages generated from code, never hand-maintained
 </footer>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'base',
+    themeVariables: {
+      fontFamily: '-apple-system, "PingFang SC", Helvetica Neue, Arial, sans-serif',
+      fontSize: '13px',
+      primaryColor: '#FDF3E7',
+      primaryBorderColor: '#D97C26',
+      primaryTextColor: '#1A1A1A',
+      lineColor: '#B8681A',
+      tertiaryColor: '#FAFAF8',
+    },
+    flowchart: { curve: 'basis', padding: 12 },
+  });
+</script>
 </body>
 </html>

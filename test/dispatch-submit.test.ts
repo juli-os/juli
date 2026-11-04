@@ -46,14 +46,14 @@ describe('inputBoxState', () => {
   });
 });
 
-/** 真实现 + 可脚本化假 tmux：用桩的 capturePane/exec/sendText 驱动确认循环。 */
+/** 真实现 + 可脚本化假 tmux：用桩的 capturePane/sendKey/sendText 驱动确认循环。 */
 const realImplWith = (stub: {
   capturePane: TmuxClient['capturePane'];
-  exec: TmuxClient['exec'];
+  sendKey: TmuxClient['sendKey'];
   sendText: TmuxClient['sendText'];
 }): TmuxClient => {
   const real = createTmuxClient({ submitConfirmMs: 1_200 });
-  return { ...real, capturePane: stub.capturePane, exec: stub.exec, sendText: stub.sendText };
+  return { ...real, capturePane: stub.capturePane, sendKey: stub.sendKey, sendText: stub.sendText };
 };
 
 describe('sendTextConfirmed（行为契约，真实现+桩 tmux）', () => {
@@ -61,7 +61,7 @@ describe('sendTextConfirmed（行为契约，真实现+桩 tmux）', () => {
     const state = { enters: 0, pastes: 0 };
     const tmux = realImplWith({
       capturePane: async () => ok(state.enters >= 1 ? clearedPane() : inBoxPane()),
-      exec: async (args) => { if (args.includes('Enter')) state.enters += 1; return ok(''); },
+      sendKey: async (_n, key) => { if (key === 'Enter') state.enters += 1; return ok(undefined); },
       sendText: async () => { state.pastes += 1; return ok(undefined); },
     });
     const r = await tmux.sendTextConfirmed('s1', PROMPT);
@@ -74,7 +74,7 @@ describe('sendTextConfirmed（行为契约，真实现+桩 tmux）', () => {
     const state = { enters: 0, pastes: 0 };
     const tmux = realImplWith({
       capturePane: async () => ok(inBoxPane()),
-      exec: async (args) => { if (args.includes('Enter')) state.enters += 1; return ok(''); },
+      sendKey: async (_n, key) => { if (key === 'Enter') state.enters += 1; return ok(undefined); },
       sendText: async () => { state.pastes += 1; return ok(undefined); },
     });
     const r = await tmux.sendTextConfirmed('s1', PROMPT);
@@ -88,7 +88,7 @@ describe('sendTextConfirmed（行为契约，真实现+桩 tmux）', () => {
     const state = { enters: 0, pastes: 0 };
     const tmux = realImplWith({
       capturePane: async () => ok(state.pastes >= 2 && state.enters >= 1 ? clearedPane() : absentPane()),
-      exec: async (args) => { if (args.includes('Enter')) state.enters += 1; return ok(''); },
+      sendKey: async (_n, key) => { if (key === 'Enter') state.enters += 1; return ok(undefined); },
       sendText: async () => { state.pastes += 1; return ok(undefined); },
     });
     const r = await tmux.sendTextConfirmed('s1', PROMPT);

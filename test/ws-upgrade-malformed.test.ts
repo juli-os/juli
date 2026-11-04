@@ -36,7 +36,11 @@ describe('畸形 upgrade 请求目标不崩进程（R1 P0#1 回归锚）', () =>
     const tmux = createTmuxClient({ socketPath: '/tmp/juli-upgrade-test-unused.sock' });
     attachChatWireWs({ server, chatHub: createChatHub(), password: '', log: () => undefined });
     attachSnapshotWireWs({ server, tmux, password: '', log: () => undefined });
-    attachPtyHub({ server, tmux, password: '', log: () => undefined });
+    attachPtyHub({
+      server, password: '', log: () => undefined,
+      // 本套件只测 upgrade 解析面：attach 恒挂起（永不建 PTY，零副作用）。
+      attach: async () => new Promise(() => undefined),
+    });
     attachUpgradeFallback(server);
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   });

@@ -29,39 +29,27 @@ const makeFakeTmux = (over: Partial<TmuxClient> = {}): {
 } => {
   let execs = 0;
   const killed: string[] = [];
-  const LIST_FMT = '#{session_name}\t#{session_attached}\t#{pane_current_path}\t#{pane_current_command}';
   const tmux: TmuxClient = {
     async hasSession() { return true; },
     async sendTextConfirmed() { return ok({ enters: 0, repasted: false, elapsedMs: 0 }); },
     async sendTextQueued() { return ok({ enters: 0, repasted: false, elapsedMs: 0, finalState: 'cleared' }); },
-    async exec(args) {
-      execs++;
-      if (args[0] === 'list-sessions') {
-        const fmt = String(args[2] ?? '');
-        return ok(fmt.includes('\t') ? 'sess-a\t1\t/tmp/proj-a\tclaude' : 'sess-a\n');
-      }
-      return ok('');
-    },
+    // 终端查询计数（原 exec 计数的口径后继——契约已无 exec 逃逸口）：
+    // 名单两方法是 N+1 消除断言（≤1）的观测点。
     async listSessions() {
-      const r = await tmux.exec(['list-sessions', '-F', '#{session_name}']);
-      return r.ok ? r.value.split('\n').map((s) => s.trim()).filter(Boolean) : [];
+      execs++;
+      return ['sess-a'];
     },
     async listSessionsDetailed() {
-      const r = await tmux.exec(['list-sessions', '-F', LIST_FMT]);
-      if (!r.ok) return err(r.error);
-      const rows = r.value.split('\n').filter(Boolean).map((line) => {
-        const [name, attached, path, cmd] = line.split('\t');
-        return {
-          name: (name ?? '').trim(),
-          attached: (attached ?? '0').trim() !== '0',
-          path: (path ?? '').trim(),
-          cmd: (cmd ?? '').trim(),
-        };
-      });
-      return ok(rows);
+      execs++;
+      return ok([{ name: 'sess-a', attached: true, path: '/tmp/proj-a', cmd: 'claude' }]);
     },
     async newSession() { return ok(undefined); },
     async sendText() { return ok(undefined); },
+    async sendKey() { return ok(undefined); },
+    async foregroundCommandOf() { return 'claude'; },
+    async panePathOf() { return '/tmp/proj-a'; },
+    async sessionBirthsOf() { return new Map(); },
+    async setEnv() { return ok(undefined); },
     async capturePane(name) { return ok(`pane:${name}`); },
     async killSession(name) { killed.push(name); return ok(undefined); },
     async interrupt() { return ok(undefined); },

@@ -41,21 +41,13 @@ describe('PTY（script(1) 零依赖实现）', () => {
 });
 
 describe('xterm WS 桥（hub 单元面）', () => {
-  // 两用例共用同一无状态桩：hasSession=false → newSession ok → attach 失败路径。
-  const tmux = {
-    async hasSession() { return false; },
-    async newSession() { return ok(undefined); },
-    async listSessions() { return []; },
-    async sendText() { return ok(undefined); },
-    async capturePane() { return ok('pane'); },
-    async killSession() { return ok(undefined); },
-    async interrupt() { return ok(undefined); },
-    async exec() { return ok(''); },
-  } as unknown as TmuxClient;
+  // attach 桩（2026-11-04 后端接缝必填）：恒「会话不存在」——走 1011 关闭路径。
+  const attachStub = async (): Promise<{ ok: false; error: Error }> =>
+    ({ ok: false, error: new Error('会话 no-such 不存在——终端不代建（测试桩）') });
 
   it('未知会话：attach 失败 → ws 以 1011 关闭；未带 token 的 /api 路径不受影响', async () => {
     const server = createServer();
-    attachPtyHub({ server, tmux, password: '' });
+    attachPtyHub({ server, attach: attachStub, password: '' });
     await new Promise<void>((r) => server.listen(0, () => r()));
     const port = (server.address() as { port: number }).port;
     // hasSession=false → newSession ok → attach tmux（本机 tmux 存在）→
@@ -71,7 +63,7 @@ describe('xterm WS 桥（hub 单元面）', () => {
 
   it('绑定会话守卫（PROBLEMS-R2 P1 旁道 B）：命中 boundSessions → 1008 拒连；普通名不受影响', async () => {
     const server = createServer();
-    attachPtyHub({ server, tmux, password: '', boundSessions: ['project-a'] });
+    attachPtyHub({ server, attach: attachStub, password: '', boundSessions: ['project-a'] });
     await new Promise<void>((r) => server.listen(0, () => r()));
     const port = (server.address() as { port: number }).port;
     const closeOf = (name: string): Promise<{ code: number; reason: string }> =>
@@ -123,11 +115,12 @@ allowed-tools: read_file, list_directory
 
 describe('pane-probe（确定性启发式）', () => {
   const stub = (currentCommand: string, pane: string): TmuxClient => ({
-    async exec(args) {
-      if (args.includes('#{pane_current_command}')) return ok(currentCommand);
-      return ok('');
-    },
     async hasSession() { return true; },
+    async sendKey() { return ok(undefined); },
+    async foregroundCommandOf() { return currentCommand; },
+    async panePathOf() { return ''; },
+    async sessionBirthsOf() { return new Map(); },
+    async setEnv() { return ok(undefined); },
     async listSessions() { return []; },
     async listSessionsDetailed() { return ok([]); },
     async newSession() { return ok(undefined); },

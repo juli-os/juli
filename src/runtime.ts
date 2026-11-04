@@ -10,7 +10,7 @@ import { resolveAiConfig, resolveSecret, danglingFeedbackRoutes, mergeConfigPatc
 import { consoleLogger, createBus, type Logger } from './platform/events/bus.ts';
 import { createLedgerStore, createUsageStore, type LifecycleStore, type UsageStore } from '@juli-os/ledger';
 import { createAnthropicChat, createOpenAiChat } from './platform/llm/chat.ts';
-import { sessionBirthOf, transcriptMappable } from './platform/llm/transcripts.ts';
+import { transcriptMappable } from './platform/llm/transcripts.ts';
 import { type ChatLlmPort } from '@juli-os/agents';
 import { createOrchestrator, registerDefaultCommands, registerSkillCommands, type Orchestrator } from '@juli-os/agents';
 import { makeAllTools } from '@juli-os/agents';
@@ -42,11 +42,11 @@ import { createAnthropicProvider, createOpenAiProvider } from './platform/llm/pr
 import { createSmtpMailer } from './platform/email/smtp.ts';
 import { createMailSource, type MailSource } from './platform/email/source.ts';
 import { resolveEmailPassword } from './platform/email/passwords.ts';
-import { createTmuxClient, type TmuxClient } from '@juli-os/agents';
-import { createProvisioningDispatch } from '@juli-os/agents';
-import { createSessionRouter, tmuxListSync } from '@juli-os/agents';
+import type { TmuxClient } from '@juli-os/agents';
+import { createAgentBackend, createProvisioningDispatch } from '@juli-os/agents';
+import { createSessionRouter } from '@juli-os/agents';
 import { createAcpExecutor, type AcpExecutor } from '@juli-os/agents';
-import { installClaudeHooks, defaultHookSpecs } from '@juli-os/agents';
+import { installClaudeHooks } from '@juli-os/agents';
 import { createArtifactLedger, sweepCaseInbox, type ArtifactLedger, type ArtifactRole } from '@juli-os/artifacts';
 import { createDiskBackend, createS3Backend, createDualBackend, type ArtifactBackend } from '@juli-os/artifacts';
 import { createDevicePusher, createEmailNotifier, combinePushers, withAlertGrade } from './platform/push/email.ts';
@@ -212,7 +212,20 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
       return r;
     },
   };
-  const tmux = seams.tmux ?? createTmuxClient({ socketPath: config.tmux_socket_path || undefined });
+  // agent 终端基底（2026-11-04 herdr 下沉）：正交后端工厂——config.agent_backend
+  // 选 tmux|herdr（默认 tmux，live 零行为变化），随基底变化的六件事（终端
+  // 契约/hook 命令组/名单源/PTY attach/boot 包装/env 注入）全在包内 backend
+  // 对象上，本组合根零 backend 分枝。terminal 覆盖位 = seams.tmux 测试接缝
+  // （注入假终端时 applyEnv/attach 也走假件，绝不触真 tmux）。
+  const agentBackend = createAgentBackend({
+    backend: config.agent_backend,
+    socketPath: config.tmux_socket_path || undefined,
+    herdrSession: config.herdr_session,
+    dataDir,
+    terminal: seams.tmux,
+    log: (m) => log.info(m),
+  });
+  const tmux: TmuxClient | null = agentBackend.terminal;
   // 就绪派发：会话缺失则建、裸 shell 则拉起 agent 并等 REPL 就绪、选择菜单
   // 拒派转人工——任务只在 agent 在位后发出（2026-09-12 can't-find-session
   // 与裸 shell 直投事故的修复）。绑定会话（专用 agent 隔离）自建时用配置
@@ -229,7 +242,10 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
       bootFor: (s) => {
         const tier = config.agents.find((a) => a.session === s)?.model_tier === 'high' ? 'high' : 'standard';
         const id = tier === 'high' ? config.models.high : config.models.standard;
-        return id !== '' ? `claude --model '${id}'` : 'claude';
+        const base = id !== '' ? `claude --model '${id}'` : 'claude';
+        // herdr 后端由 backend 包 env 兜底前缀（恢复态 env 全丢的实测口径）；
+        // tmux 恒等返回——分支只存在于工厂内部。
+        return agentBackend.bootCommand(base, s);
       },
       cwdFor: (s) => config.email.bound_agents.find((b) => b.session === s)?.cwd
         || config.agents.find((a) => a.session === s)?.cwd
@@ -279,11 +295,9 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
     const vars: readonly (readonly [string, string])[] = resolved.baseUrl !== ''
       ? [['ANTHROPIC_API_KEY', resolved.apiKey], ['ANTHROPIC_AUTH_TOKEN', resolved.apiKey], ['ANTHROPIC_BASE_URL', resolved.baseUrl]]
       : [['ANTHROPIC_API_KEY', resolved.apiKey], ['ANTHROPIC_AUTH_TOKEN', resolved.apiKey]];
-    for (const [k, v] of vars) {
-      void tmux.exec(['set-environment', '-g', k, v]).then((r) => {
-        if (!r.ok) log.info(`[ai] tmux set-environment ${k} 跳过（${r.error.message}）——引擎 env 继承兜底`);
-      });
-    }
+    // 后端接缝注入（tmux=set-environment -g；herdr=env 文件+新建面）——
+    // 差异在包内 backend.applyEnv，这里零分支。
+    agentBackend.applyEnv(vars);
     log.info(`[ai] agent 执行环境已注入（ANTHROPIC_API_KEY+AUTH_TOKEN${resolved.baseUrl !== '' ? ' + BASE_URL' : ''}，新会话生效）`);
   };
 
@@ -486,7 +500,7 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
   const defaultLanding = effectiveDefaultSession(config);
   const router = tmux && defaultLanding.session !== ''
     ? createSessionRouter({
-      listSync: () => tmuxListSync(config.tmux_socket_path || undefined),
+      listSync: () => agentBackend.listSync(),
       defaultSession: defaultLanding.session, log: (m) => log.info(m),
     })
     : null;
@@ -1043,7 +1057,7 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
             if (r.ok) okCount++;
             else { failCount++; log.error(`[warmup] 会话 ${name} 预热失败（不拦启动，派发时自愈）: ${r.error.message}`); }
           }
-          log.info(`[warmup] 声明会话预热完成：${okCount} 就绪${failCount > 0 ? `，${failCount} 失败（见上）` : ''}（socket=${config.tmux_socket_path || 'default'}）`);
+          log.info(`[warmup] 声明会话预热完成：${okCount} 就绪${failCount > 0 ? `，${failCount} 失败（见上）` : ''}（backend=${agentBackend.describe}）`);
         })();
       }
       mailSource?.start();
@@ -1059,7 +1073,7 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
         if (!existsSync(hookJs)) {
           log.error(`CC hooks 注入跳过：hook 脚本不存在 ${hookJs}（先 npm run build）`);
         } else {
-          const res = installClaudeHooks(config.claude_dir, defaultHookSpecs(hookJs, config.password, `http://127.0.0.1:${config.listen_port}`));
+          const res = installClaudeHooks(config.claude_dir, agentBackend.hookSpecs(hookJs, config.password, `http://127.0.0.1:${config.listen_port}`));
           // 日志带实际解析的 hook 入口路径：bin 在位（数据卷）vs 缺席回退
           // dist 两种形态立即可辨——陈旧 bin 静默服役的第一现场。
           if (res.ok) log.info(`CC hooks 已注入 ${config.claude_dir}/settings.json（hook=${hookJs}）`);
@@ -1096,14 +1110,11 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
               const projects = join(config.claude_dir || join(process.env['HOME'] ?? '', '.claude'), 'projects');
               const det = await tmux.listSessionsDetailed();
               if (det.ok) {
-                // 人机混仓防线规则本体（出生点解析 + mtime 门，事故语境注释）
-                // 已抽 platform/llm/transcripts 纯函数（R8 批4 刀3）——此处只
-                // 留 IO 接线：created 取不到（exec 失败/老 tmux）保守回落旧行为。
-                const createdOf = new Map<string, number>();
-                const cr = await tmux.exec(['list-sessions', '-F', '#{session_name}\t#{session_created}']);
-                if (cr.ok) {
-                  for (const [nm, ms] of sessionBirthOf(cr.value)) createdOf.set(nm, ms);
-                }
+                // 人机混仓防线规则本体（出生点 + mtime 门，事故语境注释）在
+                // platform/llm/transcripts（transcriptMappable）——此处只留 IO
+                // 接线：出生点表由终端契约 sessionBirthsOf 提供（herdr 无此
+                // 概念回空表=保守回落不门控，与老 tmux 取不到 created 同形）。
+                const createdOf = new Map(await tmux.sessionBirthsOf());
                 for (const si of det.value) {
                   const cwd = si.path;
                   if (cwd === '') continue;
@@ -1153,7 +1164,8 @@ export const createRuntime = (config: Config, seams: RuntimeSeams = {}, log: Log
       attachChatWireWs({ server, chatHub, password: config.password, log: (m) => log.info(m) });
       if (!tmux) return;
       attachPtyHub({
-        server, tmux, password: config.password,
+        server, password: config.password,
+        attach: agentBackend.attach,
         boundSessions: config.email.bound_agents.map((b) => b.session),
         log: (m) => log.info(m),
       });

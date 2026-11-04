@@ -14,7 +14,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runHook } from '../src/cli/hook.ts';
 import { execSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
-import { createProvisioningDispatch, createTmuxClient } from '@juli-os/agents';
+import { createAgentBackend, createProvisioningDispatch, createTmuxClient } from '@juli-os/agents';
 import {
   createJev, jevTokenFromEnv, planRouting, SAMPLE_FACTS, SAMPLE_RECORDS, ticketTitle, topAlternatives,
   type FbRecord, type Judge, type RoutingFacts, type RoutingPlan,
@@ -61,6 +61,27 @@ const readSocketCfg = (): string | undefined => {
     return (JSON.parse(readFileSync(`${homedir()}/.juli-service/config.json`, 'utf8')) as { tmux_socket_path?: string }).tmux_socket_path || undefined;
   } catch {
     return undefined;
+  }
+};
+
+/** 引擎 config 的 agent 后端切片（2026-11-04 herdr 下沉）：send、ask、
+ * session 系列、compact 这些直驱会话链的子命令，客户端须与引擎同一后端
+ * ——走 @juli-os/agents 的 createAgentBackend，与 runtime 同一条路。
+ * 返回 backend 对象（不只是 terminal）：boot 命令包装（herdr 的 env 兜底
+ * 前缀）也须同源（R2 复审 #4）。e2e 自检（setup）保持 tmux 专用——它验证
+ * 的就是 tmux→claude 注入链。 */
+const readBackend = () => {
+  try {
+    const cfg = JSON.parse(readFileSync(`${homedir()}/.juli-service/config.json`, 'utf8')) as {
+      agent_backend?: string; herdr_session?: string;
+    };
+    return createAgentBackend({
+      backend: cfg.agent_backend === 'herdr' ? 'herdr' : 'tmux',
+      socketPath: readSocketCfg(),
+      herdrSession: cfg.herdr_session || 'juli',
+    });
+  } catch {
+    return createAgentBackend({});
   }
 };
 
@@ -199,9 +220,10 @@ if (isCliEntry) (async () => {
   } else if (cmd === 'session:start' || cmd === 'session:send') {
     // 会话保障链测试器（2026-09-21 冷启动吞 Enter 事故的测试面）：不经引擎
     // API，直接驱动 agents 层（provision + 提交确认），逐段报时——socket
-    // 竞态/冷启动卡壳/吞 Enter 全都秒级现形。socket 与引擎同源（config）。
-    const socketCfg = readSocketCfg();
-    const tmux = createTmuxClient(socketCfg ? { socketPath: socketCfg } : {});
+    // 竞态/冷启动卡壳/吞 Enter 全都秒级现形。终端基底与 boot 包装均与引擎
+    // 同源（config + backend.bootCommand）。
+    const backend = readBackend();
+    const tmux = backend.terminal;
     const t0 = Date.now();
     const at = (): string => `+${((Date.now() - t0) / 1000).toFixed(1)}s`;
     if (cmd === 'session:start') {
@@ -212,9 +234,12 @@ if (isCliEntry) (async () => {
       const declCwd = decls.find((d) => d.session === name)?.cwd || '';
       const cwd = arg('cwd') || declCwd || undefined;
       if (cwd !== undefined) console.log(`    · ${name} cwd=${cwd} (${at()})`);
-      console.log(`[1] 会话存在性/创建（socket=${socketCfg ?? 'default'}）`);
+      console.log(`[1] 会话存在性/创建（socket=${readSocketCfg() ?? 'default'}）`);
       const provision = createProvisioningDispatch({
-        tmux, bootCommand: 'claude',
+        tmux,
+        // boot 包装走后端工厂（herdr 带 env 兜底前缀；tmux 恒等）——与
+        // runtime 的 provision 同一条路（R2 复审 #4）。
+        bootFor: (s) => backend.bootCommand('claude', s),
         cwdFor: (s) => (s === name ? cwd : decls.find((d) => d.session === s)?.cwd),
         log: (m) => console.log(`    · ${m} (${at()})`),
       });
@@ -247,8 +272,7 @@ if (isCliEntry) (async () => {
       process.exit(1);
     }
     const slash = cmd === 'compact' ? '/compact' : '/clear';
-    const socketCfg = readSocketCfg();
-    const tmux = createTmuxClient(socketCfg ? { socketPath: socketCfg } : {});
+    const tmux = readBackend().terminal;
     const det = await tmux.listSessionsDetailed();
     if (!det.ok || !det.value.some((x) => x.name === name)) {
       console.error(`✗ 会话 ${name} 不在（juli session:list 查看）`);
@@ -837,11 +861,13 @@ if (isCliEntry) (async () => {
       const pairs: readonly (readonly [string, string])[] = aiNow.baseUrl !== ''
         ? [['ANTHROPIC_API_KEY', aiNow.apiKey], ['ANTHROPIC_AUTH_TOKEN', aiNow.apiKey], ['ANTHROPIC_BASE_URL', aiNow.baseUrl]]
         : [['ANTHROPIC_API_KEY', aiNow.apiKey], ['ANTHROPIC_AUTH_TOKEN', aiNow.apiKey]];
+      const envRecord: Record<string, string> = {};
       for (const [k, v] of pairs) {
         process.env[k] = v;
-        await tmux.exec(['set-environment', '-g', k, v]);
+        envRecord[k] = v;
       }
-      await tmux.exec(['kill-session', '-t', name]);
+      await tmux.setEnv(envRecord);
+      await tmux.killSession(name);
       const provision = createProvisioningDispatch({
         tmux,
         bootCommand: 'claude',
@@ -870,7 +896,7 @@ if (isCliEntry) (async () => {
             : '180s 内未见回复（查 claude 登态/端点/base_url——juli doctor 复诊）');
         }
       }
-      await tmux.exec(['kill-session', '-t', name]);
+      await tmux.killSession(name);
     }
 
     const fails = results.filter((r) => r.ok === false);

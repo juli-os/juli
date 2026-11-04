@@ -195,10 +195,7 @@ describe('tmux 工具（mock 传输）', () => {
         capturePane: async () => ({ ok: true, value: 'hello\nworld' }),
         killSession: async () => ({ ok: true, value: undefined }),
         interrupt: async () => ({ ok: true, value: undefined }),
-        exec: async (args: readonly string[]) =>
-          args.includes('#{pane_current_command}')
-            ? { ok: true, value: 'claude' }
-            : { ok: true, value: '' },
+        foregroundCommandOf: async () => 'claude',
       } as never;
       const sent: string[] = [];
       const tools = makeAllTools({ tmux: stub, notifier: null, assessor: null, cwd: dir });

@@ -93,6 +93,11 @@ describe('语音通话状态机', () => {
 describe('会话快照', () => {
   const stubTmux = (sessions: string[]): TmuxClient => ({
     async hasSession(name) { return sessions.includes(name); },
+    async sendKey() { return ok(undefined); },
+    async foregroundCommandOf() { return 'claude'; },
+    async panePathOf() { return '/work/proj'; },
+    async sessionBirthsOf() { return new Map(); },
+    async setEnv() { return ok(undefined); },
     async listSessions() { return sessions; },
     async listSessionsDetailed() { return ok([]); },
     async newSession() { return ok(undefined); },
@@ -102,11 +107,6 @@ describe('会话快照', () => {
     async capturePane() { return ok('agent output'); },
     async killSession() { return ok(undefined); },
     async interrupt() { return ok(undefined); },
-    async exec(args) {
-      if (args.includes('#{pane_current_command}')) return ok('claude');
-      if (args.includes('#{pane_current_path}')) return ok('/work/proj');
-      return ok('');
-    },
   });
   const sent: string[] = [];
 
@@ -183,10 +183,7 @@ describe('send-time gate', () => {
         async capturePane() { return ok(menuUp ? '❯ 1. Yes\n  2. No' : 'done'); },
         async killSession() { return ok(undefined); },
         async interrupt() { return ok(undefined); },
-        async exec(args: readonly string[]) {
-          if (args.includes('#{pane_current_command}')) return ok('claude');
-          return ok('');
-        },
+        async foregroundCommandOf() { return 'claude'; },
       } as unknown as TmuxClient;
       const tools = makeAllTools({
         tmux, notifier: null, cwd: dir,
@@ -214,7 +211,7 @@ describe('send-time gate', () => {
         async capturePane() { return ok('❯ 1. Yes\n  2. No — 删除生产数据?'); },
         async killSession() { return ok(undefined); },
         async interrupt() { return ok(undefined); },
-        async exec(args: readonly string[]) { return args.includes('#{pane_current_command}') ? ok('claude') : ok(''); },
+        async foregroundCommandOf() { return 'claude'; },
       } as unknown as TmuxClient;
       const tools = makeAllTools({
         tmux, notifier: null, cwd: dir,

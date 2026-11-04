@@ -25,7 +25,7 @@ describe('warmup 行为契约（假 tmux）', () => {
     const t = {
       socketPath: '/tmp/fake.sock',
       async hasSession(_name: string) { return true; },
-      async exec(_args: readonly string[]) { return { ok: true as const, value: readyPane }; },
+      async foregroundCommandOf() { return 'claude'; },
       async listSessions() { return ['juli-reply']; },
       async listSessionsDetailed() { return { ok: true as const, value: [{ name: 'juli-reply', attached: false, path: '/w', cmd: 'claude' }] }; },
       async newSession() { return { ok: true as const, value: undefined }; },
@@ -58,8 +58,7 @@ describe('warmup 行为契约（假 tmux）', () => {
     const tmux = fakeTmux({
       hasSession: async () => true,
       newSession: async () => { booted = false; return { ok: true as const, value: undefined }; },
-      exec: async (_args: readonly string[]) =>
-        ({ ok: true as const, value: booted ? 'node' : 'zsh' }),
+      foregroundCommandOf: async () => (booted ? 'node' : 'zsh'),
       capturePane: async () => ({ ok: true as const, value: booted ? readyPane : shellPane }),
       sendText: async (_n: string, text: string) => {
         if (text === 'claude') booted = true;

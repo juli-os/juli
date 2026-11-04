@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { createServer, type Server } from 'node:http';
 import WebSocket from 'ws';
 import { attachPtyHub } from '../src/platform/ws/ptyhub.ts';
-import { createTmuxClient, ptyAvailable } from '@juli-os/agents';
+import { attachTmuxPty, createTmuxClient, ptyAvailable } from '@juli-os/agents';
 
 // 守卫必须双查：CI（ubuntu runner）预装 tmux 但没有 /usr/bin/expect——pty
 // 桥是 expect 脚本，缺它 createPty spawn 即错、pty 秒退 → 全测试挂
@@ -34,7 +34,12 @@ describe.skipIf(!canRunPtyE2E)('ptyhub resize 交换不自毁', () => {
   const session = `juli-ptyhub-test-${Date.now()}`;
   const server: Server = createServer();
   const logs: string[] = [];
-  attachPtyHub({ server, tmux, password: 'pw', log: (m) => logs.push(m) });
+  // attach 接缝（2026-11-04 后端工厂）：真 tmux attach（与此前 ptyhub 缺省同源）。
+  attachPtyHub({
+    server, password: 'pw',
+    attach: (s, opts, onData) => attachTmuxPty(tmux, s, opts, onData),
+    log: (m) => logs.push(m),
+  });
 
   it('size 帧抢跑（onopen 立发，双建竞态回归）：连接不断、无双建孤儿', async () => {
     try { execFileSync('tmux', ['-S', e2eSock, 'kill-session', '-t', session], { stdio: 'ignore' }); } catch { /* 不在 */ }

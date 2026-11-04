@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.14.4",
-    "@juli-os/agents": "^0.1.7",
+    "@juli-os/agents": "^0.2.2",
     "@juli-os/artifacts": "^0.2.4",
     "@juli-os/ledger": "^0.1.7",
     "@juli-os/routing": "^0.2.3",

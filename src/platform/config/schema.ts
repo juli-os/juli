@@ -29,8 +29,15 @@ export const configSchema = z.object({
       model: z.string().default(''),
     })
     .default({}),
-  tmux_mode: z.enum(['auto', 'dedicated', 'shared']).default('auto'),
   tmux_socket_path: z.string().default(''),
+  // agent 终端基底后端（2026-11-04 herdr 下沉）：tmux=现状默认（零行为变化）；
+  // herdr=终端工作区运行时（herdr.dev，一 agent 会话一 workspace）。切换是
+  // 重启级动作：hooks 命令组/名单源/PTY attach/boot 包装随 backend 整体换血
+  // （差异全部收敛在 @juli-os/agents 的 createAgentBackend，引擎零分支）。
+  agent_backend: z.enum(['tmux', 'herdr']).default('tmux'),
+  // herdr 命名 session namespace（仅 agent_backend=herdr 生效；默认 'juli'，
+  // 等价 tmux 专属 socket 的隔离位）。
+  herdr_session: z.string().default('juli'),
   claude_dir: z.string().default(''),
   data_dir: z.string().default(''),
   listen_host: z.string().default('127.0.0.1'),

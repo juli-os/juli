@@ -6,13 +6,20 @@ import type { IncomingMessage, Server } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { safeEqual } from '../shared/secure.ts';
-import { attachTmuxPty, type PtySession } from '@juli-os/agents';
-import type { TmuxClient } from '@juli-os/agents';
+import type { PtyOpts, PtySession } from '@juli-os/agents';
+import type { Result } from '@juli-os/artifacts';
 
 export interface PtyHubDeps {
   readonly server: Server;
-  readonly tmux: TmuxClient;
   readonly password: string;
+  /** attach 实现（2026-11-04 后端接缝必填，R1 评审 #14：不再缺省绑 tmux）：
+   * runtime 注入 backend.attach——tmux=单 pane PTY attach，herdr=namespace
+   * TUI。守卫两侧同契约：会话不存在明确报错、不代建。 */
+  readonly attach: (
+    session: string,
+    opts: PtyOpts,
+    onData?: (chunk: string) => void,
+  ) => Promise<Result<PtySession, Error>>;
   /** 绑定会话名清单（config.email.bound_agents 的 session 列）。PTY 桥是
    * 全双工裸字节——比 send-keys 更彻底的注入且无账本；与 HTTP 旁道守卫
    * （app.ts /api/sessions/:name/send，同信任级）同判据：命中绑定会话一律
@@ -116,7 +123,7 @@ const serveSession = async (deps: PtyHubDeps, ws: WebSocket, session: string): P
     creating = true;
     const usedCols = cols;
     const usedRows = rows;
-    const res = await attachTmuxPty(deps.tmux, session, { cols, rows }, (chunk) => {
+    const res = await deps.attach(session, { cols, rows }, (chunk) => {
       if (ws.readyState === ws.OPEN) ws.send(chunk);
     });
     creating = false;

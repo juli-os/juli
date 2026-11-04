@@ -20,7 +20,7 @@ const makeTmux = (
     ? cmd
     : (sent.length > 0 ? cmd.after : cmd.before);
   const tmux: TmuxClient = {
-    exec: async () => ok(curCmd()),
+    foregroundCommandOf: async () => curCmd(),
     hasSession: async () => true,
     newSession: async () => ok(undefined),
     killSession: async () => ok(undefined),
@@ -92,9 +92,9 @@ describe('createProvisioningDispatch（就绪派发）', () => {
     );
     const tmux = {
       ...base.tmux,
-      exec: async (args: readonly string[]) => {
-        if (args[0] === 'send-keys') keys.push(args.join(' '));
-        return base.tmux.exec(args);
+      sendKey: async (_name: string, key: string) => {
+        keys.push(key);
+        return ok(undefined);
       },
     };
     const dispatch = createProvisioningDispatch({
@@ -103,7 +103,7 @@ describe('createProvisioningDispatch（就绪派发）', () => {
     const r = await dispatch('email', 's1', 'TASK');
     expect(r.ok).toBe(true);
     // 按下方向键 Down（把光标从 No 移到 Yes）——裸 Enter 会选 No 退出。
-    expect(keys.some((k) => k.includes('Down'))).toBe(true);
+    expect(keys.includes('Down')).toBe(true);
     expect(base.sent).toEqual(['', 'TASK']); // Enter(接受) + 任务
   });
 

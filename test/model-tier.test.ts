@@ -24,7 +24,7 @@ const makeTmux = (panes: string[], cmd: string | { before: string; after: string
   const sent: string[] = [];
   const curCmd = (): string => typeof cmd === 'string' ? cmd : (sent.length > 0 ? cmd.after : cmd.before);
   const tmux: TmuxClient = {
-    exec: async () => ok(curCmd()),
+    foregroundCommandOf: async () => curCmd(),
     hasSession: async () => true,
     newSession: async () => ok(undefined),
     killSession: async () => ok(undefined),
