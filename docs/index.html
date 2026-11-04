@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>juli — documentation hub</title>
+<meta name="description" content="Documentation hub for the juli-os component ladder: agents, ledger, artifacts, routing — and the juli-service engine.">
+<!--
+  docs-as-code authored page (export/overlay/docs/index.html).
+  Served by GitHub Pages (legacy branch mode, /docs) at https://juli-os.github.io/juli/
+  as the hub linking every component docs site under the same prefix.
+-->
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d;
+    --fg: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    display: flex; flex-direction: column; min-height: 100vh;
+  }
+  main { flex: 1; width: 100%; max-width: 960px; margin: 0 auto; padding: 4rem 1.5rem 3rem; }
+  header h1 { font-size: 2rem; font-weight: 700; letter-spacing: -0.02em; }
+  header h1 span { color: var(--accent); }
+  header p.lede { color: var(--muted); margin-top: 0.75rem; max-width: 42rem; }
+  .grid {
+    display: grid; gap: 1rem; margin-top: 2.5rem;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  }
+  a.card {
+    display: block; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 1.25rem 1.4rem; color: inherit;
+    text-decoration: none; transition: border-color .15s ease, transform .15s ease;
+  }
+  a.card:hover, a.card:focus-visible { border-color: var(--accent); transform: translateY(-2px); }
+  .card h2 { font-size: 1.05rem; font-weight: 600; }
+  .card h2 code { color: var(--accent); font-size: 1rem; }
+  .card .tier { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin-top: 0.15rem; }
+  .card p { color: var(--muted); font-size: 0.9rem; margin-top: 0.6rem; }
+  .card .go { display: inline-block; margin-top: 0.8rem; color: var(--accent); font-size: 0.85rem; }
+  footer {
+    border-top: 1px solid var(--border); padding: 1.25rem 1.5rem;
+    color: var(--muted); font-size: 0.85rem; text-align: center;
+  }
+  footer a { color: var(--muted); }
+  footer a:hover { color: var(--accent); }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f6f8fa; --panel: #ffffff; --border: #d0d7de; --fg: #1f2328; --muted: #59636e; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>juli <span>·</span> docs hub</h1>
+    <p class="lede">
+      One place for every component documentation site of the
+      <strong>juli-os</strong> ladder — all hosted under the same
+      <code>juli-os.github.io</code> prefix. Pick a layer, stay in one tab.
+    </p>
+  </header>
+  <nav class="grid" aria-label="Component documentation sites">
+    <a class="card" href="https://juli-os.github.io/agents/" target="_blank" rel="noopener">
+      <h2><code>@juli-os/agents</code></h2>
+      <div class="tier">L0 · agent execution</div>
+      <p>Sandboxed agent runtimes, tmux sessions, tool hooks — the execution floor.</p>
+      <span class="go">Open docs →</span>
+    </a>
+    <a class="card" href="https://juli-os.github.io/ledger/" target="_blank" rel="noopener">
+      <h2><code>@juli-os/ledger</code></h2>
+      <div class="tier">L1 · workflow ledger</div>
+      <p>Append-only workflow and event journal — replayable, one source of truth.</p>
+      <span class="go">Open docs →</span>
+    </a>
+    <a class="card" href="https://juli-os.github.io/artifacts/" target="_blank" rel="noopener">
+      <h2><code>@juli-os/artifacts</code></h2>
+      <div class="tier">L2 · deliverables</div>
+      <p>Hash-registered deliverables with provenance, disk and S3 backends.</p>
+      <span class="go">Open docs →</span>
+    </a>
+    <a class="card" href="https://juli-os.github.io/routing/" target="_blank" rel="noopener">
+      <h2><code>@juli-os/routing</code></h2>
+      <div class="tier">L4 · dispatch</div>
+      <p>Multi-agent dispatch decisions as pure functions — declarative, replayable.</p>
+      <span class="go">Open docs →</span>
+    </a>
+    <a class="card" href="https://github.com/juli-os/juli" target="_blank" rel="noopener">
+      <h2><code>juli-service</code></h2>
+      <div class="tier">the engine</div>
+      <p>Email-in workflow engine wiring the ladder together — source and docs live in the project repository.</p>
+      <span class="go">Open repository →</span>
+    </a>
+  </nav>
+</main>
+<footer>
+  <a href="https://github.com/juli-os" target="_blank" rel="noopener">github.com/juli-os</a>
+  · MIT licensed · pages generated from code, never hand-maintained
+</footer>
+</body>
+</html>
