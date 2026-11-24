@@ -18,7 +18,6 @@ const makeWorld = (over: Partial<EngineDeps> = {}) => {
     llm: null, model: 't',
     routing: { defaultSession: 'juli-reply', defaultProject: 'p' },
     dispatch: { async dispatch() { return { ok: true, value: undefined } as const; } },
-    syncDispatch: null,
     pusher: { async gateWaiting() {}, async workflowDone() {}, async workflowFailed() {} } satisfies PusherPort,
     mailer: { async send() { return { ok: true, value: { messageId: '<out-1@juli.local>' } } as const; } } satisfies MailerPort,
     captureOutput: async () => null, workspaceFor: null,

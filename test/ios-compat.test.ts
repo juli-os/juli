@@ -13,11 +13,20 @@ import { createRuntime } from '../src/runtime.ts';
 import { createHttpApp } from '../src/http/app.ts';
 import { attachChatWireWs, attachSnapshotWireWs, attachUpgradeFallback, toWireEvent } from '../src/platform/ws/wirehubs.ts';
 import { createChatHub } from '../src/platform/ws/chathub.ts';
-import { ok, err, type Result } from '@juli-os/artifacts';
+import { ok, type Result } from '../src/platform/shared/result.ts';
 import type { TmuxClient } from '@juli-os/agents';
 
 const dir = mkdtempSync(join(tmpdir(), 'juli-ios-'));
-const cfg = configSchema.parse({ data_dir: dir, email: { default_session: 'agent-a', default_project: 'demo' } });
+// 终端后端钉 tmux，socket 指到一个不存在的路径（2026-11-24）：不写的话缺省是
+// herdr，/api/agents/profiles、/api/sessions 每次都要先连 herdr 服务。CI 机器上
+// 既没有 herdr 程序也没有服务，每个请求干等 10 秒才返回，一个用例里调两次就
+// 超过 20 秒的超时（PR #35 的 CI 实测；11-12 缺省后端改成 herdr 起就这样，之前
+// 一直被前一步的 lint 挡着没跑到）。这个文件断言的是 iOS 接口的返回形状，和用
+// 哪个终端后端无关；名单在这个文件里本来就该是空的。
+const cfg = configSchema.parse({
+  data_dir: dir, agent_backend: 'tmux', tmux_socket_path: join(dir, 'tmux.sock'),
+  email: { default_session: 'agent-a', default_project: 'demo' },
+});
 const rt = createRuntime(cfg);
 const app = createHttpApp(rt);
 
@@ -159,10 +168,73 @@ describe('artifacts 族', () => {
     const dl = await app.request(`/api/artifacts/${put.id}/content`);
     expect(dl.status).toBe(200);
     expect(await dl.text()).toBe('<h1>ok</h1>');
+    // 2026-11-23 全量审查修复：html 同源内联直开时工件里的脚本会在引擎的源上
+    // 运行——响应必须带 nosniff + CSP sandbox。
+    expect(dl.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(dl.headers.get('content-security-policy')).toBe("sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:");
 
     const purge = await j('POST', `/api/lifecycle/workflows/${wid}/artifacts/purge`);
     expect(purge.data.purged).toBe(1);
     expect((await app.request(`/api/artifacts/${put.id}/content`)).status).toBe(410);
+  });
+
+  it('content 响应头按类型加：html / svg 带 nosniff + CSP sandbox；png / pdf / json 只带 nosniff（预览不受影响）', async () => {
+    const wid = seed('t-headers', 'hdr@x.com');
+    const put = (name: string, bytes: Buffer): Promise<{ id: string }> =>
+      rt.artifactLedger.putAndRegister({ workflowId: wid, role: 'agent_output', name, bytes });
+    const html = await put('report.html', Buffer.from('<h1>报告</h1>'));
+    const svg = await put('diagram.svg', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'));
+    const png = await put('shot.png', Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    const pdf = await put('contract.pdf', Buffer.from('%PDF-1.4'));
+    const json = await put('reply.json', Buffer.from('{"a":1}'));
+    const headers = async (id: string): Promise<Headers> => {
+      const res = await app.request(`/api/artifacts/${id}/content`);
+      expect(res.status).toBe(200);
+      return res.headers;
+    };
+    // 可执行文档类型：两个头都在。
+    for (const [id, type] of [[html.id, 'text/html; charset=utf-8'], [svg.id, 'image/svg+xml']] as const) {
+      const h = await headers(id);
+      expect(h.get('content-type'), type).toBe(type);
+      expect(h.get('x-content-type-options'), type).toBe('nosniff');
+      expect(h.get('content-security-policy'), type).toBe("sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:");
+    }
+    // 非脚本执行面：只加 nosniff，不加 CSP——iPhone QuickLook / 浏览器直接预览照旧。
+    for (const [id, type] of [[png.id, 'image/png'], [pdf.id, 'application/pdf'], [json.id, 'application/json; charset=utf-8']] as const) {
+      const h = await headers(id);
+      expect(h.get('content-type'), type).toBe(type);
+      expect(h.get('x-content-type-options'), type).toBe('nosniff');
+      expect(h.get('content-security-policy'), type).toBeNull();
+    }
+    // inline disposition 等原有头不受影响。
+    expect((await headers(html.id)).get('content-disposition')).toContain('inline;');
+  });
+
+  it('GET /api/artifact?session&path 按路径取件：响应头同样按类型加（html 带 nosniff + CSP sandbox；png / json 只带 nosniff）', async () => {
+    const wid = seed('t-path-headers', 'phdr@x.com');
+    const put = (name: string, bytes: Buffer): Promise<{ id: string }> =>
+      rt.artifactLedger.putAndRegister({ workflowId: wid, role: 'agent_output', name, bytes });
+    await put('by-path.html', Buffer.from('<h1>按路径</h1>'));
+    await put('by-path.png', Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    await put('by-path.json', Buffer.from('{"a":1}'));
+    const headers = async (path: string): Promise<Headers> => {
+      const res = await app.request(`/api/artifact?session=${wid}&path=${path}`);
+      expect(res.status).toBe(200);
+      return res.headers;
+    };
+    // 2026-11-23 全量审查修复：这个路由同样把文件内联返回，此前漏了安全头——
+    // 同文件里按 id 取件的路由已经加了，按路径取件的这条没跟。
+    const html = await headers('by-path.html');
+    expect(html.get('content-type')).toBe('text/html');
+    expect(html.get('x-content-type-options')).toBe('nosniff');
+    expect(html.get('content-security-policy')).toBe("sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:");
+    // 非脚本执行面：只加 nosniff，不加 CSP——预览照旧。
+    for (const [path, type] of [['by-path.png', 'image/png'], ['by-path.json', 'application/json']] as const) {
+      const h = await headers(path);
+      expect(h.get('content-type'), path).toBe(type);
+      expect(h.get('x-content-type-options'), path).toBe('nosniff');
+      expect(h.get('content-security-policy'), path).toBeNull();
+    }
   });
 
   it('会话产物裸数组 + content 按类型出流', async () => {

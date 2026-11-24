@@ -2,7 +2,8 @@
 // 宽松 JSON 解析。分发表（engine.stepHandlers）指向各能力模块。
 
 import { asString, truncate } from '../../../platform/shared/json.ts';
-import { type Clock, type JsonRecord } from '@juli-os/artifacts';
+import type { Clock } from '../../../platform/shared/clock.ts';
+import type { JsonRecord } from '../../../platform/shared/json.ts';
 import { type LifecycleStore, type Step, type Workflow } from '@juli-os/ledger';
 import type { ArtifactPort } from '../../../contracts/ports.ts';
 

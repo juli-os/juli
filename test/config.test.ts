@@ -88,12 +88,34 @@ describe('resolveSecret', () => {
     )).toBe('env-secret');
   });
 
-  it('keychain: 引用经 security CLI 解析', () => {
+  it('keychain: 引用经 security CLI 解析：命令是「文件 + 参数数组」，不是拼好的命令行', () => {
+    // 服务名按原样取冒号后的全部字符（不 trim）——写法必须是 keychain:<svc>，不留空格。
+    const calls: { file: string; args: readonly string[] }[] = [];
     const v = resolveSecret(
-      { configured: 'keychain: juli-smtp' },
-      { run: (cmd) => (cmd.includes('juli-smtp') ? 'real-password\n' : null) },
+      { configured: 'keychain:juli-smtp' },
+      {
+        run: (file, args) => {
+          calls.push({ file, args });
+          return args.includes('juli-smtp') ? 'real-password\n' : null;
+        },
+      },
     );
     expect(v).toBe('real-password'); // security 输出的尾部换行被 trim
+    expect(calls).toEqual([{ file: '/usr/bin/security', args: ['find-generic-password', '-s', 'juli-smtp', '-w'] }]);
+  });
+
+  // 2026-11-23 全量审查修复：此前是拼字符串交给 shell 执行（execSync）。
+  // 服务名裹在双引号里，但双引号挡不住 $(...) 和反引号——能写配置的人
+  // 就能让引擎执行任意命令。现在参数逐个传，不经过 shell。
+  it('服务名含 $(…)、反引号、双引号、空格：假执行器收到的参数与服务名逐字符相同', () => {
+    const service = '$(echo pwned) `id` "quoted name"; rm -rf ~';
+    const calls: { file: string; args: readonly string[] }[] = [];
+    const v = resolveSecret(
+      { configured: `keychain:${service}` },
+      { run: (file, args) => { calls.push({ file, args }); return 's3cret\n'; } },
+    );
+    expect(v).toBe('s3cret');
+    expect(calls).toEqual([{ file: '/usr/bin/security', args: ['find-generic-password', '-s', service, '-w'] }]);
   });
 
   it('字面量直通', () => {

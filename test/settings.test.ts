@@ -143,8 +143,8 @@ describe('HTTP /api/settings', () => {
   // config.json、GET 展示断言误红。清场管本 describe 全部用例，恢复在 afterAll
   //（等价 try/finally：describe 收尾即还原，不向同 worker 其他测试文件泄漏）。
   const envKeys = [
-    'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN',
-    'JULI_AI_API_KEY', 'JULI_LLM_API_KEY', 'MAKRO_LLM_API_KEY',
+    'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL',
+    'JULI_AI_API_KEY', 'JULI_LLM_API_KEY', 'MAKRO_LLM_API_KEY', 'JULI_AI_BASE_URL',
     'JULI_DATA_DIR', 'MAKRO_DATA_DIR',
   ];
   const savedEnv = new Map(envKeys.map((k) => [k, process.env[k]]));
@@ -279,6 +279,46 @@ describe('HTTP /api/settings', () => {
     } finally {
       rmSync(dir2, { recursive: true, force: true });
       rmSync(home2, { recursive: true, force: true });
+    }
+  });
+
+  it('PUT ai.base_url：先设地址、再只存模型、再清空——地址不被冲掉，清空后进程环境里的 ANTHROPIC_BASE_URL 被移除（2026-11-23 全量审查修复）', async () => {
+    // 独立 runtime。引擎是从盘上的 config.json 启动的，热改的生效值以盘上为准
+    //（2026-11-24 R2 复审 P1-A）：所以先把启动配置写成文件；配置里得先有 key
+    //（没 key = 整段不注入，到不了清空这一步）。
+    const dir3 = mkdtempSync(join(tmpdir(), 'juli-settings-baseurl-'));
+    const home3 = mkdtempSync(join(tmpdir(), 'juli-settings-baseurl-home-'));
+    const boot3 = { data_dir: dir3, password: 'pw-baseurl', ai: { api_key: 'sk-baseurl' } };
+    mkdirSync(join(home3, '.juli-service'), { recursive: true });
+    writeFileSync(join(home3, '.juli-service', 'config.json'), JSON.stringify(boot3));
+    const rt3 = createRuntime(configSchema.parse(boot3), { home: home3 });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 同上：settings PUT 探针。
+    const put3 = async (patch: unknown): Promise<{ status: number; data: any }> => {
+      const res = await createHttpApp(rt3).request('/api/settings', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer pw-baseurl' },
+        body: JSON.stringify({ patch }),
+      });
+      return { status: res.status, data: await res.json().catch(() => null) };
+    };
+    try {
+      const set = await put3({ ai: { base_url: 'https://proxy.example' } });
+      expect(set.status).toBe(200);
+      expect(process.env['ANTHROPIC_BASE_URL']).toBe('https://proxy.example');
+      // 只存模型（2026-11-24 R2 复审 P1-A）：此前生效值用「启动配置 + 本次补丁」
+      // 算，这一次算出来的地址是启动时的空值，上一次保存的地址被删掉。
+      const model = await put3({ ai: { model: 'some-model' } });
+      expect(model.status).toBe(200);
+      expect(process.env['ANTHROPIC_BASE_URL']).toBe('https://proxy.example');
+      // 清空：此前这一步只是跳过赋值，旧地址留在进程环境里——之后首建的
+      // tmux server / herdr server 从引擎环境继承到的还是旧地址，接口却回「已生效」。
+      const clear = await put3({ ai: { base_url: '' } });
+      expect(clear.status).toBe(200);
+      expect(clear.data.applied_hot.join('\n')).toContain('ai（');
+      expect(process.env['ANTHROPIC_BASE_URL']).toBeUndefined();
+    } finally {
+      rmSync(dir3, { recursive: true, force: true });
+      rmSync(home3, { recursive: true, force: true });
     }
   });
 });

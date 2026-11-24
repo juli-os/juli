@@ -10,14 +10,17 @@ import { fileURLToPath } from 'node:url';
 import { safeEqual } from '../platform/shared/secure.ts';
 import type { Runtime } from '../runtime.ts';
 import { bodyStr, makeShareAuth, readBody, type AppEnv } from './helpers.ts';
+import { parseTenantScope } from '../business/workflow/tenantScope.ts';
 import { registerLifecycleRoutes } from './routes/lifecycle.ts';
 import { registerPipelinesRoutes } from './routes/pipelines.ts';
 import { registerSettingsRoutes } from './routes/settings.ts';
+import { registerTenantsRoutes } from './routes/tenants.ts';
 import { registerEmailRoutes } from './routes/email.ts';
 import { registerAgentsRoutes } from './routes/agents.ts';
 import { registerArtifactsRoutes } from './routes/artifacts.ts';
 import { registerChatRoutes } from './routes/chat.ts';
 import { registerEventsRoutes } from './routes/events.ts';
+import { registerGatesRoutes } from './routes/gates.ts';
 // 业务路由分册（反馈墙/客户/运维/统计——MVP 公开砍面聚合处，公开投影=空桩）
 import { registerBusinessRoutes } from './businessRoutes.ts';
 import { VERSION } from '../contracts/version.ts';
@@ -82,6 +85,26 @@ export const createHttpApp = (rt: Runtime): Hono<AppEnv> => {
     return c.json({ error: 'unauthorized' }, 401);
   });
 
+  // 读侧租户边界（2026-11-08 多租户提案 A2）：X-Juli-Tenant → TenantScope 挂
+  // context。没有头 = all（operator 形态，iOS/CLI 既有行为零变化）；声明的
+  // 租户 id = one（读 API 下推过滤）；未声明的 id = 400 点名。必须排在鉴权
+  // 之后、资源路由之前——读面全按 context 的 scope 收口。
+  // 取值 header 优先、同名 query（X-Juli-Tenant）兜底（2026-11-09 F1）：
+  // EventSource 设不了自定义 header，SSE（/api/events/stream）的租户身份与
+  // 重连只能靠 query 带——契约见 tenantScope.ts（「header 或同名 query」），
+  // 与 WS 握手（url.searchParams 'X-Juli-Tenant'）同名同序。
+  app.use('/api/*', async (c, next) => {
+    try {
+      c.set('tenantScope', parseTenantScope(
+        c.req.header('x-juli-tenant') ?? c.req.query('X-Juli-Tenant') ?? undefined,
+        rt.tenants.tenants.map((t) => t.id),
+      ));
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+    }
+    await next();
+  });
+
   app.get('/api/version', (c) => c.json({ version: VERSION }));
 
   // iOS 设备推送 token 注册（幂等 upsert）。
@@ -95,8 +118,10 @@ export const createHttpApp = (rt: Runtime): Hono<AppEnv> => {
 
   // ---- 资源族路由（注册顺序=原 app.ts 出现序；SSE/SPA 兜底必须垫底）----
   registerLifecycleRoutes(app, rt);
+  registerGatesRoutes(app, rt);
   registerPipelinesRoutes(app, rt);
   registerSettingsRoutes(app, rt);
+  registerTenantsRoutes(app, () => rt.tenants.tenants);
   registerEmailRoutes(app, rt);
   registerAgentsRoutes(app, rt);
   registerArtifactsRoutes(app, rt);
@@ -121,8 +146,9 @@ export const createHttpApp = (rt: Runtime): Hono<AppEnv> => {
     app.get('*', (c) => {
       const path = c.req.path;
       // 铁律（262fe94 教训）：SPA 回退绝不吞掉 API 路径——未注册的 /api/*
-      // 必须明明白白 404，否则前端拿到 200 HTML 会把 null 当数据。
-      if (path.startsWith('/api/') || path === '/healthz') return c.notFound();
+      // 必须明明白白 404，否则前端拿到 200 HTML 会把 null 当数据。/__fb/*
+      // 同待遇（2026-11-13 挂件口已摘除，免密路径族不吃 SPA 壳）。
+      if (path.startsWith('/api/') || path.startsWith('/__fb/') || path === '/__fb' || path === '/healthz') return c.notFound();
       // 带 extension 的请求按静态文件解析（含路径穿越守卫）；其余回退 SPA 壳。
       const wantsFile = path !== '/' && /\.[a-z0-9]+$/i.test(path);
       const rel = wantsFile ? normalize(path).replace(/^([/\\])+/, '') : 'index.html';

@@ -14,7 +14,7 @@ import { createLedgerStore } from '@juli-os/ledger';
 import { configSchema } from '../src/platform/config/schema.ts';
 import { createRuntime } from '../src/runtime.ts';
 import { createEngine, type EngineDeps } from '../src/business/workflow/engine.ts';
-import { ok } from '@juli-os/artifacts';
+import { ok } from '../src/platform/shared/result.ts';
 import { makeClock, seqIds } from './helpers.ts';
 import type { MailerPort, PusherPort } from '../src/contracts/ports.ts';
 
@@ -81,7 +81,6 @@ const makeHarness = (agents: readonly { session: string; cwd?: string; model_tie
       agents: agents.map((a) => ({ session: a.session, company: '', domain: '', cwd: a.cwd ?? '', model_tier: a.model_tier })),
     },
     dispatch: { async dispatch(_s, _session, _t) { return ok(undefined); } },
-    syncDispatch: null,
     pusher: { async gateWaiting() {}, async workflowDone() {}, async workflowFailed() {} } satisfies PusherPort,
     mailer: { async send() { return ok({ messageId: '<x@j>' }); } } satisfies MailerPort,
     captureOutput: async () => null, workspaceFor: null,

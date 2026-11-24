@@ -8,7 +8,7 @@ import { stepToGo } from '../src/platform/shared/goShape.ts';
 import { fixedClock, makeClock, makeEmail, seqIds } from './helpers.ts';
 import { createEngine, type Engine, type EngineDeps } from '../src/business/workflow/engine.ts';
 import { parseTemplate } from '../src/business/templates/template.ts';
-import { ok } from '@juli-os/artifacts';
+import { ok } from '../src/platform/shared/result.ts';
 import type { LlmPort, MailerPort, PusherPort } from '../src/contracts/ports.ts';
 
 const NODES_YAML = `key: adhoc-nodes
@@ -56,7 +56,6 @@ const makeW = (): W => {
     model: 't',
     routing: { defaultSession: '', defaultProject: 'p' },
     dispatch: { async dispatch() { return ok(undefined); } },
-    syncDispatch: null,
     pusher: { async gateWaiting() {}, async workflowDone() {}, async workflowFailed() {} } satisfies PusherPort,
     mailer: {
       async send(cmd) { sent.push({ to: cmd.to, subject: cmd.subject, body: cmd.body, inReplyTo: cmd.inReplyTo }); return ok({ messageId: '<m@x>' }); },

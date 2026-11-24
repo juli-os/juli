@@ -2,7 +2,7 @@
 // 线程三级建档/Party 指针/工件物证/绑定路由/route_decision 留痕/首节点
 // 任务卡）与泛化渠道（onInbound：无模板路由的动态进件，事件直达 nodes）。
 
-import { type Clock } from '@juli-os/artifacts';
+import type { Clock } from '../../platform/shared/clock.ts';
 import { truncate } from '../../platform/shared/json.ts';
 import { normalizeEmail } from '../../platform/shared/email.ts';
 import type { Logger } from '../../platform/events/bus.ts';
@@ -15,6 +15,7 @@ import { checkAuthz, type AuthzPolicy } from '../../contracts/authz.ts';
 import type { PartyMatch } from '../party/party.ts';
 import { decideRoute, isInternalSender } from '@juli-os/routing';
 import { INTAKE_PROMPT } from './support.ts';
+import { resolveTenantOf, type TenantResolution } from './tenantResolve.ts';
 import type { EngineDeps } from './engine.ts';
 import type { Queue } from './queue.ts';
 
@@ -45,6 +46,10 @@ export const makeIntake = (o: { readonly deps: EngineDeps;
 }): Intake => {
   const { deps, store, log } = o;
   const now = o.now;
+  // 写侧打标记（A3）：邮件/泛化渠道进件的租户判定面。表未接 = null = 不
+  // stamp（store 缺省 internal，行为与 A3 之前一致）。
+  const stampOf = (senderAddress: string): TenantResolution | null =>
+    resolveTenantOf(deps.tenantSignals, { senderAddress });
 
   const onInbound = async (m: InboundMessage): Promise<void> => {
     if (m.channel === 'email') {
@@ -64,9 +69,14 @@ export const makeIntake = (o: { readonly deps: EngineDeps;
     }
     // 动态模型：泛化渠道同 email——无 trigger 路由，事件直达 nodes。
     const t = title0(m.subject, m.channel);
+    const stamp = stampOf(m.from);
     const w = store.createWorkflow({
       kind: m.channel, title: truncate(t, 120), status: 'queued',
-      meta: { from: m.from, channel: m.channel, subject: m.subject, dedup_key: m.dedupKey, mode: 'nodes' },
+      ...(stamp !== null ? { tenant: stamp.tenant } : {}),
+      meta: {
+        from: m.from, channel: m.channel, subject: m.subject, dedup_key: m.dedupKey, mode: 'nodes',
+        ...(stamp !== null ? { tenant_basis: stamp.basis } : {}),
+      },
     });
     store.appendEvent('workflow', w.id, 'flow_started', { channel: m.channel, from: m.from });
     store.appendEvent('workflow', w.id, 'task_queued', { via: `inbound:${m.channel}` });
@@ -208,15 +218,18 @@ export const makeIntake = (o: { readonly deps: EngineDeps;
     // （status=rejected，原邮件进 meta）——可审计、可人工恢复。
     const reason = checkAuthz(o.getAuthz(), m.from);
     if (reason !== null) {
+      const stamp = stampOf(m.from);
       const w = store.createWorkflow({
         kind: 'email',
         status: 'rejected',
         title: `[rejected] ${truncate(m.subject, 120)}`,
+        ...(stamp !== null ? { tenant: stamp.tenant } : {}),
         meta: {
           from: m.from, subject: m.subject, message_id: m.messageId,
           date: m.date, uid: String(m.uid), [DEDUP_META_KEY]: dedupKey(m),
           rejected_reason: reason,
           in_reply_to: m.inReplyTo ?? '', references: refsOf(m.references),
+          ...(stamp !== null ? { tenant_basis: stamp.basis } : {}),
         },
       });
       store.appendEvent('workflow', w.id, 'email_rejected', { from: m.from, reason });
@@ -254,17 +267,22 @@ export const makeIntake = (o: { readonly deps: EngineDeps;
         }
       }
     }
+    // 写侧打标记（A3）：发件地址即租户信号（完整地址 > 域名），与建单同一次
+    // 写入。租户跟业务归属走，不存在「先落库再补标」的双写窗口。
+    const stamp = stampOf(m.from);
     const w = store.createWorkflow({
       kind: 'email',
       title: truncate(m.subject, 120),
       parentId: related ?? undefined,
       status: 'queued',
+      ...(stamp !== null ? { tenant: stamp.tenant } : {}),
       meta: {
         from: m.from, ...(m.fromName !== undefined && m.fromName !== '' ? { from_name: m.fromName } : {}),
         subject: m.subject, message_id: m.messageId,
         date: m.date, uid: String(m.uid), [DEDUP_META_KEY]: dedupKey(m),
         in_reply_to: m.inReplyTo ?? '', references: refs,
         ...(related !== null ? { related_workflow: related } : {}),
+        ...(stamp !== null ? { tenant_basis: stamp.basis } : {}),
       },
     });
     store.appendEvent('workflow', w.id, 'task_queued', { via: 'email' });
@@ -383,6 +401,22 @@ export const makeIntake = (o: { readonly deps: EngineDeps;
     // 的最终值）直接钉进步 1 并回写 workflow.session——queued 期即占住会话，
     // 「排队也是忙」判定得到。default 也显式写（与留空等价，账本更诚实）。
     if (route.session !== '') store.setWorkflowSession(w.id, route.session);
+    // session 兜底档（A3）：进件时无信号的单（basis=default）路由完成后按
+    // 落点会话补一次 stamp，租户跟业务归属走（setWorkflowTenant 幂等）。
+    // 判出的租户与现值相同则 no-op 不动（basis 保持 default 语义诚实：
+    // 是「没信号」不是「会话定的」）；只有会话真改判租户时才覆写 basis。
+    // 补判看重读的单子，不看建单时的 stamp。建单之后隔着当事人查询、附件落盘
+    // 与 route_intake 判定（最长 30s）几处 await，单子 queued 期间认领端点可以
+    // 改判。现值 basis 仍是 default 才补判，人认领的不被会话信号覆盖，比对也
+    // 用现值租户。
+    const cur = store.getWorkflow(w.id);
+    if (route.session !== '' && cur !== null && cur.meta['tenant_basis'] === 'default') {
+      const bySess = resolveTenantOf(deps.tenantSignals, { session: route.session });
+      if (bySess !== null && bySess.tenant !== cur.tenant) {
+        store.setWorkflowTenant(w.id, bySess.tenant);
+        store.updateWorkflowMeta(w.id, { tenant_basis: bySess.basis });
+      }
+    }
     store.createStep({
       workflowId: w.id, seq: 1,
       kind: 'agent', title: '理解（读原文）',

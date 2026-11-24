@@ -4,9 +4,10 @@
 
 import { describe, expect, it } from 'vitest';
 import { createMailSource } from '../src/platform/email/source.ts';
+import type { AuthzPolicy } from '../src/contracts/authz.ts';
 import type { ImapTransport } from '../src/platform/email/imap.ts';
 import type { InboxMessage } from '../src/platform/email/inbox.ts';
-import { ok } from '@juli-os/artifacts';
+import { ok } from '../src/platform/shared/result.ts';
 
 interface Env {
   readonly uid: number;
@@ -107,5 +108,86 @@ describe('createMailSource 的 \\Seen 处置（2026-09-21 洪水收口）', () =
     await h.pollOnce();
     expect(h.marked).toEqual([[12]]); // 抛错的不标，好信照标
     expect(h.ingested).toEqual([]);
+  });
+});
+
+// 渠道闸的策略热改（2026-11-23 全量审查修复）：渠道授权此前是装配时定死的
+// 只读依赖——授权面板改完策略，渠道闸还是启动时那一份，新加的白名单地址继续
+// 在阶段一被跳过（不建单、不留痕）。setAuthzPolicy 改的是源内部持有的策略，
+// 下一轮轮询就按新策略过滤；传进来的 deps.channelAuthz 对象不动。
+describe('createMailSource 的渠道闸热改（2026-11-23）', () => {
+  interface Gate {
+    readonly source: ReturnType<typeof createMailSource>;
+    /** 每轮 pollOnce 实际拉正文的 uid（过了渠道闸的才算）。 */
+    readonly fetched: number[][];
+    readonly ingested: string[];
+  }
+  const gate = (initial: AuthzPolicy): Gate => {
+    const fetched: number[][] = [];
+    const ingested: string[] = [];
+    const envelopes = [
+      { uid: 21, from: 'vip@corp.io', messageId: '<vip@x>' },
+      { uid: 22, from: 'stranger@else.io', messageId: '<stranger@x>' },
+    ];
+    const transport: ImapTransport = {
+      async listEnvelopes() {
+        return ok(envelopes.map((e) => ({
+          uid: e.uid, from: e.from, subject: `s-${e.uid}`, date: '2026-11-23T00:00:00Z', messageId: e.messageId,
+        })));
+      },
+      async fetchBodies(uids) {
+        fetched.push([...uids]);
+        return ok(uids.map((uid) => {
+          const e = envelopes.find((x) => x.uid === uid)!;
+          return { ...msg(uid, e.messageId), from: e.from };
+        }));
+      },
+      async markProcessed() {},
+      async close() {},
+    };
+    const source = createMailSource({
+      params: { host: 'imap.test:993', username: 'u', mailbox: '' },
+      password: 'p',
+      dial: async () => ok(transport),
+      ledgerSeen: async () => false,
+      channelAuthz: initial,
+      onMessage: async (m) => { ingested.push(m.from); },
+      log: () => undefined,
+    });
+    return { source, fetched, ingested };
+  };
+
+  it('改策略后下一轮轮询按新策略放行：新加进白名单的地址不再被渠道闸跳过', async () => {
+    const g = gate({ mode: 'allowlist', allow: ['*@corp.io'], deny: [] });
+    await g.source.pollOnce();
+    expect(g.fetched).toEqual([[21]]); // stranger 不在白名单：阶段一被挡，不拉正文
+    expect(g.ingested).toEqual(['vip@corp.io']);
+
+    g.source.setAuthzPolicy({ mode: 'allowlist', allow: ['*@corp.io', 'stranger@else.io'], deny: [] });
+    await g.source.pollOnce();
+    expect(g.fetched.at(-1)).toEqual([21, 22]);
+    expect(g.ingested.at(-1)).toBe('stranger@else.io');
+  });
+
+  it('改策略后下一轮轮询按新策略拒绝：拉黑之后名单内的发件人也被挡', async () => {
+    const g = gate({ mode: 'open', allow: [], deny: [] });
+    await g.source.pollOnce();
+    expect(g.fetched).toEqual([[21, 22]]);
+
+    g.source.setAuthzPolicy({ mode: 'open', allow: [], deny: ['*@corp.io'] });
+    await g.source.pollOnce();
+    expect(g.fetched.at(-1)).toEqual([22]);
+    expect(g.ingested).toEqual(['vip@corp.io', 'stranger@else.io', 'stranger@else.io']);
+  });
+
+  it('热改改的是源内部持有的策略，传入的 deps.channelAuthz 对象不被改动', async () => {
+    const initial: AuthzPolicy = Object.freeze({ mode: 'allowlist', allow: Object.freeze(['*@corp.io']), deny: Object.freeze([]) });
+    const g = gate(initial);
+    await g.source.pollOnce();
+    g.source.setAuthzPolicy({ mode: 'open', allow: [], deny: [] });
+    await g.source.pollOnce();
+    expect(g.fetched.at(-1)).toEqual([21, 22]);
+    // 冻结对象：被改写会直接抛错；内容也必须原样。
+    expect(initial).toEqual({ mode: 'allowlist', allow: ['*@corp.io'], deny: [] });
   });
 });

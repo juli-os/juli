@@ -1,7 +1,7 @@
 // draft：从已审定的执行产出起草回信（读案卷的累积上下文，非接力种子）。
 
 import { asString, truncate } from '../../../platform/shared/json.ts'
-import { asRecord } from '@juli-os/artifacts'
+import { asRecord } from '../../../platform/shared/json.ts'
 import { originalEmail } from '@juli-os/ledger';
 import { parseLoose, type StepCtx } from './common.ts';
 

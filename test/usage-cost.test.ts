@@ -12,6 +12,11 @@ import { createRuntime } from '../src/runtime.ts';
 import { createHttpApp } from '../src/http/app.ts';
 import { costContextOf } from '../src/business/workflow/costContext.ts';
 
+/** 账本第二连接（ledger 0.5.0 句柄私有，白盒摆数/对账走这里）。 */
+const probeOf = (rt: { config: { data_dir: string } }): import('node:sqlite').DatabaseSync =>
+  new DatabaseSync(join(rt.config.data_dir, 'lifecycle.db'));
+
+
 describe('costContextOf 计费时点窗口延伸（wf_be61c3a55842）', () => {
   const agent = (a: string, b: string) => ({ kind: 'agent', status: 'completed', startedAt: a, updatedAt: b, completedAt: b });
   const gateDone = (at: string, delivery = 'apply') =>
@@ -82,9 +87,9 @@ describe('GET /api/lifecycle/workflows/:id usageCost', () => {
       }));
       const app = createHttpApp(rt);
       const w = rt.store.createWorkflow({ kind: 'adhoc', title: '计价单' });
-      rt.store.db.prepare('UPDATE workflows SET session=? WHERE id=?').run('juli-a', w.id);
+      probeOf(rt).prepare('UPDATE workflows SET session=? WHERE id=?').run('juli-a', w.id);
       const st = rt.store.createStep({ workflowId: w.id, seq: 1, kind: 'agent', title: '执行' });
-      rt.store.db.prepare('UPDATE workflow_steps SET started_at=?, updated_at=? WHERE id=?')
+      probeOf(rt).prepare('UPDATE workflow_steps SET started_at=?, updated_at=? WHERE id=?')
         .run('2026-10-06T01:00:00Z', '2026-10-06T02:00:00Z', st.id);
       const udb = new DatabaseSync(join(dir, 'prompt_usage.db'));
       insertTurn(udb, 'juli-a', 'glm-5.3-flash', 1_000_000, 100_000, 800_000, '2026-10-06T01:10:00.000Z'); // 窗内
@@ -126,9 +131,9 @@ describe('GET /api/lifecycle/workflows/:id usageCost', () => {
       const w = rt.store.createWorkflow({
         kind: 'adhoc', title: '转派计价单', meta: { assigned_session: 'juli-b' },
       });
-      rt.store.db.prepare('UPDATE workflows SET session=? WHERE id=?').run('juli-a', w.id);
+      probeOf(rt).prepare('UPDATE workflows SET session=? WHERE id=?').run('juli-a', w.id);
       const st = rt.store.createStep({ workflowId: w.id, seq: 1, kind: 'agent', title: '执行' });
-      rt.store.db.prepare('UPDATE workflow_steps SET started_at=?, updated_at=? WHERE id=?')
+      probeOf(rt).prepare('UPDATE workflow_steps SET started_at=?, updated_at=? WHERE id=?')
         .run('2026-10-06T01:00:00Z', '2026-10-06T02:00:00Z', st.id);
       const udb = new DatabaseSync(join(dir, 'prompt_usage.db'));
       insertTurn(udb, 'juli-a', 'glm-5.3', 1_000_000, 0, 0, '2026-10-06T01:10:00.000Z');   // 8 元
@@ -179,19 +184,19 @@ describe('GET /api/lifecycle/workflows/:id usageCost', () => {
       }));
       const app = createHttpApp(rt);
       const w = rt.store.createWorkflow({ kind: 'adhoc', title: '回流计价单', meta: { mode: 'nodes' } });
-      rt.store.db.prepare('UPDATE workflows SET session=?, updated_at=? WHERE id=?')
+      probeOf(rt).prepare('UPDATE workflows SET session=?, updated_at=? WHERE id=?')
         .run('juli-a', '2026-10-09T03:00:00Z', w.id);
       const st = rt.store.createStep({ workflowId: w.id, seq: 1, kind: 'agent', title: '执行' });
-      rt.store.db.prepare('UPDATE workflow_steps SET started_at=?, updated_at=?, status=? WHERE id=?')
+      probeOf(rt).prepare('UPDATE workflow_steps SET started_at=?, updated_at=?, status=? WHERE id=?')
         .run('2026-10-09T01:00:00Z', '2026-10-09T02:00:00Z', 'completed', st.id);
       const g = rt.store.createStep({
         workflowId: w.id, seq: 2, kind: 'gate', title: '确认闸门',
         input: { delivery: 'apply' },
       });
       // 闸门 completed 于 02:30（approve 时刻）；run 终态（completed）于 03:00。
-      rt.store.db.prepare('UPDATE workflow_steps SET updated_at=?, status=? WHERE id=?')
+      probeOf(rt).prepare('UPDATE workflow_steps SET updated_at=?, status=? WHERE id=?')
         .run('2026-10-09T02:30:00Z', 'completed', g.id);
-      rt.store.db.prepare('UPDATE workflows SET status=? WHERE id=?').run('completed', w.id);
+      probeOf(rt).prepare('UPDATE workflows SET status=? WHERE id=?').run('completed', w.id);
       const udb = new DatabaseSync(join(dir, 'prompt_usage.db'));
       insertTurn(udb, 'juli-a', 'glm-5.3', 1_000_000, 0, 0, '2026-10-09T01:10:00.000Z'); // 步窗内：8 元
       insertTurn(udb, 'juli-a', 'glm-5.3', 1_000_000, 0, 0, '2026-10-09T02:45:00.000Z'); // 延伸段（回流执行）：8 元

@@ -1,16 +1,17 @@
 // 工件库：列表/取件/分享签名/案卷工件面/清理。
 // 分层重构（2026-09-23）：自 app.ts 按资源族拆出，路由注册体逐字保留。
 
-import type { Hono } from 'hono';
+import type { Context, Hono } from 'hono';
 import type { ArtifactRow } from '@juli-os/artifacts';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
 import type { Runtime } from '../../runtime.ts';
-import { bodyStr, readBody, makeShareAuth, inlineDisposition, type AppEnv } from '../helpers.ts';
+import { bodyStr, inlineContentSecurityHeaders, readBody, makeShareAuth, inlineDisposition, tenantScopeOf, type AppEnv } from '../helpers.ts';
+import { scopeSees } from '../../business/workflow/tenantScope.ts';
 
 export const registerArtifactsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
-  const { shareTtlSec: SHARE_TTL_SEC, shareSign } = makeShareAuth(rt);
+  const { shareTtlSec: SHARE_TTL_SEC, shareSign, shareVerify } = makeShareAuth(rt);
   const artifactMime = (name: string): string => {
     const ext = name.split('.').pop()?.toLowerCase() ?? '';
     const map: Record<string, string> = {
@@ -41,17 +42,16 @@ export const registerArtifactsRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
     // 一次性读账本，构建全量 keySet 与已墓碑 tombstonedKeys 供 pushFile 过滤；
     // key→id 映射给 /api/artifacts 行补账本 id（iOS 分享 POST /api/artifact/
     // share {id} 的取值面，2026-09-20 P2 契约对齐）。
-    const ledgerRows = rt.store.db.prepare('SELECT id, key, deleted_at FROM artifacts').all() as
-      Record<string, string | null>[];
+    // ledger 关门（2026-11-12）：直查改 ArtifactLedger.listLight。
+    const ledgerRows = rt.artifactLedger.listLight();
     const keySet = new Set<string>();
     const tombstonedKeys = new Set<string>();
     const ledgerIdByKey = new Map<string, string>();
     for (const r of ledgerRows) {
-      const key = String(r['key'] ?? '');
-      if (key === '') continue;
-      keySet.add(key);
-      if (r['deleted_at'] !== null) tombstonedKeys.add(key);
-      ledgerIdByKey.set(key, String(r['id'] ?? ''));
+      if (r.key === '') continue;
+      keySet.add(r.key);
+      if (r.deletedAt !== null) tombstonedKeys.add(r.key);
+      ledgerIdByKey.set(r.key, r.id);
     }
     const roots = artifactRoots();
     const juliRoot = roots[1] ?? '';
@@ -131,12 +131,20 @@ export const registerArtifactsRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
     // 服务端 join enrich（wf_1bc08ecd4184，方案 A）：juli 工件树 session=工作流
     // id——批量查 workflows 附 {id,title,status}，根治客户端 join 覆盖率缺口
     //（>500 单截断/legacy 名对不上）。legacy makro 会话查无即不附键。
-    const wfRows = rt.store.db.prepare('SELECT id, title, status FROM workflows').all() as
-      Record<string, string>[];
-    const wfById = new Map(wfRows.map((r) => [String(r['id']), {
-      id: String(r['id']), title: String(r['title'] ?? ''), status: String(r['status'] ?? ''),
+    // ledger 关门（2026-11-12）：直查改 listWorkflows（5000 窗口与 usageAggOf
+    // 同款消费面口径；工件页 join 注释 wf_1bc08ecd4184 的覆盖率语义保留）。
+    const wfRows = rt.store.listWorkflows(5000);
+    const wfById = new Map(wfRows.map((r) => [r.id, {
+      id: r.id, title: r.title, status: r.status,
     }]));
+    // 租户收口（A2）：归属经 workflow（session=单子 id）推导，legacy makro 条目
+    // （session=agent 会话名）经 A1 bySession 反查；查无归属只进 all。
+    const scope = tenantScopeOf(c);
+    const tenantById = new Map(wfRows.map((r) => [r.id, r.tenant]));
+    const tenantOfEntry = (entrySession: string): string | null =>
+      tenantById.get(entrySession) ?? rt.tenants.bySession[entrySession] ?? null;
     const rows = all
+      .filter((x) => scopeSees(scope, tenantOfEntry(x.session)))
       .filter((x) => {
         if (x.name.endsWith('.meta.json')) return false;
         if (x.name.endsWith('.md')) return !has.has(`${x.session}/${x.name.slice(0, -3)}.html`);
@@ -159,10 +167,23 @@ export const registerArtifactsRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
     const session = c.req.query('session') ?? '';
     const path = c.req.query('path') ?? '';
     if (session === '' || path === '') return c.json({ error: 'session and path required' }, 400);
+    // 租户收口（A2）：session=单子 id 走单子租户，legacy 会话名走 bySession；
+    // 查无归属只进 all（one 一律 404）。
+    if (!scopeSees(tenantScopeOf(c),
+      rt.store.getWorkflow(session)?.tenant ?? rt.tenants.bySession[session] ?? null)) {
+      return c.text('not found', 404);
+    }
     const hit = walkArtifacts().find((x) => x.session === session && x.name === path);
     if (!hit) return c.text('not found', 404);
     const bytes = readFileSync(hit.file);
-    return c.body(new Uint8Array(bytes), 200, { 'content-type': artifactMime(hit.name) });
+    // 浏览器安全头（2026-11-23 全量审查修复）：这个路由同样把文件内联返回，
+    // 此前只有按 id 取件的那条加了头、按路径取件的这条漏了。类型由文件名
+    // 后缀定（artifactMime），html 带 nosniff + CSP sandbox，其余只带 nosniff。
+    const contentType = artifactMime(hit.name);
+    return c.body(new Uint8Array(bytes), 200, {
+      'content-type': contentType,
+      ...inlineContentSecurityHeaders(contentType),
+    });
   });
 
   // 工件分享外链时长（Go makro shareURLTTL 同款回归）：发出去的链接收件人可能
@@ -179,9 +200,13 @@ export const registerArtifactsRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
     const body = await readBody(c);
     const id = bodyStr(body, 'id');
     if (id === '') return c.json({ error: 'id required' }, 400);
-    const row = rt.store.db.prepare('SELECT key, deleted_at FROM artifacts WHERE id = ?')
-      .get(id) as Record<string, string | null> | undefined;
-    if (!row || row['deleted_at'] !== null || (row['key'] ?? '') === '') {
+    // ledger 关门（2026-11-12）：直查改 ArtifactLedger.getLight。
+    const row = rt.artifactLedger.getLight(id);
+    if (!row || row.deletedAt !== null || row.key === '') {
+      return c.json({ error: 'artifact not found or purged' }, 404);
+    }
+    // 属主闸（A-P1-5）：铸链与取件同判据——one 身份不能给别家单子的工件签链接。
+    if (artifactForeign(c, row.workflowId)) {
       return c.json({ error: 'artifact not found or purged' }, 404);
     }
     if (rt.artifactSharing) {
@@ -205,6 +230,11 @@ export const registerArtifactsRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
   });
 
   // 案件证据链（工件账本投影，Go Artifact 字段逐字）。
+  // 工件属主闸（A-P1-5）：one 身份只能取/分享本租户单子的工件。归属经
+  // artifacts.workflow_id → workflows.tenant；查无单子（legacy/孤儿工件）=
+  // 无归属，只进 all。带有效签名的分享链接不经本闸（收件人没有租户身份）。
+  const artifactForeign = (c: Context<AppEnv>, workflowId: string | null): boolean =>
+    !scopeSees(tenantScopeOf(c), workflowId === null ? null : (rt.store.getWorkflow(workflowId)?.tenant ?? null));
   const goArtifact = (a: ArtifactRow, session: string): Record<string, unknown> => {
     return {
       id: a.id, workflow_id: a.workflowId, role: a.role, name: a.name,
@@ -222,6 +252,10 @@ export const registerArtifactsRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
 
   app.get('/api/lifecycle/workflows/:id/artifacts', (c) => {
     const wf = rt.store.getWorkflow(c.req.param('id'));
+    // 租户收口（A2）：查无单子=归属未知，one 一律空集；all 保持旧行为
+    // （session='' 照列，legacy 容错面不回归）。
+    const scope = tenantScopeOf(c);
+    if (!scopeSees(scope, wf?.tenant ?? null)) return c.json({ artifacts: [] });
     const rows = rt.artifactLedger.list(c.req.param('id'), true);
     const session = wf?.session ?? '';
     return c.json({ artifacts: rows.map((a) => goArtifact(a, session)) });
@@ -229,6 +263,12 @@ export const registerArtifactsRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
 
   app.post('/api/lifecycle/workflows/:id/artifacts/purge', async (c) => {
     const id = c.req.param('id');
+    // 写面租户闸（A-P1-4）：one 身份只能清本租户单子的工件；他租户与不存在
+    // 同响应 404（all 原样：查无单子照旧回 {purged:0}）。
+    const purgeScope = tenantScopeOf(c);
+    if (purgeScope.kind === 'one' && !scopeSees(purgeScope, rt.store.getWorkflow(id)?.tenant ?? null)) {
+      return c.json({ error: 'not found' }, 404);
+    }
     let purged = 0;
     for (const a of rt.artifactLedger.list(id, false)) {
       // purge = 字节 + 墓碑（只 tombstone 会留下能被 walk 出来的幽灵文件）。
@@ -243,27 +283,39 @@ export const registerArtifactsRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
   });
 
   app.get('/api/artifacts/:id/content', async (c) => {
-    const row = rt.store.db.prepare('SELECT key, name, mime, deleted_at FROM artifacts WHERE id = ?')
-      .get(c.req.param('id')) as Record<string, string | null> | undefined;
+    // ledger 关门（2026-11-12）：直查改 ArtifactLedger.getView。
+    const row = rt.artifactLedger.getView(c.req.param('id') ?? '');
     if (!row) return c.json({ error: 'not found' }, 404);
-    if (row['deleted_at'] !== null || (row['key'] ?? '') === '') return c.json({ error: 'purged' }, 410);
-    const bytes = await rt.artifactBackend.get(String(row['key']));
+    // 属主闸（A-P1-5）：one 身份取别家工件 = 404（与不存在同响应）。带有效签名
+    // 的分享链接照旧放行（与 app.ts 鉴权层对同一条链接的放行同判据）。
+    // 必须先于 410：他租户已清理的工件也回 404，不泄露「存在过」。
+    const shareSig = c.req.query('share');
+    if (!shareVerify(c.req.param('id') ?? '', shareSig)
+      && artifactForeign(c, row.workflowId)) {
+      return c.json({ error: 'not found' }, 404);
+    }
+    if (row.deletedAt !== null || row.key === '') return c.json({ error: 'purged' }, 410);
+    const bytes = await rt.artifactBackend.get(row.key);
     if (!bytes.ok) return c.json({ error: 'not found' }, 404);
     // 存量行兜底：登记时被打成 octet-stream 的（guessMime 词表补齐前入库的
     // html/pptx/docx 等），按文件名全量重导——iOS QuickLook 靠 MIME 判预览
     // （wf 用户实报：结案流程图.html 即此类）。
-    const stored = String(row['mime'] ?? 'application/octet-stream');
+    const stored = row.mime === '' ? 'application/octet-stream' : row.mime;
     const mime = stored === 'application/octet-stream'
-      ? artifactMime(String(row['name'] ?? ''))
+      ? artifactMime(row.name)
       : stored;
     // text/* 必须带 charset：裸 text/html 在直开场景（iOS QuickLook/新标签）
     // 按 windows-1252 解码，中文=乱码。fetch/srcdoc 路径默认 UTF-8 不受影响。
     const contentType = mime.startsWith('text/') || mime === 'application/json'
       ? `${mime}; charset=utf-8`
       : mime;
+    // 浏览器安全头（2026-11-23 全量审查修复）：nosniff 恒加；html / svg 另加
+    // CSP sandbox——内联直开时工件里的脚本不得在引擎的源上运行。客户合同下载
+    // （customers.ts）同一收口，见 helpers.ts。
     return c.body(new Uint8Array(bytes.value), 200, {
       'content-type': contentType,
-      'content-disposition': inlineDisposition(String(row['name'] ?? 'artifact')),
+      'content-disposition': inlineDisposition(row.name),
+      ...inlineContentSecurityHeaders(contentType),
     });
   });
 };

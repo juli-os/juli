@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { createLedgerStore } from '@juli-os/ledger';
 import { createEngine, type EngineDeps } from '../src/business/workflow/engine.ts';
 import { tryParseTemplate } from '../src/business/templates/template.ts';
-import { ok } from '@juli-os/artifacts';
+import { ok } from '../src/platform/shared/result.ts';
 import { makeClock, seqIds } from './helpers.ts';
 import type { MailerPort, PusherPort } from '../src/contracts/ports.ts';
 
@@ -23,7 +23,6 @@ const makeWorld = (over: Partial<EngineDeps> = {}) => {
     model: 't',
     routing: { defaultSession: 'juli-reply', defaultProject: 'p' },
     dispatch: { async dispatch(_s, _session, _text) { return ok(undefined); } },
-    syncDispatch: null,
     pusher: {
       async gateWaiting() {},
       async workflowDone() {},

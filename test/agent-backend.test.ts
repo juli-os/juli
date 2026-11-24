@@ -13,9 +13,9 @@ import { createRuntime } from '../src/runtime.ts';
 import { createAgentBackend, installClaudeHooks } from '@juli-os/agents';
 
 describe('config：agent_backend / herdr_session（死键 tmux_mode 已撤）', () => {
-  it('缺省 = tmux（live 零行为变化）+ namespace 默认 juli', () => {
+  it('缺省 = herdr（2026-11-12 裁定翻转；tmux 转显式选项）+ namespace 默认 juli', () => {
     const cfg = loadConfig({ env: {}, home: '/home/test', readFile: () => null });
-    expect(cfg.agent_backend).toBe('tmux');
+    expect(cfg.agent_backend).toBe('herdr');
     expect(cfg.herdr_session).toBe('juli');
     expect('tmux_mode' in cfg).toBe(false);
   });

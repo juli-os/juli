@@ -195,6 +195,18 @@ describe('闸门语义', () => {
     await expect(w.engine.retry(w.store.stepsForWorkflow(wfId)[2]!.id)).rejects.toThrow('is not failed');
   });
 
+  it('deny 拒空 note（R1 P3-7）：denied_reason 不许落空——retry 的否决守卫不被绕过', async () => {
+    const { w, wfId } = await setupAtGate1();
+    const gate = w.store.stepsForWorkflow(wfId)[1]!;
+    // web/iOS 入口已拦空，这里锁的是 HTTP/CLI 直调面（引擎侧先判后动）。
+    await expect(w.engine.deny(gate.id, '', 'boss')).rejects.toThrow(/否决必须写明理由/);
+    await expect(w.engine.deny(gate.id, '   ', 'boss')).rejects.toThrow(/否决必须写明理由/);
+    // 零状态变更：闸门仍在等、工作流仍 running、无 denied 痕迹。
+    expect(w.store.getStep(gate.id)!.status).toBe('waiting_human');
+    expect(w.store.getWorkflow(wfId)!.status).toBe('running');
+    expect(w.store.getWorkflow(wfId)!.meta['denied_reason']).toBeUndefined();
+  });
+
   it('resolve 非失败语义：gate→cancelled、下游未跑→cancelled、审计全留', async () => {
     const { w, wfId } = await setupAtGate1();
     const gate = w.store.stepsForWorkflow(wfId)[1]!;
@@ -264,6 +276,23 @@ describe('闸门语义', () => {
 });
 
 describe('对账（重启恢复）', () => {
+  // 种一个 running 态的 agent 步（账面在途形态，不经过派发链）。
+  const seedRunningAgent = (w: ReturnType<typeof makeEngine>) => {
+    const wf = w.store.createWorkflow({ kind: 'adhoc', title: '在途卡', status: 'running' });
+    const st = w.store.createStep({ workflowId: wf.id, seq: 1, kind: 'agent', title: '执行' });
+    w.store.setStepInput(st.id, { plan: '做单', session: 'agent-a' });
+    w.store.setStepStatus(st.id, 'running');
+    return { wf, st };
+  };
+  // 种一个 running 态的 verify 步（同形态：verify 与 agent 同执行器 runAgentStep）。
+  const seedRunningVerify = (w: ReturnType<typeof makeEngine>) => {
+    const wf = w.store.createWorkflow({ kind: 'adhoc', title: '在途复核', status: 'running' });
+    const st = w.store.createStep({ workflowId: wf.id, seq: 1, kind: 'verify', title: '复核' });
+    w.store.setStepInput(st.id, { plan: '复核产出', session: 'agent-a' });
+    w.store.setStepStatus(st.id, 'running');
+    return { wf, st };
+  };
+
   it('reconcileStartup：中断的 llm 步落成 failed 可重试；等待中的闸门归位 waiting_human', async () => {
     const w = makeEngine();
     await ladderEmail(w.engine, makeEmail());
@@ -281,6 +310,175 @@ describe('对账（重启恢复）', () => {
     expect(steps[0]!.status).toBe('failed'); // 中断 → failed 可重试
     expect(steps[0]!.output['error']).toContain('restart');
     expect(steps[1]!.status).toBe('waiting_human'); // 闸门归位
+  });
+
+  it('write-ahead 正例：send 前已登记 submitted prompt——重启守卫放行不杀', async () => {
+    const w = makeEngine();
+    const { wf, st } = seedRunningAgent(w);
+    // write-ahead 形态（runtime dispatch 先落账再发送）：run + prompt 均在
+    // 发送前已落账——herdr 派发窗内重启，agent 活过了重启，绝不误杀。
+    const run = w.store.createRun(wf.id, 'agent-a');
+    w.store.createPrompt(run.id, '任务卡全文', 'send');
+    await w.engine.reconcileStartup();
+    const cur = w.store.getStep(st.id)!;
+    expect(cur.status).toBe('running');
+    expect(cur.output['error']).toBeUndefined();
+  });
+
+  it('登记缺失+重启=杀（旧语义负例）：账上无 submitted prompt 的在途 agent 步判死', async () => {
+    const w = makeEngine();
+    const { st } = seedRunningAgent(w);
+    await w.engine.reconcileStartup();
+    const cur = w.store.getStep(st.id)!;
+    expect(cur.status).toBe('failed');
+    expect(cur.output['error']).toBe('restart: no in-flight prompt');
+  });
+
+  it('submit_unconfirmed 不判死：步保持 running + prompt 先行落账——重启守卫放行', async () => {
+    const w = makeEngine({
+      dispatch: {
+        // 软失败形态的 dispatch（登记由引擎 runAgentStep 保证——假 dispatch 不再
+        // 自行 createPrompt 复刻产线闭包，断言不再自证）：发送回报「提交未
+        // 确认」——steps.ts 裁定步保持 running 等看门狗，restart 守卫凭引擎
+        // 先行落账的 submitted prompt 放行。
+        async dispatch() {
+          return { ok: false as const, error: new Error('submit_unconfirmed: prompt 已入框但连续补 Enter 未被消费——任务未确认提交') };
+        },
+      },
+    });
+    await ladderEmail(w.engine, makeEmail());
+    const wfId = w.store.listWorkflows()[0]!.id;
+    await w.engine.advance(wfId);
+    await w.engine.approve(w.store.stepsForWorkflow(wfId)[1]!.id, '', 'boss');
+    await until(() => w.store.stepsForWorkflow(wfId)[2]!.status === 'running');
+    // 「提交未确认不判死」：步保持 running（2026-09-21 用户裁定）。
+    expect(w.store.stepsForWorkflow(wfId)[2]!.status).toBe('running');
+    // write-ahead：登记已先行落账（restart 守卫唯一放行凭证在账上）。
+    expect(w.store.activeRunForSession('agent-a')).not.toBeNull();
+    expect(w.store.latestPromptForSession('agent-a', ['submitted'])).not.toBeNull();
+    await w.engine.reconcileStartup();
+    expect(w.store.stepsForWorkflow(wfId)[2]!.status).toBe('running');
+  });
+
+  it('确定性派发失败 + prompt 回写抛错：步与工作流照常落 failed，守卫看不见残留的 submitted', async () => {
+    const warns: string[] = [];
+    const w = makeEngine({
+      dispatch: {
+        async dispatch() {
+          return { ok: false as const, error: new Error('tmux: paste 落地失败') };
+        },
+      },
+      log: { info: () => undefined, warn: (m) => { warns.push(m); }, error: () => undefined },
+    });
+    // 模拟 ledger 升级改了 prompts 表：引擎里唯一直写该表的 UPDATE 抛错。
+    // 回写若排在落账之前且不兜底，步与工作流会停在 running。
+    w.probeDb.exec(`CREATE TRIGGER prompts_drift BEFORE UPDATE ON prompts BEGIN SELECT RAISE(ABORT, 'prompts schema drift'); END`);
+    const wf = w.store.createWorkflow({ kind: 'adhoc', title: '派发失败', status: 'running' });
+    const st = w.store.createStep({ workflowId: wf.id, seq: 1, kind: 'agent', title: '执行' });
+    w.store.setStepInput(st.id, { plan: '做单', session: 'agent-a' });
+    await w.engine.advance(wf.id);
+    expect(w.store.getStep(st.id)!.status).toBe('failed');
+    expect(w.store.getWorkflow(wf.id)!.status).toBe('failed');
+    // 回写没成，账面留着 submitted；但级联已把 run 置 failed，守卫读不到它。
+    expect(w.store.latestPromptForSession('agent-a', ['submitted'])).toBeNull();
+    expect(warns.some((m) => m.includes('回写 failed 未成'))).toBe(true);
+  });
+
+  it('verify 并入 agent 语义：restart 有 submitted prompt——放行不杀', async () => {
+    const w = makeEngine();
+    const { wf, st } = seedRunningVerify(w);
+    // write-ahead 形态：verify 步派发时（runAgentStep）prompt 已先行落账，
+    // 重启后凭账上 submitted 放行——与 agent 步同一裁定（2026-11-08 P2）。
+    const run = w.store.createRun(wf.id, 'agent-a');
+    w.store.createPrompt(run.id, '任务卡全文', 'send');
+    await w.engine.reconcileStartup();
+    const cur = w.store.getStep(st.id)!;
+    expect(cur.status).toBe('running');
+    expect(cur.output['error']).toBeUndefined();
+  });
+
+  it('verify 并入 agent 语义：restart 无账即杀（不再按模板能力步乱归因）', async () => {
+    const w = makeEngine();
+    const { st } = seedRunningVerify(w);
+    await w.engine.reconcileStartup();
+    const cur = w.store.getStep(st.id)!;
+    expect(cur.status).toBe('failed');
+    expect(cur.output['error']).toBe('restart: no in-flight prompt');
+  });
+
+  it('verify 并入 agent 语义：idle 超宽限不杀（交 zombie 看门狗兜底）', async () => {
+    const w = makeEngine();
+    const { st } = seedRunningVerify(w);
+    // 周期对账宽限 10 分钟——超宽限后 verify 步与 agent 步同语义绝不杀
+    //（agent 自主连续工作期间只有两三类 hook 写步行，超宽限 ≠ 已死）。
+    w.advanceClock(11 * 60_000);
+    await w.engine.reconcileInflight();
+    const cur = w.store.getStep(st.id)!;
+    expect(cur.status).toBe('running');
+    expect(cur.output['error']).toBeUndefined();
+  });
+
+  it('killStep 持锁重读：守卫与杀写之间已被锁内结算的步不被覆盖为 failed', async () => {
+    const w = makeEngine();
+    const { wf, st } = seedRunningAgent(w);
+    // 竞态复现（引擎锁是队列不是可重入锁）：占住工作流锁 → 启动守卫跑完
+    // 账本查询、杀写 killStep 排到锁队列上 → 锁内把该步正常结算（completed，
+    // completeAgentStep 同形态）→ 放锁 → 杀写拿锁重读 status ≠ running →
+    // 判定作废。旧码若凭守卫查询时的过期快照落账，此处会被覆成 restart 错误。
+    let reconciling!: Promise<void>;
+    await w.engine.withLock(wf.id, async () => {
+      reconciling = w.engine.reconcileStartup(); // 账本查询全同步——返回时杀写已排队
+      await new Promise((r) => setTimeout(r, 0));
+      w.store.setStepOutput(st.id, { output: '在途步在守卫与杀写之间已落定' });
+      w.store.setStepStatus(st.id, 'completed');
+    });
+    await reconciling;
+    const cur = w.store.getStep(st.id)!;
+    expect(cur.status).toBe('completed');
+    expect(cur.output['error']).toBeUndefined();
+  });
+
+  it('周期对账不排锁：慢锁单本轮跳过、整轮不等锁，死槽照常放位；放锁后下一轮判死', async () => {
+    const w = makeEngine();
+    // Y 占住并发 1 的唯一槽位，派发链走完后它的步直接死掉（不经 evaluateSlot）= 死槽。
+    const y = await w.engine.startTask('占位单', { brief: '做单', session: 'agent-a' });
+    await until(() => w.engine.queueStatus().active.includes(y.id)
+      && w.store.stepsForWorkflow(y.id).some((s) => s.status === 'running'));
+    await new Promise((r) => setTimeout(r, 50)); // 让 runChain.finally→evaluateSlot 先走完
+    for (const s of w.store.stepsForWorkflow(y.id)) if (s.status === 'running') w.store.setStepStatus(s.id, 'failed');
+    // X：llm 步超宽限仍 running，锁被手动占住——模拟慢 LLM/SMTP 调用还在它自己的 advance 里。
+    const x = w.store.createWorkflow({ kind: 'adhoc', title: 'llm 卡住', status: 'running' });
+    const xs = w.store.createStep({ workflowId: x.id, seq: 1, kind: 'llm', title: 'LLM' });
+    w.store.setStepStatus(xs.id, 'running');
+    w.advanceClock(11 * 60_000);
+    let release!: () => void;
+    const held = w.engine.withLock(x.id, () => new Promise<void>((r) => { release = r; }));
+    try {
+      // 锁还没放：死槽要照常放位，这一轮也要跑完（逐步排锁的写法会一直等到慢调用结束）。
+      const pass = w.engine.reconcileInflight();
+      const finished = await Promise.race([
+        pass.then(() => true),
+        new Promise<boolean>((r) => setTimeout(() => r(false), 500)),
+      ]);
+      expect(w.engine.queueStatus().active).not.toContain(y.id); // 死槽已放位
+      expect(finished).toBe(true);
+      expect(w.store.getStep(xs.id)!.status).toBe('running'); // 有推进在途，本轮不动
+    } finally {
+      release();
+      await held;
+    }
+    await w.engine.reconcileInflight(); // 下一轮：锁已空闲，超宽限照常判死
+    expect(w.store.getStep(xs.id)!.status).toBe('failed');
+  });
+
+  it('周期对账在途闩：上一轮没跑完时再调用拿到同一轮，结束后再调用开新一轮', async () => {
+    const w = makeEngine();
+    const first = w.engine.reconcileInflight();
+    expect(w.engine.reconcileInflight()).toBe(first);
+    await first;
+    const next = w.engine.reconcileInflight();
+    expect(next).not.toBe(first);
+    await next;
   });
 });
 

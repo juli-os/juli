@@ -6,10 +6,11 @@ import { describe, expect, it } from 'vitest';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Hono } from 'hono';
-import { ok } from '@juli-os/artifacts';
+import { ok } from '../src/platform/shared/result.ts';
 import { type ChatLlmPort, type ToolCallRequest } from '@juli-os/agents';
-import { createChatIntake, extractIntakePlanBlock, stripIntakePlanBlock, hasIntakePlanBlock, INTAKE_SYSTEM_PROMPT, type ChatIntakeDeps } from '../src/business/intake/chatIntake.ts';
+import { createChatIntake, extractIntakePlanBlock, stripIntakePlanBlock, hasIntakePlanBlock, INTAKE_SYSTEM_PROMPT, type ChatIntakeDeps, type ChatIntakeStreamEvent } from '../src/business/intake/chatIntake.ts';
 import { CHAT_TOOL_NAMES, makeChatTools, type ChatToolDeps } from '../src/business/intake/chatTools.ts';
+import { openGatesStore } from '../src/business/gates/index.ts';
 import { registerChatRoutes } from '../src/http/routes/chat.ts';
 import type { AppEnv } from '../src/http/helpers.ts';
 import type { Runtime } from '../src/runtime.ts';
@@ -406,9 +407,12 @@ describe('extractIntakePlanBlock / stripIntakePlanBlock', () => {
   // b44 R2 NEW-γ：strip 与 webapp 客户端 stripPlanFences（chat-live.ts）同口径
   // ——全局、双名（intake-plan|plan）、半开围栏也剥。此前服务端只剥第一处、
   // 只认 intake-plan：LLM 输出 ```plan 围栏或双块时 reply 残留围栏 ≠ 客户端
-  // 剥净稿，heal 把围栏 JSON 原文写回显示面。对照函数=客户端实现的逐字复刻。
-  it('strip 与客户端 stripPlanFences 同口径：```plan 双名/全局多块/半开围栏也剥（b44 R2 NEW-γ）', () => {
-    const clientStrip = (text: string): string => {
+  // 剥净稿，heal 把围栏 JSON 原文写回显示面。对照函数=旧正则口径的基线
+  // （2026-11-23 前服务端与客户端共用的那两条正则，内联保留）：括号配平改法
+  // 之后这些既有形态的输出必须一字不变。与现客户端（webapp）的行为对照在
+  // test/chat-strip-parity.test.ts（动态 import 真模块）。
+  it('strip 与旧正则基线同口径：```plan 双名/全局多块/半开围栏也剥（b44 R2 NEW-γ）', () => {
+    const legacyStrip = (text: string): string => {
       // b45 R1-FX P2：围栏名加词边界（与三处源正则同步，漏改对照即红）
       let out = text.replace(/```(?:intake-plan|plan)(?![a-z0-9-])\s*[\s\S]*?```/g, '');
       out = out.replace(/```(?:intake-plan|plan)(?![a-z0-9-])\s*[\s\S]*$/g, ''); // 半开（流式中）
@@ -421,7 +425,7 @@ describe('extractIntakePlanBlock / stripIntakePlanBlock', () => {
       `开场${PLAN_BLOCK}\n\`\`\`plan\n{"brief":"y"}\n\`\`\`\n收尾`, // 混合双名双块
     ];
     for (const s of shapes) {
-      expect(stripIntakePlanBlock(s), `形态不一致：${s.slice(0, 30)}…`).toBe(clientStrip(s));
+      expect(stripIntakePlanBlock(s), `形态不一致：${s.slice(0, 30)}…`).toBe(legacyStrip(s));
     }
     // 行为抽查：围栏剥净、正文原样保留（前后正文间的换行不动、首尾 trim——
     // 口径与客户端逐字节一致，上方对照断言已证）。
@@ -432,9 +436,9 @@ describe('extractIntakePlanBlock / stripIntakePlanBlock', () => {
   // b45 R1-FX P2：围栏名加词边界 (?![a-z0-9-])——```plaintext/```plantuml 等
   // 以 plan 为前缀的普通语言块不再被误吃（此前 FULL 从 ```plan 起配到最近 ```、
   // OPEN 尾块把剩余全文剥到串尾：代码内容被吞）；真计划围栏（双名×完整/半开）
-  // 照常剥，行为零回退。不剥形态同样过 clientStrip 对照（口径一致性含「不动」）。
+  // 照常剥，行为零回退。不剥形态同样过 legacyStrip 对照（口径一致性含「不动」）。
   it('strip 词边界：```plaintext / ```plantuml 不误吃，```plan / ```intake-plan 照常剥（b45 R1-FX P2）', () => {
-    const clientStrip = (text: string): string => {
+    const legacyStrip = (text: string): string => {
       let out = text.replace(/```(?:intake-plan|plan)(?![a-z0-9-])\s*[\s\S]*?```/g, '');
       out = out.replace(/```(?:intake-plan|plan)(?![a-z0-9-])\s*[\s\S]*$/g, '');
       return out.trim();
@@ -457,8 +461,151 @@ describe('extractIntakePlanBlock / stripIntakePlanBlock', () => {
       'a\n```intake-plan\n{"title":"x"',
     ];
     for (const s of shapes) {
-      expect(stripIntakePlanBlock(s), `形态不一致：${s.slice(0, 30)}…`).toBe(clientStrip(s));
+      expect(stripIntakePlanBlock(s), `形态不一致：${s.slice(0, 30)}…`).toBe(legacyStrip(s));
     }
+  });
+
+  // 2026-11-23「brief 里带 ``` 时确认卡不弹、屏幕上漏 JSON」回归。旧实现靠非贪婪
+  // 正则 ```intake-plan…``` 找结尾，brief 的字符串里出现三个反引号就停在正文
+  // 内部：提取拿到半截 JSON 解析失败（卡不弹），剥除只剥到那里（后面的 JSON
+  // 留在屏幕上）。2026-10-27 修过同类事故（模型漏写闭合围栏），没覆盖这种写法。
+  describe('brief 里带反引号 / 转义 / 括号：按 JSON 对象括号配平找结尾', () => {
+    const BRIEFS: readonly (readonly [string, string])[] = [
+      ['带 ``` 命令', '背景：周四上门。构建命令：```npm run build``` 然后部署。'],
+      ['带 ```bash 代码块', '步骤：\n```bash\nnpm ci\nnpm run build\n```\n产出：部署完成。'],
+      ['带单个反引号', '跑 `npm test`，通过后交付。'],
+      ['带转义引号与转义反斜杠', '客户说："路径是 C:\\prod\\dist，别动"。另：引号 " 与反斜杠 \\ 都要原样保留。'],
+      ['括号出现在字符串里', '模板是 {"name":"{x}"} 这种；不成对也行：{ ] } 收尾。'],
+      ['brief 里写了围栏名', '照 ```intake-plan 的格式输出，不要写成 ```plan。'],
+    ];
+    const blockOf = (brief: string): string =>
+      '```intake-plan\n' + JSON.stringify({ title: '给 Casey 出介绍材料', summary: '产线介绍', brief }) + '\n```';
+
+    for (const [name, brief] of BRIEFS) {
+      it(`${name}：提取的 brief 与原文逐字符相同；剥除后不留 JSON，前后说明文字保留`, () => {
+        const text = `先复述一下这一单。\n${blockOf(brief)}\n等你确认。`;
+        const p = extractIntakePlanBlock(text);
+        expect(p, name).not.toBeNull();
+        expect(p?.brief, name).toBe(brief);
+        expect(p?.title).toBe('给 Casey 出介绍材料');
+        expect(p?.summary).toBe('产线介绍');
+        expect(hasIntakePlanBlock(text)).toBe(true);
+        const stripped = stripIntakePlanBlock(text);
+        expect(stripped, name).toBe('先复述一下这一单。\n\n等你确认。');
+        expect(stripped).not.toContain('"brief"');
+        expect(stripped).not.toContain('intake-plan');
+        // 旧名字 ```plan：剥除照旧认（显示面不留 JSON）；提取保持只认
+        // intake-plan（进件语义不变——与 2026-11-23 之前一致）。
+        const legacyName = text.replace('```intake-plan', '```plan');
+        expect(stripIntakePlanBlock(legacyName), name).toBe('先复述一下这一单。\n\n等你确认。');
+        expect(extractIntakePlanBlock(legacyName)).toBeNull();
+      });
+    }
+
+    it('模型漏写闭合围栏 + brief 里带 ```：照样提取，剥到对象结束、后面的正文照留', () => {
+      const brief = '构建命令：```npm run build``` 然后部署。';
+      // 2026-10-27 的事故形态：结尾断在 `"}`，闭合围栏没写。
+      const text = `复述。\n${blockOf(brief).slice(0, -4)}\n以上，等你确认。`;
+      expect(extractIntakePlanBlock(text)?.brief).toBe(brief);
+      expect(stripIntakePlanBlock(text)).toBe('复述。\n\n以上，等你确认。');
+    });
+
+    it('两块计划（第一块 brief 带 ```）：两块都剥净，中段正文保留', () => {
+      const text = `开头。\n${blockOf('跑 ```make```')}\n中段。\n${blockOf('普通 brief')}\n收尾。`;
+      expect(extractIntakePlanBlock(text)?.brief).toBe('跑 ```make```');
+      expect(stripIntakePlanBlock(text)).toBe('开头。\n\n中段。\n\n收尾。');
+    });
+
+    it('JSON 截断（流式半开）：提取 null、在场 true；剥到文末，不留半截 JSON', () => {
+      const text = '复述。\n```intake-plan\n{"title":"t","brief":"跑 ```npm run build``` 然后';
+      expect(extractIntakePlanBlock(text)).toBeNull();
+      expect(hasIntakePlanBlock(text)).toBe(true);
+      expect(stripIntakePlanBlock(text)).toBe('复述。');
+    });
+
+    it('围栏里混进别的 JSON 对象：整块剥到闭合围栏，不漏 JSON', () => {
+      const text = `复述。\n\`\`\`intake-plan\n（示意，不是计划）{"a":1}\n${JSON.stringify({ title: 't', brief: 'b' })}\n\`\`\`\n后文。`;
+      expect(stripIntakePlanBlock(text)).toBe('复述。\n\n后文。');
+    });
+
+    it('对象后面跟手抖尾巴（`};`）再闭合：尾巴连同闭合围栏一并剥掉', () => {
+      const text = '复述。\n```intake-plan\n{"title":"t","brief":"b"};\n```\n后文。';
+      expect(extractIntakePlanBlock(text)?.brief).toBe('b');
+      expect(stripIntakePlanBlock(text)).toBe('复述。\n\n后文。');
+    });
+
+    it('走完整回合：卡照常弹出（brief 原样），流式 text 帧与 reply 都不带 JSON', async () => {
+      const brief = '构建命令：```npm run build``` 然后部署。';
+      const { llm } = fakeLlm([{ content: `复述。\n${blockOf(brief)}\n等确认。` }]);
+      const live: ChatIntakeStreamEvent[] = [];
+      const intake = createChatIntake({ llm, model: 'fake', tools: [], startTask: fakeStartTask().fn });
+      const r = await intake.turn('出材料', { onEvent: (e) => live.push(e) });
+      expect(intake.state().phase).toBe('proposed');
+      expect(intake.state().plan?.brief).toBe(brief);
+      const textFrames = live.filter((e) => e.type === 'text');
+      expect(textFrames).toHaveLength(1);
+      expect(textFrames[0]).toMatchObject({ type: 'text', content: '复述。\n\n等确认。' });
+      expect(r.reply).toBe('复述。\n\n等确认。');
+      expect(live.some((e) => e.type === 'chat:plan')).toBe(true);
+    });
+
+    // 流式分段：编排器每个 LLM 回合发一个独立完整 text 事件（text→tool_call→
+    // text 是常态），服务端对每个 text 事件单独剥除——计划块所在的那一段被
+    // 剥净，其它段原样。
+    it('流式分段：计划块所在的 text 事件单独剥净，其它段原样', async () => {
+      const brief = '跑 ```npm run build```';
+      const { llm } = fakeLlm([
+        { content: '先查一下在办单子。', toolCalls: [{ id: 't1', name: 'list_tasks', arguments: '{}' }] },
+        { content: `材料如下。\n${blockOf(brief)}` },
+      ]);
+      const live: ChatIntakeStreamEvent[] = [];
+      const intake = createChatIntake({ llm, model: 'fake', tools: [], startTask: fakeStartTask().fn });
+      const r = await intake.turn('出材料', { onEvent: (e) => live.push(e) });
+      expect(intake.state().plan?.brief).toBe(brief);
+      expect(live.filter((e) => e.type === 'text').map((e) => (e as { content: string }).content))
+        .toEqual(['先查一下在办单子。', '材料如下。']);
+      expect(r.reply).toBe('先查一下在办单子。\n\n材料如下。');
+    });
+  });
+
+  // R1 审查 P2-③（2026-11-24）：计划块剥除多删正文。模型漏写闭合围栏、后面的
+  // 正文里又有代码块、第二块计划或错位的围栏时，旧实现按「对象之后第一个光杆
+  // 围栏」找结尾，把中间的正文一起删掉了。现在闭合围栏只有紧跟着才算：对象和
+  // 围栏之间只许空白、手抖多打的 ; 和 }（以及紧挨着的又一个 JSON 对象——围栏
+  // 里混进两个对象的形态，都是计划块的 JSON）。中间有别的字符，计划块就到对象
+  // 结束为止，后面的正文照留。
+  describe('计划块结尾的边界（R1 审查 P2-③）', () => {
+    const J = JSON.stringify({ title: '给 Casey 出介绍材料', summary: '产线介绍', brief: '背景：周四上门' });
+    const open = (after: string): string => `复述。\n\`\`\`intake-plan\n${after}`;
+    // [名称, 围栏起点之后的内容, 期望的剥除结果]
+    const CASES: readonly (readonly [string, string, string])[] = [
+      ['漏闭合围栏 + 后面有代码块', `${J}\n\`\`\`bash\nnpm ci\n\`\`\`\n后文。`, '复述。\n\n```bash\nnpm ci\n```\n后文。'],
+      ['漏闭合围栏 + 第二块计划（闭合）', `${J}\n\`\`\`intake-plan\n${J}\n\`\`\`\n后文。`, '复述。\n\n\n后文。'],
+      ['漏闭合围栏 + 第二块计划（也没闭合）', `${J}\n\`\`\`intake-plan\n${J}\n后文。`, '复述。\n\n\n后文。'],
+      ['漏闭合围栏 + 普通正文', `${J}\n以上，等你确认。`, '复述。\n\n以上，等你确认。'],
+      ['漏闭合围栏 + 正文，错位的围栏在最后', `${J}\n以上。\n\`\`\``, '复述。\n\n以上。\n```'],
+      ['漏闭合围栏 + 对象后夹一句说明才出现围栏', `${J}\n好的，计划如上\n\`\`\`\n后文。`, '复述。\n\n好的，计划如上\n```\n后文。'],
+      ['闭合围栏紧跟（不换行）', `${J}\`\`\`\n后文。`, '复述。\n\n后文。'],
+      ['闭合围栏隔一行', `${J}\n\n\`\`\`\n后文。`, '复述。\n\n后文。'],
+      ['闭合围栏前隔一个分号', `${J};\n\`\`\`\n后文。`, '复述。\n\n后文。'],
+      ['闭合围栏前多打了一个右花括号', `${J}}\`\`\`\n后文。`, '复述。\n\n后文。'],
+      ['围栏里混进两个对象，没闭合', `{"a":1}\n${J}\n后文。`, '复述。\n\n后文。'],
+      ['围栏里混进两个对象，闭合', `{"a":1}\n${J}\n\`\`\`\n后文。`, '复述。\n\n后文。'],
+    ];
+
+    it('漏闭合围栏时正文照留；闭合围栏紧跟 / 隔行 / 隔分号都照常剥（12 种形态逐个钉）', () => {
+      expect(CASES.length).toBe(12);
+      for (const [name, after, want] of CASES) {
+        expect(stripIntakePlanBlock(open(after)), name).toBe(want);
+      }
+    });
+
+    it('漏闭合围栏不影响提取：计划照常取到（正文里有没有代码块都一样）', () => {
+      for (const name of ['漏闭合围栏 + 后面有代码块', '漏闭合围栏 + 普通正文', '漏闭合围栏 + 正文，错位的围栏在最后']) {
+        const after = CASES.find((c) => c[0] === name)![1];
+        expect(extractIntakePlanBlock(open(after))?.title, name).toBe('给 Casey 出介绍材料');
+      }
+    });
   });
 });
 
@@ -536,6 +683,8 @@ describe('HTTP /api/chat/intake/*', () => {
       // R1 P2-4 起路由注册即读 config.data_dir（附件目录与数据面同根）——
       // fake rt 补齐（临时路径即可：本组用例不触上传/附件校验的落盘）。
       config: { data_dir: join(tmpdir(), 'juli-chat-intake-fake') },
+      // gates 域登记面（第 5 步）：fake rt 给一个临时文件真库（confirm/deny 审计行落这）。
+      gates: openGatesStore(join(tmpdir(), `juli-chat-intake-gates-${Math.random().toString(36).slice(2)}.db`)),
     } as unknown as Runtime;
     registerChatRoutes(app, rt);
     return app;

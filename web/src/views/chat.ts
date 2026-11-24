@@ -459,8 +459,8 @@ export const chatView = async (el: HTMLElement): Promise<(() => void) | void> =>
         ? `<p class="landing">落点：<span class="sess">${esc(plan.landing.session)}</span>${plan.landing.note ? `<span class="note">${esc(plan.landing.note)}</span>` : ''}</p>`
         : ''}
       ${callActive ? '<p class="landing">📞 通话中：说「确认」开单，说「取消」放弃（点按钮也行）</p>' : ''}
-      <label class="chat-auto" title="这一单的非发送闸门由 juli 自动批准（by=juli-auto，账本留痕）；问询与外发邮件仍会等你">
-        <input type="checkbox" id="c-autoap" /> 本单免批（外发邮件仍会等我）
+      <label class="chat-auto" title="这一单里申报为 apply / artifact 的审批由 juli 自动批准（by=juli-auto，账本留痕）；发送审批和问询仍会等你">
+        <input type="checkbox" id="c-autoap" /> 本单免批（发送审批和问询仍会等我）
       </label>
       <div class="row">
         <button class="btn-primary" id="c-confirm">开单</button>

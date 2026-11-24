@@ -22,3 +22,47 @@ export const sessionBirthOf = (raw: string): ReadonlyMap<string, number> => {
  * 取不到 created）保守回落旧行为（全映射）。边界：相等算旧（不映射）。 */
 export const transcriptMappable = (mtimeMs: number, bornMs: number | undefined): boolean =>
   bornMs === undefined ? true : mtimeMs > bornMs;
+
+// ---- 目录级自动映射（b51 R1 P1-2 收口）--------------------------------------
+
+export interface AutoMapPair {
+  readonly claudeId: string;
+  readonly session: string;
+  readonly transcriptPath: string;
+  readonly cwd: string;
+}
+
+/** 后端 × 目录级自动映射：定时器扫描「会话 cwd ↔ claude projects 目录」建
+ * (claude transcript, agent 会话) 兜底映射的规则本体。
+ *
+ * tmux：沿用出生点 mtime 门（transcriptMappable 原语义逐值保留）——出生点
+ * 已知时 stat 取不到 mtime 的候选按旧处理不映射（与原实现 stat throw →
+ * continue 同语义），出生点未知保守回落全映射。
+ *
+ * herdr：目录级自动映射【整体停用】（b51 R1 P1-2）——herdr 无出生点
+ * （sessionBirthsOf 恒空表），mtime 门恒不拦，整目录映射会把人用 CC 同仓的
+ * 旧 transcript 划给 agent 会话（防线在 herdr 下静默失效，「保守回落」从降级
+ * 兜底变稳态）。herdr 的归属只走 hook 精确登记链（capture/permission hook
+ * → /api/agents/:s/claude-session → recordClaudeSessionPrecise；扫描兜底对
+ * 已精确登记的行插不进，无覆盖风险）——人用 CC 的 transcript 不进映射。
+ * filesOf 每会话 cwd 调一次：返回该项目目录下的 .jsonl 候选（stem=claude
+ * 会话 id；目录缺席回空数组）。 */
+export const autoMapPairs = (args: {
+  kind: 'tmux' | 'herdr';
+  sessions: readonly { readonly name: string; readonly path: string }[];
+  births: ReadonlyMap<string, number>;
+  filesOf: (cwd: string) => readonly { readonly stem: string; readonly mtimeMs: number | undefined; readonly path: string }[];
+}): readonly AutoMapPair[] => {
+  if (args.kind === 'herdr') return [];
+  const out: AutoMapPair[] = [];
+  for (const si of args.sessions) {
+    const cwd = si.path;
+    if (cwd === '') continue;
+    const bornMs = args.births.get(si.name);
+    for (const f of args.filesOf(cwd)) {
+      if (bornMs !== undefined && (f.mtimeMs === undefined || !transcriptMappable(f.mtimeMs, bornMs))) continue;
+      out.push({ claudeId: f.stem, session: si.name, transcriptPath: f.path, cwd });
+    }
+  }
+  return out;
+};

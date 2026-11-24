@@ -2,7 +2,9 @@
 // 接口，错误走 Result——生产环境接 tmux/SMTP/APNs，测试接 mock。
 
 import { createHash } from 'node:crypto';
-import type { Result, JsonRecord, DeliverableRef, SweepEnvelope } from '@juli-os/artifacts';
+import type { Result } from '../platform/shared/result.ts';
+import type { JsonRecord } from '../platform/shared/json.ts';
+import type { DeliverableRef, SweepEnvelope } from '@juli-os/artifacts';
 import type { Step, Workflow } from '@juli-os/ledger';
 
 // ---- LLM --------------------------------------------------------------------

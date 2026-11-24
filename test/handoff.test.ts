@@ -29,7 +29,6 @@ const makeWorld = (over: Partial<EngineDeps> = {}) => {
       agents: AGENTS,
     },
     dispatch: { async dispatch(_t, session) { dispatchedTo.push(session); return { ok: true, value: undefined } as const; } },
-    syncDispatch: null,
     pusher: { async gateWaiting() {}, async workflowDone() {}, async workflowFailed() {} } satisfies PusherPort,
     mailer: { async send() { return { ok: true, value: { messageId: '<h@j>' } } as const; } } satisfies MailerPort,
     captureOutput: async () => null, workspaceFor: null,
@@ -134,8 +133,12 @@ describe('task-handoff 转派', () => {
       input: { prompt: '阅读来信 {{.Input.subject}}' },
     });
     w.store.setStepStatus(intake.id, 'running');
-    w.store.createRun(wf.id, 'juli-reply');
+    const run = w.store.createRun(wf.id, 'juli-reply');
     w.store.setWorkflowSession(wf.id, 'juli-reply');
+    // 这一步是手工摆的（没走派发）。2026-11-23 起收工回调只结算「卡已确认送达」
+    // 的步（agentSettle 核对步骤上的凭据），照真实派发的样子补上：登记一张卡，
+    // 步骤记下它的 id。
+    w.store.setStepOutput(intake.id, { dispatched_prompt_id: w.store.createPrompt(run.id, '阅读来信', 'send').id });
     await w.engine.handoff(wf.id, 'dev', '是要改引擎代码，不是回信', 'agent:juli-reply');
     await Promise.resolve(); // handoff 里 void advance 的派发同步走完
     // 原步收工 → onAgentStopped 结算：修前播种会以渲染后的上游任务整体覆盖转派卡。

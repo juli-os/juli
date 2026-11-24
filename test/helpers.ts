@@ -1,12 +1,15 @@
 // 引擎测试的公共脚手架：固定时钟 + 顺序 ID + 内存 SQLite + mock 端口，
 // 全流程确定性断言。
 
+import { DatabaseSync } from 'node:sqlite';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { createLedgerStore } from '@juli-os/ledger';
 import { createEngine, type Engine, type EngineDeps } from '../src/business/workflow/engine.ts';
 import { parseTemplate } from '../src/business/templates/template.ts';
 import { EMAIL_REPLY_YAML } from '../src/business/templates/defaultTemplates.ts';
-import { ok } from '@juli-os/artifacts';
-import type { Clock, IdGen } from '@juli-os/artifacts';
+import { ok } from '../src/platform/shared/result.ts';
+import { type Clock, type IdGen } from '../src/platform/shared/clock.ts';
 import type { CompletionRequest, EmailMessage, LlmPort, MailerPort, PusherPort } from '../src/contracts/ports.ts';
 
 /** 可拨动的假时钟：僵尸心跳/对账这类"沉默时长"断言需要它。 */
@@ -23,6 +26,18 @@ export const fixedClock: Clock = { now: () => new Date('2026-09-07T08:00:00Z') }
 export const seqIds = (): IdGen => {
   let n = 0;
   return { newId: (p: string) => `${p}_${String(++n).padStart(4, '0')}` };
+};
+
+// 镜像域的回挂答复计数——本地内联（b58 P0-1）：feedback 域在公开投影被整体
+// exclude（export/manifest.yaml），helpers 留投影就不能 import 域内模块。
+// 实现与私仓 src/business/feedback/mirror.ts replyCountOf 逐字同款：镜像表
+// 不存在（内存库未建表/老库）= 无回挂证据 = 计 0。
+const replyCountOf = (db: DatabaseSync, recordId: string): number => {
+  try {
+    const r = db.prepare('SELECT COUNT(*) AS n FROM feedback_mirror WHERE reply_to=?')
+      .get(recordId) as { readonly n: number | bigint } | undefined;
+    return Number(r?.['n'] ?? 0);
+  } catch { return 0; }
 };
 
 /** 阶梯起流（配方路径）：邮件类测试走 startFlow('email-reply')——与旧
@@ -59,6 +74,12 @@ export interface MockWorld {
   readonly sent: SentMail[];
   readonly pushes: string[];
   readonly agentOutputs: Map<string, string>;
+  /** feedback 域镜像库（内存）：回挂证据 seed 面——engine 的
+   * feedbackReplyCount 从这里计数（2026-11-12 ledger 关门后镜像表不再住
+   * lifecycle.db，测试同款搬家）。 */
+  readonly feedbackMirrorDb: import('node:sqlite').DatabaseSync;
+  /** 账本第二连接（白盒摆数/对账）：0.5.0 起 store 不再暴露 db。 */
+  readonly probeDb: import('node:sqlite').DatabaseSync;
   readonly advanceClock: (ms: number) => void;
 }
 
@@ -66,12 +87,16 @@ export interface MockWorld {
  * mock SMTP、记录型推送。 */
 export const makeEngine = (over: Partial<EngineDeps> = {}): MockWorld => {
   const { clock, advance } = makeClock();
-  const store = createLedgerStore(':memory:', { clock, ids: seqIds() });
+  // ledger 0.5.0 句柄私有：白盒摆数/对账走第二连接（文件库；:memory: 各连接独立拿不到同一库）
+  const ledgerFile = join(tmpdir(), `juli-test-ledger-${Math.random().toString(36).slice(2)}.db`);
+  const store = createLedgerStore(ledgerFile, { clock, ids: seqIds() });
+  const probeDb = new DatabaseSync(ledgerFile);
   const llmCalls: CompletionRequest[] = [];
   const dispatched: { source: string; session: string; text: string }[] = [];
   const sent: SentMail[] = [];
   const pushes: string[] = [];
   const agentOutputs = new Map<string, string>();
+  const feedbackMirrorDb = new DatabaseSync(':memory:');
 
   const llm: LlmPort = {
     async complete(req) {
@@ -99,6 +124,7 @@ export const makeEngine = (over: Partial<EngineDeps> = {}): MockWorld => {
 
   const engine = createEngine({
     store,
+    feedbackReplyCount: (rid) => replyCountOf(feedbackMirrorDb, rid),
     llm,
     model: 'test-model',
     routing: { defaultSession: '', defaultProject: 'proj-x' },
@@ -108,7 +134,6 @@ export const makeEngine = (over: Partial<EngineDeps> = {}): MockWorld => {
         return ok(undefined);
       },
     },
-    syncDispatch: null,
     pusher: {
       async gateWaiting(_w, _st, summary) { pushes.push(`gate:${summary}`); },
       async workflowDone(_w, summary) { pushes.push(`done:${summary}`); },
@@ -133,7 +158,7 @@ export const makeEngine = (over: Partial<EngineDeps> = {}): MockWorld => {
     authz: { mode: 'allowlist', allow: ['*@example.com'], deny: [] },
     ...over,
   });
-  return { engine, store, llmCalls, dispatched, sent, pushes, agentOutputs, advanceClock: advance };
+  return { engine, store, llmCalls, dispatched, sent, pushes, agentOutputs, feedbackMirrorDb, probeDb, advanceClock: advance };
 };
 
 export const until = async (predicate: () => boolean, ms = 2000): Promise<void> => {

@@ -4,11 +4,27 @@
 import { asString } from '../../platform/shared/json.ts'
 import { type Step, type Workflow } from '@juli-os/ledger';
 import { isLiveNodeStatus } from '../../contracts/statuses.ts';
-import { asRecord, type JsonRecord } from '@juli-os/artifacts';
+import { asRecord, type JsonRecord } from '../../platform/shared/json.ts';
 
 export const DEFAULT_ZOMBIE_TIMEOUT_MS = 5 * 60_000;
 export const DEFAULT_MAX_ZOMBIE_ATTEMPTS = 3;
 export const LLM_TIMEOUT_MS = 180_000;
+
+/** running 步扫描上限（reconcile 重启/周期对账与 zombie 看门狗共用，2026-11-07
+ * P3）：旧上限 200 在并发堆积时尾部步永不入扫——守卫不清算、看门狗不盯，静默
+ * 漏。ledger listSteps 无 offset，分页取全不可得；上限提到与 listWorkflows
+ * 同量级，两处消费点触顶即 warn 留痕（漏扫可见化）。 */
+export const RUNNING_SCAN_LIMIT = 2000;
+
+/** 软失败判据（单点化）：submit_unconfirmed/submit_lost 不判死——
+ * prompt 可能已实际送达 agent（tmux/herdr 入框未消费），判死会把做完了的
+ * 单记成 failed 并诱导重试双投。曾由 runtime dispatch 适配器与 runAgentStep
+ * 双份手抄同一串列表——任一侧新增软失败类而另一侧未同步，即出现「步保持
+ * running、prompt 已置 failed、run 仍活跃」，重启守卫的 settled 分支随即对
+ * 在途步误结算；现收敛此一处，两个消费点（prompt 是否回写 failed、步是否
+ * 判死）同调此谓词。 */
+export const isSoftSubmitFailure = (msg: string): boolean =>
+  msg.includes('submit_unconfirmed') || msg.includes('submit_lost');
 
 /** 进件首节点任务卡（理解 Stage）：manifest 时代由模板阶梯承担的"读原文"
  * 一步，动态模型里是唯一的静态入口——之后每步都由 agent/skill/人追加。
@@ -30,7 +46,7 @@ export const gateSummary = (st: Step): string =>
   asString(st.input['draft']) || asString(st.input['plan']) || asString(st.input['note']) || st.title;
 
 /** 工作区锚定：任务卡头部钉上项目名与绝对路径——agent 的相对路径有了唯一
- * 解释基准（ACP 同步与 tmux 异步两条派发路径共用同一措辞）。ws 空 = 不锚。 */
+ * 解释基准（派发任务卡时用同一措辞）。ws 空 = 不锚。 */
 export const anchorPlan = (session: string, ws: string, plan: string): string =>
   ws === '' ? plan : `[工作区] 项目: ${session} ｜ 路径: ${ws} ｜ 所有相对路径均基于此目录。\n\n${plan}`;
 

@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { createLedgerStore } from '@juli-os/ledger';
 import { createEngine, type EngineDeps } from '../src/business/workflow/engine.ts';
 import { makeClock, seqIds, makeEmail } from './helpers.ts';
-import { ok } from '@juli-os/artifacts';
+import { ok } from '../src/platform/shared/result.ts';
 import type { MailerPort, PusherPort } from '../src/contracts/ports.ts';
 
 const makeWorld = (over: Partial<EngineDeps> = {}, sharedStore?: ReturnType<typeof createLedgerStore>) => {
@@ -25,7 +25,6 @@ const makeWorld = (over: Partial<EngineDeps> = {}, sharedStore?: ReturnType<type
         return ok(undefined);
       },
     },
-    syncDispatch: null,
     pusher: {
       async gateWaiting() {},
       async workflowDone() {},
@@ -112,7 +111,10 @@ describe('收单台', () => {
     const b = seed('B');
     const c = seed('C');
     // 新引擎实例 = 「重启」:queued 按到达序回队,并发 1 → A 先派
+    // （2026-11-08 审查 P1 副作用后置：救援从构造期挪进显式 boot()——
+    // 生产由 rt.start 在 listen 全成功后调；测试在此等价调用。）
     const w2 = makeWorld({ queueConcurrency: 1 }, w.store);
+    w2.engine.boot();
     await drain();
     const aWf = w2.store.getWorkflow(a.id)!;
     if (aWf.status === 'failed') {
@@ -142,9 +144,36 @@ describe('收单台', () => {
     // 人工收口为 cancelled → 重启扫描/pump 均不派
     w1.store.setWorkflowStatus(wf.id, 'cancelled');
     const w2 = makeWorld({}, w1.store);
+    // 救援已挪进显式 boot()——不调 boot 的本用例是空转断言（不扫描
+    // 自然不派，boot 的任何回归都抓不到），必须真实走过启动救援分支。
+    w2.engine.boot();
     await drain();
     expect(w2.store.getWorkflow(wf.id)!.status).toBe('cancelled');
     expect(w2.engine.queueStatus().active).not.toContain(wf.id);
+  });
+
+  it('⑧ boot 启动救援:running 孤儿(无在飞步、有 pending)回队重派;构造期不救援', async () => {
+    const w1 = makeWorld();
+    // 上一进程崩溃在「续走窗口」的孤儿形态：单 running、无 running/
+    // waiting_human 步（真实在飞 agent 与等人单绝不碰）、有 pending 步。
+    const wf = w1.store.createWorkflow({ kind: 'adhoc', title: 'running 孤儿', status: 'running' });
+    w1.store.createStep({ workflowId: wf.id, seq: 1, kind: 'agent', title: '首步', input: { plan: '做单', session: 'juli-reply' } });
+    // 新引擎实例 = 「重启」。构造期不救援（副作用后置契约）——构造后
+    // 先排空微任务再断言：救援若挪回构造器，enqueueBack 同步泵会把单直接
+    // 挪进 activeIds（waiting 恒空，只断言 waiting 不判别），排空后步已被派发
+    // 成 running；下列三条断言任一变红。
+    const w2 = makeWorld({}, w1.store);
+    await drain();
+    expect(w2.engine.queueStatus().active).not.toContain(wf.id);
+    expect(w2.engine.queueStatus().waiting).not.toContain(wf.id);
+    expect(w2.store.stepsForWorkflow(wf.id)[0]!.status).toBe('pending');
+    // boot 第二分支用例：显式 boot 后孤儿回队并重派（enqueueBack 即
+    // 同步泵——断言锚在 drain 后的落账形态）。
+    w2.engine.boot();
+    await drain();
+    expect(w2.store.getWorkflow(wf.id)!.status).toBe('running');
+    expect(w2.engine.queueStatus().active).toContain(wf.id);
+    expect(w2.store.stepsForWorkflow(wf.id)[0]!.status).toBe('running');
   });
 
   it('④ 续走插队头:闸门批准时槽被占→单挂队头;槽释放后被先派(review F3)', async () => {

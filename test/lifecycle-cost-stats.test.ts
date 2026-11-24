@@ -12,6 +12,11 @@ import { configSchema } from '../src/platform/config/schema.ts';
 import { createRuntime } from '../src/runtime.ts';
 import { createHttpApp } from '../src/http/app.ts';
 
+/** 账本第二连接（ledger 0.5.0 句柄私有，白盒摆数/对账走这里）。 */
+const probeOf = (rt: { config: { data_dir: string } }): import('node:sqlite').DatabaseSync =>
+  new DatabaseSync(join(rt.config.data_dir, 'lifecycle.db'));
+
+
 // 价目 output 价（2026-10-06 快照）：纯 output 行成本 = tokens/1e6 × price——
 // 按模型出价折 tokens，得到想要的整/半元成本，边界可控。
 // glm-4-air-250414: 0.5；glm-5.3: 28；jev-1 不在价目（成本恒 0，价只用来
@@ -56,10 +61,10 @@ const makeOrder = (
 ): string => {
   const model = opts.model ?? 'glm-4-air-250414';
   const w = rt.store.createWorkflow({ kind: 'adhoc', title: `单-${opts.yuan}` });
-  rt.store.db.prepare('UPDATE workflows SET session=?, status=? WHERE id=?')
+  probeOf(rt).prepare('UPDATE workflows SET session=?, status=? WHERE id=?')
     .run(opts.session, opts.status ?? 'completed', w.id);
   const st = rt.store.createStep({ workflowId: w.id, seq: 1, kind: 'agent', title: '执行' });
-  rt.store.db.prepare('UPDATE workflow_steps SET started_at=?, updated_at=? WHERE id=?')
+  probeOf(rt).prepare('UPDATE workflow_steps SET started_at=?, updated_at=? WHERE id=?')
     .run(opts.window[0], opts.window[1], st.id);
   insertTurn(udb, opts.session, model, tokOf(model, opts.yuan), opts.window[0]);
   return w.id;
@@ -118,15 +123,15 @@ describe('GET /api/lifecycle/cost-stats', () => {
       // 无 agent 步 → 退化 [created, updated] 全窗：把 created 拉早 2h，窗内用量仍计价
       //（注意 updated_at 只随状态变更推进——首建即终态的单全窗零宽，是既有口径）
       const w2 = rt.store.createWorkflow({ kind: 'adhoc', title: '无步单' });
-      rt.store.db.prepare('UPDATE workflows SET session=?, created_at=?, updated_at=? WHERE id=?')
+      probeOf(rt).prepare('UPDATE workflows SET session=?, created_at=?, updated_at=? WHERE id=?')
         .run('s-nostep', ago(2), ago(0.5), w2.id);
       insertTurn(udb, 's-nostep', 'glm-4-air-250414', tokOf('glm-4-air-250414', 20), ago(1));
       // 40 天前的旧单：days=30 排除、days=0 计入
       const wOld = rt.store.createWorkflow({ kind: 'adhoc', title: '旧单' });
-      rt.store.db.prepare('UPDATE workflows SET session=?, created_at=?, updated_at=? WHERE id=?')
+      probeOf(rt).prepare('UPDATE workflows SET session=?, created_at=?, updated_at=? WHERE id=?')
         .run('s-old', ago(40 * 24), ago(40 * 24 - 1), wOld.id);
       const stOld = rt.store.createStep({ workflowId: wOld.id, seq: 1, kind: 'agent', title: '执行' });
-      rt.store.db.prepare('UPDATE workflow_steps SET started_at=?, updated_at=? WHERE id=?')
+      probeOf(rt).prepare('UPDATE workflow_steps SET started_at=?, updated_at=? WHERE id=?')
         .run(ago(40 * 24), ago(40 * 24 - 1), stOld.id);
       insertTurn(udb, 's-old', 'glm-4-air-250414', tokOf('glm-4-air-250414', 100), ago(40 * 24));
 
@@ -161,7 +166,7 @@ describe('GET /api/lifecycle/cost-stats', () => {
       rt.store.createWorkflow({ kind: 'adhoc', title: '无归属' });
       // 有会话无用量
       const w2 = rt.store.createWorkflow({ kind: 'adhoc', title: '无用量' });
-      rt.store.db.prepare('UPDATE workflows SET session=? WHERE id=?').run('s-empty', w2.id);
+      probeOf(rt).prepare('UPDATE workflows SET session=? WHERE id=?').run('s-empty', w2.id);
       // 纯无价目模型单（jev 系不在 bigmodel 价目）
       makeOrder(rt, udb, { session: 's-jev', model: 'jev-1', yuan: 30, window: WIN });
       // 一条正常计价单对照

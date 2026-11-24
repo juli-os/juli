@@ -2,7 +2,8 @@
 // 灵活性模型：结构=模板，per-step 逻辑=prompt/system，数据流=步骤 id 键控输出。
 
 import { asString, truncate } from '../../../platform/shared/json.ts'
-import { type JsonValue, rfc3339 } from '@juli-os/artifacts';
+import { rfc3339 } from '../../../platform/shared/clock.ts';
+import type { JsonValue } from '../../../platform/shared/json.ts';
 import type { LifecycleStore } from '@juli-os/ledger';
 import { parseLoose, type StepCtx } from './common.ts';
 

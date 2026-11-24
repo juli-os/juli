@@ -9,24 +9,30 @@ export type ToastLevel = 'urgent' | 'ok' | 'info';
 /** 对人有语义的事件（精确名白名单，按账本真实事件名逐个收录）：
  * 步状态转变 / 闸门决定 / 流水与任务生命周期 / 邮件与路由 / 结算与异常。
  * 有意不用 step_*、workflow_* 整前缀——step_activity、session_turn、
- * self_echo_ignored、envelope_*_ignored 等逐回合机器事件就藏在通用前缀里。
+ * self_echo_ignored 等逐回合机器事件就藏在通用前缀里。例外：B3 审查 F4 把
+ * 具名状态面回执 step_seed_render_fallback 与 envelope_*_ignored 两枚收录
+ * （它们是判定结果帧，进 STATE_CHANGING 后必须 ⊆ 本表）。
  * b44 R1 P1：与 webapp/src/logic/events-meta.ts 的同名表收敛到两侧并集
  * （缺失名已逐一 grep src/business 核实真实发射），跨拷贝恰等由
  * test/events-meta-parity.test.ts 钉死。 */
 export const HUMAN_EVENT_TYPES: ReadonlySet<string> = new Set([
-  // 步状态转变（step_activity/step_patch 除外——那是 agent hook 逐回合流水）
+  // 步状态转变（step_activity/step_patch 除外——那是 agent hook 逐回合流水；
+  // step_seed_render_fallback 随 B3 F4 补录）
   'step_dispatched', 'step_redispatched', 'step_waiting_human', 'step_completed',
   'step_failed', 'step_cancelled', 'step_skipped', 'step_retry', 'step_amended',
-  'step_input_amended', 'step_intervened', 'step_self_heal',
+  'step_input_amended', 'step_intervened', 'step_self_heal', 'step_seed_render_fallback',
   // 闸门决定（每道闸一次，低频高语义；含自动免批/影子免批/问询闸开/打回回执）
   'gate_approved', 'gate_denied', 'gate_resolved', 'gate_aligned', 'gate_rework',
   'gate_relayed', 'gate_relay_queued', 'gate_relay_delivered', 'gate_relay_stuck',
   'gate_auto_approved', 'gate_auto_approve_shadow', 'question_gate_opened',
   'send_rework',
-  // 流水/任务生命周期
+  // 流水/任务生命周期（override_set 随 B2 F3、发送管线五帧随 B3 F4 进
+  // STATE_CHANGING，⊆ 本表）
   'flow_started', 'task_queued', 'task_started', 'task_dispatched',
   'workflow_failed', 'workflow_resolved', 'workflow_denied', 'workflow_closed',
-  'workflow_force_closed', 'run_settled', 'run_settleable', 'hold_released',
+  'workflow_force_closed', 'run_settled', 'run_settleable', 'hold_released', 'override_set',
+  'send_checks_ran', 'send_checks_skipped_delivery', 'send_seed_skipped_delivery',
+  'envelope_override_ignored', 'envelope_cc_override_ignored',
   // 邮件与路由
   'email_sent', 'email_received', 'email_rejected',
   'route_decision', 'route_fallback', 'route_busy_divert', 'route_content_handoff',
@@ -50,6 +56,12 @@ export const STATE_CHANGING_EVENTS: ReadonlySet<string> = new Set([
   'step_retry', 'gate_approved', 'gate_aligned', 'workflow_failed',
   'workflow_denied', 'completed', 'agent_zombie', 'run_settled',
   'task_dispatched', 'send_rework', 'gate_relay_stuck',
+  // B2 F3：hold 名单三帧，与 webapp 侧同步；工作时间窗跨界本身不发事件（引擎面缺口，不动）
+  'task_queued', 'override_set', 'hold_released',
+  // B3 审查 F4：发送管线六帧，与 webapp 侧同步；checks/seed/envelope 判定
+  // 结果没有后续 step 帧兜底，不进名单 = 判定不可见。
+  'send_checks_ran', 'send_checks_skipped_delivery', 'step_seed_render_fallback',
+  'send_seed_skipped_delivery', 'envelope_override_ignored', 'envelope_cc_override_ignored',
 ]);
 
 /** toast 分级（警报纪律）：urgent=需要人动（红，6s 长亮）/ ok=结果类（绿，4.5s）/

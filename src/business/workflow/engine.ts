@@ -1,6 +1,6 @@
 // 业务流引擎（装配面）：一封入站邮件/一次手动触发生成带持久阶梯的 workflow，
 // 由解释器推进。阶梯是数据（模板），引擎只拥有状态转变；agent 派发
-// （tmux/ACP）、推送（APNs/Bark）、LLM、SMTP 全部是注入端口。
+// （tmux）、推送（APNs/Bark）、LLM、SMTP 全部是注入端口。
 // 尽力而为：推送失败绝不阻塞闸门状态本身。
 //
 // 2026-09-23 分层重构：原 3256 行闭包拆为域模块，本文件只留装配与公开
@@ -33,13 +33,13 @@
 // completeAgentStep→settle→queue……）。装配期用一个 late 持有器破环——
 // 各模块拿到的 late 引用最后统一回填真身，装配期调用即抛错（fail loud）。
 
-import { type Clock, type IdGen, type JsonRecord, type JsonValue, systemClock } from '@juli-os/artifacts';
+import { type Clock, type IdGen, systemClock } from '../../platform/shared/clock.ts';
+import type { JsonRecord, JsonValue } from '../../platform/shared/json.ts';
 import { holdVerdict, validHoldWindow, type HoldWindowConfig } from '../../platform/shared/windowHold.ts';
 import { consoleLogger, type Logger } from '../../platform/events/bus.ts';
 import type { LifecycleStore } from '@juli-os/ledger';
 import { type Step, type StepKind, type Workflow } from '@juli-os/ledger';
 import type { DispatcherPort, EmailMessage, LlmPort, MailerPort, PusherPort, SessionDelivery, ArtifactPort } from '../../contracts/ports.ts';
-import { type SyncDispatcherPort } from '@juli-os/agents';
 import { type JudgmentGateway } from '@juli-os/routing';
 import type { InboundMessage } from '../../contracts/channels.ts';
 import type { PartyDirectory } from '../party/party.ts';
@@ -58,16 +58,20 @@ import { makeHumanActions } from './human.ts';
 import { makeLifecycle } from './lifecycle.ts';
 import { makeReconcile } from './reconcile.ts';
 import { makeIntake } from './intake.ts';
+import { candidatesInTenant, tenantGuardFor, type TenantTableShape } from './tenantScope.ts';
+import type { TenantSignalTable } from './tenantResolve.ts';
 
 // ---- 端口与依赖 ---------------------------------------------------------------
 
 export interface EngineDeps {
   readonly store: LifecycleStore;
+  /** feedback 域的回挂答复计数（可选注入）：feedback_mirror 已迁 feedback 域
+   *  库（2026-11-12 ledger 关门），workflow 域不摸别家的表。缺省恒 0。 */
+  readonly feedbackReplyCount?: (recordId: string) => number;
   readonly llm: LlmPort | null;
   readonly model: string;
   readonly routing: Routing;
   readonly dispatch: DispatcherPort | null;
-  readonly syncDispatch: SyncDispatcherPort | null;
   readonly pusher: PusherPort | null;
   readonly mailer: MailerPort | null;
   /** 抓取会话的最终答复（tmux capture / 结构化输出）。 */
@@ -141,6 +145,15 @@ export interface EngineDeps {
    * 静默收口的判据②（usage 库在 runtime 层创建，经此注入）。null/缺省 =
    * 只用事件链静默判据。 */
   readonly lastSessionActivity?: ((session: string) => number) | null;
+  /** 租户登记表最小投影（2026-11-08 提案 A2 读侧边界的引擎腿）：引擎无请求
+   * 上下文，租户上下文来自 workflow.tenant（A1 回填后存量有值）——holdGate
+   * 忙会话腿与派发候选按单子租户收口。缺省不接 = 守卫恒 null = 行为与 A2
+   * 之前完全一致（缺省模式存量 stamp 行也不收口）。 */
+  readonly tenants?: TenantTableShape;
+  /** 写侧打标记信号表（2026-11-08 提案 A3）：三路进件建单时 resolveTenant
+   * 的判定面（A1 登记表投影，映射同源）。缺省不接 = 进件不 stamp，tenant
+   * 落 store 缺省 internal，行为与 A3 之前一致。 */
+  readonly tenantSignals?: TenantSignalTable;
 }
 
 export interface Engine {
@@ -163,12 +176,17 @@ export interface Engine {
   cancelStep(stepId: string, note: string, by: string): Promise<void>;
   // 推进
   advance(workflowId: string): Promise<void>;
+  /** 每工作流一把的 promise 链锁（引擎并发模型的唯一入口）。测试面（killStep
+   * 竞态用例）：占锁 + 锁内结算，断言守卫的杀写重读后不覆盖。
+   * 注意与引擎内部同一条锁——锁内续推一律走 advanceLocked，await advance()
+   * 会排队等自己死锁。 */
+  withLock<T>(workflowId: string, fn: () => Promise<T>): Promise<T>;
   /** 收单台快照：并发上限 / 正占位 / 等待中（按队序）/ hold 中（忙会话/人工压单/窗口）。 */
   queueStatus(): { concurrency: number; active: readonly string[]; waiting: readonly string[]; held: readonly string[] };
   /** 运行时调收单台并发（queue 配置化，2026-10-27）：透传 queue.setConcurrency。 */
   setQueueConcurrency(n: number): void;
-  /** hold 放行泵（runtime 60s 心跳调）：窗口关后把 hold 中的单按原队序放行。
-   * 窗口未关/无 hold 单时零操作（pump 幂等）。 */
+  /** hold 放行泵（workflow 域定时器每 60 秒调一次，见 timers.ts）：窗口关后把
+   * hold 中的单按原队序放行。窗口未关/无 hold 单时零操作（pump 幂等）。 */
   holdSweep(): void;
   /** agent 等输入（CC Notification hook）：僵尸豁免（粘性到心跳）+ 通知人。 */
   noteAwaiting(session: string, message: string): Promise<void>;
@@ -217,6 +235,10 @@ export interface Engine {
   touchSession(session: string): void;
   sweepZombies(): Promise<void>;
   // 对账
+  /** 显式 boot（2026-11-08 审查 P1 副作用后置）：启动重排队/孤儿救援从
+   *  构造期移到这里，由 runtime.start 在 server listen 全部成功之后调用——
+   *  构造期副作用先于端口独占执行，正是重复实例污染共享账本的第一现场。 */
+  boot(): void;
   reconcileStartup(): Promise<void>;
   /** feedback apply 链自动收口扫描（闸已批+证据齐→settle）。返回收口数。 */
   autoSettleFeedbackRuns(): Promise<number>;
@@ -261,6 +283,10 @@ export const createEngine = (deps: EngineDeps): Engine => {
     });
     return run;
   };
+  // 非阻塞探测（周期对账用）：该工作流的锁链上还有持有者或排队者即 true。
+  // 链尾的清理（locks.delete）比持有者结束晚一个微任务，这一拍里也报 true——
+  // 宁可让对账多跳过一轮，也不把在途推进当成空闲。
+  const lockBusy = (workflowId: string): boolean => locks.has(workflowId);
 
   // 晚绑持有器：破函数图之环（见文件头「环与晚绑」）。装配期被调用即抛错。
   const late: {
@@ -312,22 +338,29 @@ export const createEngine = (deps: EngineDeps): Engine => {
     // （事件驱动，无定时器）。排在人工放行/窗口腿之前：一活单一会话的
     // 不变量高于时机策略（人放行的是「现在派」，不是「挤进去」）。
     // availableSessions 空=可用面未知，fail-open 放行（守卫兜底旧行为）。
+    // 租户收口（A2）：忙会话腿只在本单租户内判——目标会话越租户不压单
+    // （派发侧守卫会在本租户内改道）；占用判定只看本租户的单；改道候选
+    // 只取本租户声明的 agent。
     if (w.status === 'queued') {
+      const guard = tenantGuardFor(deps.tenants, w.tenant);
       const st = store.currentStep(workflowId);
       const sess = st !== null && st.status === 'pending' && st.kind === 'agent'
         && typeof st.input['session'] === 'string' ? (st.input['session']).trim() : '';
       const avail = deps.availableSessions ?? [];
-      if (st !== null && sess !== '' && avail.length > 0) {
+      if (st !== null && sess !== '' && avail.length > 0 && (guard === null || guard.covers(sess))) {
         // 占用=已派发在跑的单（running）——同会话排队的兄弟单不算占（否则
         // 两个等待单互相视为忙=死锁）；0930「排队也是忙」口径保留给下面的
         // 改道候选判定（idleAlt 用 sessionHasOpenWork，queued 计忙防堆积）。
+        // 租户收口：只看本租户的单（跨租户单占着本租户会话=它自己路由错了，
+        // 不该反过来堵住本租户的派发判定）。
         const occupied = store.listWorkflows(500).some((x) => x.id !== workflowId && x.status === 'running'
+          && (guard === null || x.tenant === w.tenant)
           && (x.session === sess || (x.meta?.['assigned_session'] ?? '') === sess));
         if (occupied) {
           const pinV = st.input['session_pinned'];
           const pinned = pinV === true || pinV === 'true';
           const boundNames = (deps.routing.boundAgents ?? []).map((b) => b.session);
-          const idleAlt = (deps.routing.agents ?? []).some((a) =>
+          const idleAlt = candidatesInTenant(guard, deps.routing.agents ?? []).some((a) =>
             a.session !== '' && a.session !== sess && !boundNames.includes(a.session)
             && a.model_tier !== 'high' && avail.includes(a.session)
             && !store.sessionHasOpenWork(a.session, workflowId));
@@ -357,7 +390,7 @@ export const createEngine = (deps: EngineDeps): Engine => {
   const gateActions = makeGateActions({ deps, store, now, log, withLock, journal, queue, relay, steps });
   const lifecycle = makeLifecycle({ deps, store, now, log, withLock, journal, queue, zombie, getTemplates, advanceLocked: interpreter.advanceLocked });
   const human = makeHumanActions({ deps, store, now, log, withLock, journal, queue, agentSettle, zombie, late });
-  const reconcile = makeReconcile({ deps, store, now, log, journal, queue, agentSettle, lifecycle, lastSessionActivity: deps.lastSessionActivity });
+  const reconcile = makeReconcile({ deps, store, now, log, withLock, lockBusy, journal, queue, agentSettle, lifecycle, lastSessionActivity: deps.lastSessionActivity, feedbackReplyCount: deps.feedbackReplyCount });
   const intake = makeIntake({ deps, store, clock, now, log, getAuthz, queue });
 
   // 对齐 Go 的"尽力而为"：store/端口异常记日志，绝不沿 fire-and-forget
@@ -390,17 +423,22 @@ export const createEngine = (deps: EngineDeps): Engine => {
   // 下一步 pending、单 running、未及泵）的单：有 pending 步、无 running/
   // waiting_human 步（真实在飞 agent 与等人单绝不碰）→ 回队重派。nodes
   // 空档单（全终态等动作）不满足「有 pending」天然排除。
-  for (const w of [...store.listWorkflows(2000)].reverse()) {
-    if (w.status === 'queued') { queue.enqueueBack(w.id); continue; }
-    if (w.status !== 'running') continue;
-    const steps0 = store.stepsForWorkflow(w.id);
-    if (steps0.length === 0) continue;
-    if (steps0.some((s) => s.status === 'running' || s.status === 'waiting_human')) continue;
-    if (steps0.some((s) => s.status === 'pending')) {
-      log.info(`[queue] 启动救援:running 孤儿 ${w.id}（无在飞步、有 pending）回队`);
-      queue.enqueueBack(w.id);
+  // （2026-11-08 审查 P1 副作用后置：本段曾直接躺在构造器里——构造期即置
+  // running/起派发先于端口独占，重复实例在 EADDRINUSE 崩溃前已污染共享
+  // 账本。改为显式 boot()，由 runtime.start 在全部 server listen 成功后调用。）
+  const boot = (): void => {
+    for (const w of [...store.listWorkflows(2000)].reverse()) {
+      if (w.status === 'queued') { queue.enqueueBack(w.id); continue; }
+      if (w.status !== 'running') continue;
+      const steps0 = store.stepsForWorkflow(w.id);
+      if (steps0.length === 0) continue;
+      if (steps0.some((s) => s.status === 'running' || s.status === 'waiting_human')) continue;
+      if (steps0.some((s) => s.status === 'pending')) {
+        log.info(`[queue] 启动救援:running 孤儿 ${w.id}（无在飞步、有 pending）回队`);
+        queue.enqueueBack(w.id);
+      }
     }
-  }
+  };
 
   return {
     onEmailReceived: intake.onEmailReceived,
@@ -413,6 +451,7 @@ export const createEngine = (deps: EngineDeps): Engine => {
     settle: lifecycle.settle,
     cancelStep: lifecycle.cancelStep,
     advance,
+    withLock,
     queueStatus: queue.queueStatus,
     setQueueConcurrency: queue.setConcurrency,
     holdSweep: () => queue.pump(),
@@ -481,10 +520,11 @@ export const createEngine = (deps: EngineDeps): Engine => {
     recordActivity: agentSettle.recordActivity,
     touchSession: zombie.touchSession,
     sweepZombies: zombie.sweepZombies,
+    boot,
     reconcileStartup: reconcile.reconcileStartup,
     autoSettleFeedbackRuns: reconcile.autoSettleFeedbackRuns,
     autoSettleApprovedRuns: reconcile.autoSettleApprovedRuns,
-    reconcileInflight: () => reconcile.reconcileInflightMs(10 * 60_000),
+    reconcileInflight: () => reconcile.reconcileIdle(10 * 60_000),
     setTemplates,
     currentTemplates,
     setAuthz,

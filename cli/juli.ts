@@ -14,14 +14,16 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runHook } from '../src/cli/hook.ts';
 import { execSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
-import { createAgentBackend, createProvisioningDispatch, createTmuxClient } from '@juli-os/agents';
+import { createAgentBackend, createProvisioningDispatch, createTmuxClient, type AgentBackendKind } from '@juli-os/agents';
 import {
   createJev, jevTokenFromEnv, planRouting, SAMPLE_FACTS, SAMPLE_RECORDS, ticketTitle, topAlternatives,
   type FbRecord, type Judge, type RoutingFacts, type RoutingPlan,
 } from '@juli-os/routing';
+import { createLedgerStore } from '@juli-os/ledger';
 import {
   configFilePath, configSchema, danglingFeedbackRoutes, defaultDataDir, resolveAiConfig, saveConfigFile,
 } from '../src/platform/config/schema.ts';
+import { parseTenantDecls, scanTenantBackfill } from '../src/platform/config/tenants.ts';
 import { createAnthropicChat, createOpenAiChat } from '../src/platform/llm/chat.ts';
 
 const BASE = process.env['JULI_SERVICE_URL'] ?? 'http://127.0.0.1:7170';
@@ -34,6 +36,24 @@ const PW = process.env['JULI_PASSWORD'] ??
     }
   })();
 const H = { Authorization: `Bearer ${PW}`, 'content-type': 'application/json' };
+
+/** 回填 CLI 的配置读取（2026-11-11 A-P2-9）：文件不存在 = 无配置（null，按缺省
+ * 规则跑）；文件在而读坏（坏 JSON / zod 校验不过）= 点名报错，调用方拒跑——
+ * 坏配置下按空规则判并 --apply 会把单子判错，而引擎遇到同样的坏配置是拒绝
+ * 启动的，回填没有更宽容的道理。 */
+export const loadBackfillConfig = (
+  path: string,
+): { ok: true; config: ReturnType<typeof configSchema.parse> | null } | { ok: false; error: string } => {
+  if (!existsSync(path)) return { ok: true, config: null };
+  try {
+    return { ok: true, config: configSchema.parse(JSON.parse(readFileSync(path, 'utf8'))) };
+  } catch (e) {
+    return {
+      ok: false,
+      error: `配置读不出来（${path}）：${e instanceof Error ? e.message : String(e)}——回填拒跑（坏配置按空规则判会把单子判错；引擎遇到同样的坏配置是拒绝启动的）`,
+    };
+  }
+};
 
 const call = async (method: string, path: string, body?: unknown): Promise<unknown> => {
   const res = await fetch(`${BASE}${path}`, {
@@ -51,7 +71,62 @@ const arg = (name: string): string => {
   const i = process.argv.indexOf(`--${name}`);
   return i > 0 ? (process.argv[i + 1] ?? '') : '';
 };
-const positional = (): string[] => process.argv.slice(3).filter((a) => !a.startsWith('--'));
+
+/** 选项登记（2026-11-23 全量审查修复）：一个子命令认识哪些选项。
+ *  value = 带值的选项名（不带 -- 前缀），它和紧跟的值都不算位置参数；
+ *  flags = 不带值的开关，只跳过它自己；
+ *  keepUnknown = 没登记的 -- 开头的词当正文保留（缺省丢弃，即旧行为）。 */
+export interface ArgSpec {
+  readonly value?: readonly string[];
+  readonly flags?: readonly string[];
+  readonly keepUnknown?: boolean;
+}
+
+/** argv（已去掉 node、脚本、子命令三段）→ 位置参数列表。纯函数，可单测。
+ *
+ * 此前 positional() 只去掉以 -- 开头的词，没去掉「选项的值」：`juli start
+ * --title 修一下登录` 里标题被当成第一个位置参数（模板名），程序去查模板、
+ * 报「未知模板」——帮助里写的用法恰恰是这一条。现在带值的选项连同它的值
+ * 一起跳过。没登记的 -- 开头的词缺省丢弃（与旧行为一致）；keepUnknown 时
+ * 保留——session:send 的正文里以 -- 开头的词此前会被丢掉。`--name=value`
+ * 写法不支持（arg() 读不到它，这里也不把它当选项，行为未变）。 */
+export const parsePositionals = (args: readonly string[], spec: ArgSpec = {}): string[] => {
+  const value = new Set(spec.value ?? []);
+  const flags = new Set(spec.flags ?? []);
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (!a.startsWith('--')) { out.push(a); continue; }
+    const name = a.slice(2);
+    // 值在下一个词（arg() 取的也是它），一起跳过；值本身以 -- 开头照样算值，
+    // 读写两边同一个口径。
+    if (value.has(name)) i++;
+    else if (!flags.has(name) && spec.keepUnknown === true) out.push(a);
+  }
+  return out;
+};
+
+/** 各子命令的选项登记——只登记会读位置参数的子命令（pos()/positional()）
+ *  需要跳过的选项。没登记的子命令按旧行为：-- 开头的词一律丢弃。 */
+const CMD_ARG_SPECS: Readonly<Record<string, ArgSpec>> = {
+  start: { value: ['title', 'input', 'relates-to', 'relatesTo', 'steps'] },
+  'session:start': { value: ['cwd'] },
+  // 名字后面的一切都是要发的文本，本命令没有选项可认。
+  'session:send': { keepUnknown: true },
+  claim: { value: ['session'] },
+  whisper: { value: ['text', 'session'] },
+  approve: { value: ['at', 'note'] },
+  rework: { value: ['feedback', 'text'] },
+  align: { value: ['amendment', 'text'] },
+  retry: { value: ['plan', 'prompt', 'session'] },
+  amend: { value: ['input', 'workflow'] },
+  'rework-send': { value: ['feedback', 'text'] },
+  deliver: { value: ['evidence'] },
+  review: { value: ['title'] },
+  'force-close': { value: ['note'] },
+  handoff: { value: ['reason', 'session'] },
+};
+const positional = (): string[] => parsePositionals(process.argv.slice(3), CMD_ARG_SPECS[cmd] ?? {});
 const pos = (n: number): string => positional()[n] ?? '';
 
 /** 读引擎 config.json 的 tmux_socket_path（十四跑 R1 P2-7：此前两处逐字
@@ -63,6 +138,17 @@ const readSocketCfg = (): string | undefined => {
     return undefined;
   }
 };
+
+/** config 原始 JSON 里的 agent_backend → 终端后端种类。纯函数，可单测。
+ *
+ * 命令行直接读文件、不走 schema 的默认值，所以缺省值得在这里对齐引擎
+ * （2026-11-23 全量审查修复）：schema 里 agent_backend 的 default 是 herdr，
+ * `juli setup` 也不写这个键——此前没写按 tmux 算，新装的环境引擎用 herdr、
+ * 命令行用 tmux，两边连的不是同一批会话。现在没写按 herdr，只有明确写了
+ * 'tmux' 才用 tmux。包内 createAgentBackend 不传 backend 也落 tmux，
+ * 所以调用处必须把结果显式传进去。 */
+export const backendKindOf = (cfg: { readonly agent_backend?: string }): AgentBackendKind =>
+  cfg.agent_backend === 'tmux' ? 'tmux' : 'herdr';
 
 /** 引擎 config 的 agent 后端切片（2026-11-04 herdr 下沉）：send、ask、
  * session 系列、compact 这些直驱会话链的子命令，客户端须与引擎同一后端
@@ -76,11 +162,14 @@ const readBackend = () => {
       agent_backend?: string; herdr_session?: string;
     };
     return createAgentBackend({
-      backend: cfg.agent_backend === 'herdr' ? 'herdr' : 'tmux',
+      backend: backendKindOf(cfg),
       socketPath: readSocketCfg(),
       herdrSession: cfg.herdr_session || 'juli',
     });
   } catch {
+    // config 不可读/损坏时回退 tmux（b51 R1 P3）：兜底继续，但 stderr 点名
+    // ——静默回退会让 herdr 引擎与 CLI 两侧后端分裂且无提示。
+    console.error('✗ config 不可读（~/.juli-service/config.json）——按 tmux 兜底');
     return createAgentBackend({});
   }
 };
@@ -595,6 +684,65 @@ if (isCliEntry) (async () => {
     else renderPlan(plan);
     console.error('\n（dry-run：判定结果已出，未派发任何内容、未建单、未落账）');
     return;
+  } else if (cmd === 'tenant') {
+    // 租户子命令（2026-11-08 多租户提案 A1）：存量回填。直连 ledger store
+    // （不经 HTTP——回填时服务多半没起）；数据目录沿用 CLI 现行链
+    // （--data-dir > env JULI_DATA_DIR > MAKRO_DATA_DIR > config data_dir >
+    // 默认 ~/.juli-service）。默认 dry-run：列「现值 ≠ 目标」的行 + 全量
+    // 分布；--apply 逐条 setWorkflowTenant，幂等（重复跑第二遍 0 行）。
+    const sub = process.argv[3] ?? '';
+    if (sub !== 'backfill') {
+      console.error('✗ 用法: juli tenant backfill [--apply] [--data-dir <dir>]');
+      process.exit(1);
+    }
+    const apply = process.argv.includes('--apply');
+    const ddFlag = arg('data-dir');
+    const dataDirEnv = (process.env['JULI_DATA_DIR'] && process.env['JULI_DATA_DIR'] !== ''
+      ? process.env['JULI_DATA_DIR']
+      : process.env['MAKRO_DATA_DIR']) ?? '';
+    // config 与数据目录同源（loadConfig 同语义：env/旗标指到哪个数据卷，
+    // config.json 就读那个卷的）——--data-dir 副本库运行绝不触默认路径。
+    const cfgDir = ddFlag !== '' ? ddFlag : dataDirEnv;
+    const cfgLoad = loadBackfillConfig(configFilePath(homedir(), cfgDir || undefined));
+    if (!cfgLoad.ok) {
+      console.error(`✗ ${cfgLoad.error}`);
+      process.exit(1);
+    }
+    const tenantCfg: ReturnType<typeof configSchema.parse> | null = cfgLoad.config;
+    const dataDir = (ddFlag !== ''
+      ? ddFlag
+      : dataDirEnv !== ''
+        ? dataDirEnv
+        : (tenantCfg?.data_dir || defaultDataDir(homedir()))).replace(/\/+$/, '');
+    const dbPath = join(dataDir, 'lifecycle.db');
+    if (!existsSync(dbPath)) {
+      console.error(`✗ 未找到 ${dbPath}——--data-dir 指到含 lifecycle.db 的数据目录`);
+      process.exit(1);
+    }
+    const tenantsParsed = parseTenantDecls(tenantCfg ?? configSchema.parse({}));
+    if (!tenantsParsed.ok) {
+      console.error(`✗ 租户声明非法：${tenantsParsed.error}`);
+      process.exit(1);
+    }
+    const report = scanTenantBackfill(createLedgerStore(dbPath), tenantsParsed.table, { apply });
+    for (const r of report.pending) {
+      console.log(`  ${r.id}  ${r.basis}  ${r.current} → ${r.target}  ${r.title.slice(0, 40)}`);
+    }
+    const dist = Object.entries(report.byTarget).map(([t, n]) => `${t} ${n}`).join(' · ');
+    const basis = Object.entries(report.byBasis).filter(([, n]) => n > 0).map(([b, n]) => `${b} ${n}`).join(' / ');
+    console.log(`\n总计 ${report.total} 张（${dist}）｜判定依据：${basis}`);
+    if (report.skipped > 0) {
+      console.log(`skipped（租户未声明）${report.skipped} 张——目标租户不在 config.tenants，未改写`);
+    }
+    if (report.protectedByBasis > 0) {
+      console.log(`带写侧依据跳过 ${report.protectedByBasis} 张——explicit / sender_address / claimed 不重判（回填看不见这些信号）`);
+    }
+    if (apply) {
+      console.log(`--apply：改写 ${report.rewritten} 张`);
+    } else {
+      console.log(`dry-run：待改写 ${report.pending.length} 张（现值 ≠ 目标）——加 --apply 落库`);
+    }
+    return;
   } else if (cmd === 'setup' || cmd === 'doctor') {
     // 开源 MVP（2026-10-10）：setup=检测/安装 tmux+Claude Code → 写入 ai 段 →
     // 端到端一句话往返自检；doctor=同一套自检的只读形态（不安装/不写配置/
@@ -911,17 +1059,17 @@ if (isCliEntry) (async () => {
     console.log(`juli CLI
   start --title T [--input JSON] [--relates-to WF]
                                     免模板起单(动态模型标准入口)
-  start <template> [--title] [--input JSON]
-        [--relates-to WF] [--steps]     配方起流(可重复阶梯)
+  start <template> [--title T] [--input JSON]
+        [--relates-to WF] [--steps a,b] 配方起流(可重复阶梯)
   show <wf>                          查看任务与草稿
   claim <wf> --session S             派发/改派到某会话
   whisper <wf> --text "..."          插话纠偏(不中断)
-  approve <gate-id> [--note] [--at 09:00|ISO]
+  approve <gate-id> [--note "..."] [--at 09:00|ISO]
                                       批准;--at 定时发(到点自动发出)
   rework <gate-id> --feedback "..."  驳回回修(轮次+1)
   align <gate-id> --amendment "..."  对齐修正(人定稿版注入下游,优先级最高)
   deliver <wf> --evidence E           答复草稿节点(GLM 按 juli-reply)
-  review <wf> [title]                 审阅闸门节点
+  review <wf> [--title T]            审阅闸门节点(缺省标题「交付审阅」)
   send <wf>                           发送节点(需已批准审阅)
   settle <wf>                         结算落账
   audit <wf>                          单 run 审计单
@@ -941,6 +1089,8 @@ if (isCliEntry) (async () => {
   routing plan [id...|--queue|--sample] [--no-jev] [--json]
                                       路由判定计划（jev 分类+合并，恒 dry-run）
   routing rules                      路由菜单与现行规则/悬空规则
+  tenant backfill [--apply] [--data-dir D]
+                                     租户存量回填（dry-run 判定与分布；--apply 落库，幂等）
   (internal) hook <verb> <session> [status]
                                       CC hook 转发(机器向,与 dist/cli/hook.js 同逻辑)`);
   }

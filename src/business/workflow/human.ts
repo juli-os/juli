@@ -2,14 +2,16 @@
 // 发送守卫打回（reworkSend）、内容转派（handoff）、会话改派（assignSession）、
 // 重试（retry）。人的修正权全在这层——快照钉死输入，这里开合法窗口。
 
-import { rfc3339 } from '@juli-os/artifacts';
+import { rfc3339 } from '../../platform/shared/clock.ts';
 import { asString, truncate } from '../../platform/shared/json.ts'
-import type { JsonRecord, JsonValue } from '@juli-os/artifacts'
+import type { JsonRecord, JsonValue } from '../../platform/shared/json.ts'
 import type { Logger } from '../../platform/events/bus.ts';
 import type { LifecycleStore } from '@juli-os/ledger';
 import { AGENT_STEP_KINDS, INSTRUCTABLE_STEP_KINDS } from '@juli-os/ledger';
 import { isActiveWorkflowStatus, isSettledWorkflowStatus } from '../../contracts/statuses.ts';
+import { isSendGateDecision } from '../send/sendSeed.ts';
 import { agentLiveSessionOf } from './capabilities/index.ts';
+import { runGateSendChecks } from './steps.ts';
 import type { EngineDeps } from './engine.ts';
 import type { Journal } from './journal.ts';
 import type { Queue } from './queue.ts';
@@ -25,6 +27,30 @@ export interface HumanActions {
   assignSession(workflowId: string, session: string, by: string): Promise<void>;
   retry(stepId: string, patch?: { plan?: string; prompt?: string; session?: string }, by?: string): Promise<void>;
 }
+
+/** 人点名会话时，随 session 一起写进步 input 的四个字段（2026-11-23 全量审查）。
+ * 旧落点快照 resolved_session 不清，steps.ts 派发时它压过人改的 input.session，
+ * 点名静默失效。九跑 P1 在 assignSession（改派）里修过同一个问题；retry 的
+ * session 补丁、amend 的 session 走同一套：清掉旧落点和改道痕迹；钉住（人点名
+ * 即钉：忙时排队，不改道）；撤掉默认兜底标记 resolved_by_default。 */
+const NAMED_SESSION_INPUT = {
+  resolved_session: null, busy_diverted_from: null, session_pinned: true, resolved_by_default: null,
+} as const;
+
+/** 等待人工的闸门不许补的键（2026-11-24 复审 P3-⑥）：它们由引擎管，不归补料。
+ *  delivery 是 agent 挂闸时申报的交付方式——它决定这张卡是发送审批还是
+ *  apply/artifact 确认，自动批准也按它判；checks / checked_at / send_checks_ran
+ *  是引擎跑出来的发送检查结果；question_options 是问询的选项。人从补料口改了
+ *  它们，卡面、账本和实际行为说的就不是同一件事。要改这些只能走各自的正门
+ *  （驳回重修、批准、否决）。pending / failed 步骤不受这张表约束。 */
+const GATE_ENGINE_OWNED_KEYS: ReadonlySet<string> = new Set([
+  'delivery', 'checks', 'checked_at', 'send_checks_ran', 'question_options',
+]);
+
+/** 补料碰了这些键，发送检查才需要重算（它们决定检查看什么：正文取自 draft 或
+ *  deliverables 里的 body 工件，manifest 管契约检查，envelope 管反馈指针）。
+ *  补别的键（回信引用、定时、主题…）不碰正文，不重算。 */
+const GATE_AMEND_BODY_KEYS: ReadonlySet<string> = new Set(['draft', 'deliverables', 'manifest', 'envelope']);
 
 export const makeHumanActions = (o: {
   readonly deps: EngineDeps;
@@ -119,7 +145,10 @@ export const makeHumanActions = (o: {
         if (patch.prompt !== undefined && patch.prompt.trim() !== '') input['prompt'] = patch.prompt;
         if (patch.session !== undefined && patch.session.trim() !== '') input['session'] = patch.session;
         if (Object.keys(input).length > 0) {
-          store.setStepInput(st.id, input);
+          // 人点名了会话：旧落点快照一并清掉（见 NAMED_SESSION_INPUT）。只有
+          // agent/verify 步派发时才读会话，其余步照旧只写人给的补丁。
+          const named = input['session'] !== undefined && AGENT_STEP_KINDS.includes(st.kind);
+          store.setStepInput(st.id, named ? { ...NAMED_SESSION_INPUT, ...input } : input);
           o.journal.stepEvent(st, 'step_patch', input);
         }
       }
@@ -141,7 +170,12 @@ export const makeHumanActions = (o: {
   /** 补料：快照把输入钉死防篡改，但也锁死了人的修正权——这是给「缺料冻死
    * （pending）」与「守卫拒发（failed）」开的合法修正窗口。三不碰：在飞步骤
    * （竞态）、终态工作流（先 reopen 语义归 retry/force-close）、_ref（模板
-   * 血统不可改）。补料即记账：before/after + by 进事件链，审计靠链不靠封死。 */
+   * 血统不可改）。补料即记账：before/after + by 进事件链，审计靠链不靠封死。
+   * 2026-11-23 起也收「等待人工的闸门」：审批卡（GateReviewCard）一直给等待
+   * 人工的发送审批提供「补料」（收件人/主题写错由人就地改），但这里只收
+   * pending/failed，卡上的闸门是 waiting_human——点了必 400。当初只放行这两种
+   * 状态是为两起事故开的口子（787ac991），不是有意禁止给闸门补料。补料不是
+   * 决定：闸门补完仍在等人，不播种、不推进，批准时下游读到的才是补过的值。 */
   const amendStep = async (stepId: string, patch: JsonRecord, by: string): Promise<void> => {
     const clean = Object.fromEntries(
       Object.entries(patch).filter(([k, v]) => !k.startsWith('_') && v !== null && v !== undefined),
@@ -153,8 +187,16 @@ export const makeHumanActions = (o: {
       const st = store.getStep(stepId);
       if (!st) throw new Error(`step ${stepId} not found`);
       if (st.status === 'running') throw new Error(`step ${stepId} is running — wait for it to settle before amending`);
-      if (st.status !== 'pending' && st.status !== 'failed') {
-        throw new Error(`step ${stepId} is ${st.status} — only pending/failed steps take amendments`);
+      // 只多放开「kind 是 gate 且在等人」这一种；其余状态照旧拒绝。
+      const waitingGate = st.kind === 'gate' && st.status === 'waiting_human';
+      if (st.status !== 'pending' && st.status !== 'failed' && !waitingGate) {
+        throw new Error(`step ${stepId} is ${st.status} — only pending/failed steps and gates waiting for a human take amendments`);
+      }
+      if (waitingGate) {
+        const owned = Object.keys(clean).filter((k) => GATE_ENGINE_OWNED_KEYS.has(k));
+        if (owned.length > 0) {
+          throw new Error(`gate ${stepId} is waiting for a human — these keys are managed by the engine and cannot be amended: ${owned.join(', ')}（要改交付方式或重跑检查，请用驳回重修）`);
+        }
       }
       const w = store.getWorkflow(st.workflowId);
       if (!w || isSettledWorkflowStatus(w.status)) {
@@ -162,10 +204,34 @@ export const makeHumanActions = (o: {
       }
       const before: Record<string, JsonValue> = {};
       for (const k of Object.keys(clean)) before[k] = st.input[k] !== undefined ? (st.input[k]) : null;
+      // 补料里点名了会话：旧落点快照一并清掉（见 NAMED_SESSION_INPUT）。只有
+      // agent/verify 步派发时才读会话；人显式写了的键优先，不被覆盖。
+      const named = AGENT_STEP_KINDS.includes(st.kind)
+        && typeof clean['session'] === 'string' && clean['session'].trim() !== '';
+      store.setStepInput(st.id, named ? { ...NAMED_SESSION_INPUT, ...clean } : clean);
+      if (waitingGate && Object.keys(clean).some((k) => GATE_AMEND_BODY_KEYS.has(k))
+        && isSendGateDecision(st.title, st.input)) {
+        // 发送决策闸补料后重算检查（2026-11-24 复审 P3-⑥）：卡上的红绿灯是开闸
+        // 时按旧正文跑的，人改了草稿或收件人之后它就过时了——陈旧的红灯和
+        // 绿灯一样是在骗审阅的人。与 agentSettle 收编后的重算同一份实现。
+        // 只在补料碰了正文相关的键时才跑（R2 复审 P3-H）：重算要联网探活链接，
+        // 最长十几秒，还占着工作流锁——改回信引用、定时这类东西不该跑。
+        const checks = await runGateSendChecks({
+          deps, store, gate: st, now,
+          // 称呼对账源（与开闸时同源）：进件落的 from_name / 发件地址。
+          sender: {
+            name: asString(w.meta['from_name']) || undefined,
+            address: asString(w.meta['from']) || undefined,
+          },
+        });
+        o.journal.stepEvent(st, 'send_checks_ran', {
+          checks: checks.map((c) => `${c.name}:${c.status}`), recompute: true, by,
+        });
+      }
       // 冻结类（缺模板 key 渲染失败）步骤是 pending——补齐后重臂；失败类顺手
-      // 清掉上次的错误输出与守卫标记（守卫清了 retry 才有资格再跑）。
-      store.setStepInput(st.id, clean);
-      store.setStepOutput(st.id, { error: null, guard: null });
+      // 清掉上次的错误输出与守卫标记（守卫清了 retry 才有资格再跑）。等待人工
+      // 的闸门没有错误输出可清：只写 input，output 不碰。
+      if (!waitingGate) store.setStepOutput(st.id, { error: null, guard: null });
       store.appendEvent('workflow', st.workflowId, 'step_input_amended', {
         step: st.id, kind: st.kind, keys: Object.keys(clean), before, after: clean, by, at: rfc3339(now()),
       });
@@ -175,7 +241,9 @@ export const makeHumanActions = (o: {
         if (w.status === 'failed') store.setWorkflowStatus(st.workflowId, 'running');
       }
       log.info(`[engine] step ${st.id} amended [${Object.keys(clean).join(',')}] by ${by}`);
-      o.queue.continueWorkflow(st.workflowId);
+      // 等待人工的闸门不续推：它还在等人拍板，批准时才播种下游（seedSendFromGate
+      // 重读闸门 input，拿到的就是补过的值）。
+      if (!waitingGate) o.queue.continueWorkflow(st.workflowId);
     });
   };
 

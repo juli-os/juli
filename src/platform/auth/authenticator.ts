@@ -2,7 +2,7 @@
 // 中间件按顺序尝试：任一实现确认身份即放行；都拒绝 → 401。
 
 import { safeEqual } from '../shared/secure.ts';
-import { ok, toResult, type Result } from '@juli-os/artifacts';
+import { ok, toResult, type Result } from '../shared/result.ts';
 
 export interface AuthUser {
   readonly id: string;

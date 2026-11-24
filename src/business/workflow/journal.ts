@@ -2,7 +2,7 @@
 // LLM 补全（180s 超时 + 429 退避重试 ×2）。全部子模块共用的底座服务。
 
 import { asString } from '../../platform/shared/json.ts';
-import type { JsonRecord } from '@juli-os/artifacts';
+import { type JsonRecord } from '../../platform/shared/json.ts';
 import type { Logger } from '../../platform/events/bus.ts';
 import type { LifecycleStore } from '@juli-os/ledger';
 import { type Step, type Workflow } from '@juli-os/ledger';

@@ -5,8 +5,8 @@
 import { describe, expect, it } from 'vitest';
 import { createEmailNotifier, combinePushers, SUBJECT_MAX, BODY_MAX } from '../src/platform/push/email.ts';
 import type { MailerPort, MailSendCommand, PusherPort } from '../src/contracts/ports.ts';
-import type { Result } from '@juli-os/artifacts';
-import { ok } from '@juli-os/artifacts';
+import { type Result } from '../src/platform/shared/result.ts';
+import { ok } from '../src/platform/shared/result.ts';
 import { type Step, type Workflow } from '@juli-os/ledger';
 
 const wf = (id: string, title: string): Workflow => ({ id, title } as unknown as Workflow);

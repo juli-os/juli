@@ -1,15 +1,15 @@
-// 对账：重启在途清算（reconcileInflightMs）、僵尸/队列自愈、feedback 单
+// 对账：重启在途清算、僵尸/队列自愈、feedback 单
 // 存量回填补闸（backfillFeedbackGates）与 apply 链自动收口
 // （autoSettleFeedbackRuns / settleOneFeedbackRun）。
 
 import type { Logger } from '../../platform/events/bus.ts';
-import type { LifecycleStore } from '@juli-os/ledger';
+import { type LifecycleStore, type Step } from '@juli-os/ledger';
 import { isActiveStepStatus, isSettledStepStatus } from '../../contracts/statuses.ts';
 import { asString } from '../../platform/shared/json.ts';
-import type { JsonRecord, JsonValue } from '@juli-os/artifacts';
+import { type JsonRecord, type JsonValue } from '../../platform/shared/json.ts';
 import { gateDelivery } from '../send/sendSeed.ts';
 import { agentLiveSessionOf } from './capabilities/index.ts';
-import { briefDeclaresApply, feedbackRecordIdOf, hasLiveGate } from './support.ts';
+import { RUNNING_SCAN_LIMIT, briefDeclaresApply, feedbackRecordIdOf, hasLiveGate } from './support.ts';
 import type { EngineDeps } from './engine.ts';
 import type { Journal } from './journal.ts';
 import type { Queue } from './queue.ts';
@@ -18,10 +18,22 @@ import type { Lifecycle } from './lifecycle.ts';
 
 export interface Reconcile {
   reconcileStartup(): Promise<void>;
-  reconcileInflightMs(graceMs: number): Promise<void>;
+  /** 周期对账（runtime 60s 心跳，宽限 graceMs）。与重启对账共用一次扫描，区别是
+   * 不做「查 submitted 账放行、查不到就杀」的在途判定：agent/verify 步绝不杀
+   * （交 zombie 看门狗兜底），超宽限后只在其 prompt 已落定时回收结算。超宽限的
+   * 模板能力步（triage/draft/send/llm/share）仍判死落 failed，running 态的闸门
+   * 仍归位等人。先做队列自愈再扫描；工作流锁被占的步本轮跳过，不排锁等。
+   * 上一轮没跑完时再调用，直接返回在途那一轮。 */
+  reconcileIdle(graceMs: number): Promise<void>;
   autoSettleFeedbackRuns(): Promise<number>;
   autoSettleApprovedRuns(): Promise<number>;
 }
+
+/** 对账模式（2026-11-07 P3 拆显式入口）：同一扫描在两种语义下运行——
+ * restart=重启对账（查 submitted 账放行、查不到才杀）；idle=周期对账
+ * （宽限期内不动，agent/verify 步绝不杀）。曾靠 `graceMs === 0` 的魔法值
+ * 分叉两种语义，P1 根因正藏在这个分叉里。 */
+type ReconcileMode = 'restart' | 'idle';
 
 export const makeReconcile = (o: {
   readonly deps: EngineDeps;
@@ -30,7 +42,15 @@ export const makeReconcile = (o: {
   readonly log: Logger;
   readonly journal: Journal;
   readonly queue: Queue;
+  /** 杀步段持锁（对齐 zombie.healZombie）：引擎并发模型要求所有
+   * 状态转变在锁内发生。 */
+  readonly withLock: <T>(workflowId: string, fn: () => Promise<T>) => Promise<T>;
+  /** 工作流锁是否被占（非阻塞探测）：周期对账据此跳过有推进在途的单，不排锁等。 */
+  readonly lockBusy: (workflowId: string) => boolean;
   readonly agentSettle: Pick<AgentSettle, 'completeAgentStep'>;
+  /** feedback 域的回挂答复计数（2026-11-12 ledger 关门：feedback_mirror 已迁
+   *  feedback 域库，workflow 域不摸别家的表——计数函数由装配注入，缺省恒 0）。 */
+  readonly feedbackReplyCount?: (recordId: string) => number;
   readonly lifecycle: Pick<Lifecycle, 'settle'>;
   /** 认领会话最近一行 claude_code 用量的 epoch ms（无行=0）：回流执行静默
    * 判据②（usage 库在 runtime 层，经 engine deps 注入）。 */
@@ -78,18 +98,24 @@ export const makeReconcile = (o: {
         && typeof sweptEnvelope === 'object' && !Array.isArray(sweptEnvelope)) {
         seed['envelope'] = { ...(sweptEnvelope as JsonRecord), feedback_refs: [recordId] };
       }
-      store.insertStepsAt(w.id, last.seq, [{ kind: 'gate', title: '确认闸门', input: seed }]);
-      const gate = store.stepsForWorkflow(w.id)[steps.length] ?? null;
-      if (gate) o.journal.stepEvent(gate, 'feedback_gate_backfilled', { record_id: recordId });
-      log.info(`[engine] feedback 单 ${w.id} 存量回填确认闸（record ${recordId}）`);
-      o.queue.continueWorkflow(w.id);
-      n++;
+      // 逐单 try（2026-11-07 P3，与 settleOneFeedbackRun/settleOneApprovedRun
+      // 同裁决）：一单插库被拒不炸整轮启动回填——for 循环中断后其余单永不回填。
+      try {
+        store.insertStepsAt(w.id, last.seq, [{ kind: 'gate', title: '确认闸门', input: seed }]);
+        const gate = store.stepsForWorkflow(w.id)[steps.length] ?? null;
+        if (gate) o.journal.stepEvent(gate, 'feedback_gate_backfilled', { record_id: recordId });
+        log.info(`[engine] feedback 单 ${w.id} 存量回填确认闸（record ${recordId}）`);
+        o.queue.continueWorkflow(w.id);
+        n++;
+      } catch (e) {
+        log.warn(`[engine] feedback 单 ${w.id} 存量回填被拒（下轮启动再判）: ${e instanceof Error ? e.message : String(e)}`);
+      }
     }
     return n;
   };
 
   const reconcileStartup = async (): Promise<void> => {
-    await reconcileInflightMs(0);
+    await reconcileRestart();
     const backfilled = await backfillFeedbackGates();
     if (backfilled > 0) log.info(`[engine] 启动回填：${backfilled} 张 feedback 单补挂确认闸`);
     const settled = await autoSettleFeedbackRuns();
@@ -100,13 +126,7 @@ export const makeReconcile = (o: {
 
   /** 镜像里的回挂答复数（reply_to=本单 record）：apply 链收口的执行证据之二。
    * 镜像 60 分钟节奏——回挂答复最迟一小时内落地，落不了地的单留给人工收口。 */
-  const feedbackReplyCount = (recordId: string): number => {
-    try {
-      const r = store.db.prepare('SELECT COUNT(*) AS n FROM feedback_mirror WHERE reply_to=?')
-        .get(recordId) as { readonly n: number | bigint } | undefined;
-      return Number(r?.['n'] ?? 0);
-    } catch { return 0; } // 镜像表不存在（测试/老库）= 无回挂证据
-  };
+  const replyCount = o.feedbackReplyCount ?? ((): number => 0);
 
   /** feedback apply 链自动收口（2026-09-21 深夜 e2e 收敛，用户裁定证据面）：
    * apply 链到确认闸为止、没有 send 步——autoSettleAfterSend 的「有已完成
@@ -136,7 +156,7 @@ export const makeReconcile = (o: {
     }
     const executed = (deps.artifacts?.list(workflowId) ?? [])
       .some((a) => a.stepId === gate.id && a.deletedAt === null)
-      || feedbackReplyCount(recordId) > 0;
+      || replyCount(recordId) > 0;
     if (!executed) return false;
     // 逐单 try（与 settleOneApprovedRun 同裁决）：守卫与 settle 取锁之间
     // appendNode 可插队，settleLocked 会打回——一单被拒不炸整轮启动收口。
@@ -216,20 +236,83 @@ export const makeReconcile = (o: {
     return n;
   };
 
-  const reconcileInflightMs = async (graceMs: number): Promise<void> => {
-    const running = store.listSteps('running', 200);
+  /** 杀步段（对齐 zombie.healZombie 先例）：持工作流锁 + 锁内
+   * 重读 status==='running' 再落账——引擎并发模型（engine.ts 头注）要求
+   * 所有状态转变都在锁内发生；守卫的账本查询与杀写之间，dispatch/hook 的
+   * withLock 推进可插队（重派/settle），重读不过=判定作废，绝不凭过期
+   * 快照杀步。注意 withLock 不可重入：settle-once 的 completeAgentStep
+   * 自带 CAS+锁（agentSettle.ts:224-234 明证调用方不持锁），保持锁外调用。 */
+  const killStep = async (st0: Step, error: string): Promise<void> => {
+    await o.withLock(st0.workflowId, async () => {
+      const cur = store.getStep(st0.id);
+      if (!cur || cur.status !== 'running') return;
+      store.setStepOutput(cur.id, { error });
+      store.setStepStatus(cur.id, 'failed');
+      o.journal.stepEvent(cur, 'step_failed', {});
+    });
+  };
+
+  // 队列自愈（2026-09-21 死槽实测）：占位的定义就是「当前步 running」——
+  // 重启守卫判死/漏放行的占位单（如 wf_944164165b24 幽灵槽）会把并发 1
+  // 的队列饿死全队。终态/非机器忙的占位一律放位并泵队；evaluateSlot/pump
+  // 幂等，60s 一扫对活链零影响。
+  const healQueueSlots = (): void => {
+    for (const id of [...o.queue.activeIds]) {
+      const w = store.getWorkflow(id);
+      if (!w || w.status !== 'running' || !o.queue.machineBusy(id)) {
+        o.queue.activeIds.delete(id);
+        o.queue.pump();
+      }
+    }
+  };
+
+  const reconcileInflight = async (graceMs: number, mode: ReconcileMode): Promise<void> => {
+    // 周期对账先自愈再扫描：扫描里的杀步要排工作流锁，自愈只是同步查账放位，
+    // 不该陪着等。本轮扫描判死的单，占位由下一轮自愈放掉（60s 内）。重启对账
+    // 不提前：启动时 boot 刚泵出的链要等微任务才开始推进，当前步此刻还是
+    // pending，自愈若排在扫描之前，必定在同一同步段内把它们当死槽放掉。
+    if (mode === 'idle') healQueueSlots();
+    const running = store.listSteps('running', RUNNING_SCAN_LIMIT);
+    if (running.length >= RUNNING_SCAN_LIMIT) {
+      log.warn(`[engine] running 步扫描触顶 ${RUNNING_SCAN_LIMIT}——尾部步本轮未扫（并发堆积请排查）`);
+    }
     const cutoff = now().getTime() - graceMs;
     for (const st of running) {
+      // 周期对账不排锁：锁被占 = 本进程有推进在途（模板能力步的 LLM/SMTP 调用
+      // 就在自己的 advance 里攥着锁），它不是孤儿，本轮跳过、下一轮再看——
+      // 排锁等会让整轮扫描卡到那次慢调用结束。重启对账照常排锁：启动时锁的
+      // 持有者只会是本进程刚起的短动作（hook 结算、HTTP 动作），killStep 锁内
+      // 重读兜得住；重启对账只跑一次，跳过就会漏掉上一进程留下的孤儿。
+      if (mode === 'idle' && o.lockBusy(st.workflowId)) continue;
       const updatedAt = new Date(st.updatedAt).getTime();
       switch (st.kind) {
-        case 'agent': {
-          if (graceMs > 0 && updatedAt > cutoff) continue; // 宽限期内，hook 说不定还会来
+        case 'agent': case 'verify': {
+          // verify 并入 agent 语义（2026-11-08 审查 P2）：同一执行器
+          // （interpreter runAgentStep）、同一 prompt 账（ledger
+          // AGENT_STEP_KINDS=["agent","verify"]）、同一看门狗（zombie.ts）——
+          // 曾按模板能力步处理，重启/周期即杀 = agent 照常完成、结果孤儿化。
+          if (mode === 'idle' && updatedAt > cutoff) continue; // 宽限期内，hook 说不定还会来
           // 重启对账问「agent 是否活过了重启」——查实际落点会话的 prompt 账
           //（resolved 兜底改道的单在声明会话名下查不到记录=误杀）。
           const session = agentLiveSessionOf(st);
-          if (graceMs === 0 && session !== '') {
+          if (mode === 'restart' && session !== '') {
             const p = store.latestPromptForSession(session, ['submitted']);
-            if (p) continue; // tmux agent 活过了重启——fail 掉会孤儿化它的完成
+            if (p) {
+              // 补凭据（2026-11-23 全量审查；2026-11-24 复审 P1-① 收窄）：收工回调
+              // 只结算「卡已经交出去」的步（agentSettle 看步骤 output 里的凭据
+              // dispatched_prompt_id）。升级前派出的在途步 output 里没有凭据，不补
+              // 的话它的收工回调会被拦下、这一步永远结算不了。
+              // 只在凭据为空时补，已有的凭据绝不覆盖。同一个会话里可以排着几张
+              // 卡，会话上最新的 submitted prompt 未必是这一步的卡：拿它去覆盖，
+              // A 的凭据会被改成 B 的卡号。凭据非空就说明这一步自己那一回的卡
+              // 已经交出去了（steps.ts 每次派发前会先清空凭据，交出去之后才写）。
+              // 只补卡号、不补 dispatched_at：收工回调把没有 dispatched_at 的步
+              // 当成最早交出去的，升级前的卡确实最早。
+              if (asString(st.output['dispatched_prompt_id']) === '') {
+                store.setStepOutput(st.id, { dispatched_prompt_id: p.id });
+              }
+              continue; // tmux agent 活过了重启——fail 掉会孤儿化它的完成
+            }
           }
           const settledPrompt = session === ''
             ? null : store.latestPromptForSession(session, ['completed', 'failed']);
@@ -245,20 +328,14 @@ export const makeReconcile = (o: {
             await o.agentSettle.completeAgentStep(st, session, settledPrompt.status === 'failed' ? 'error' : 'ok', '');
             continue;
           }
-          if (graceMs === 0) {
-            store.setStepOutput(st.id, { error: 'restart: no in-flight prompt' });
-            store.setStepStatus(st.id, 'failed');
-            o.journal.stepEvent(st, 'step_failed', {});
-          }
+          if (mode === 'restart') await killStep(st, 'restart: no in-flight prompt');
           break;
         }
-        case 'triage': case 'verify': case 'draft': case 'send': case 'llm': case 'share': {
+        case 'triage': case 'draft': case 'send': case 'llm': case 'share': {
           // 模板能力类与 draft 同策略：重启打断供应商调用的，留成 failed
           // 可重试——绝不是幻影 pending 阶梯。
-          if (graceMs > 0 && updatedAt > cutoff) continue;
-          store.setStepOutput(st.id, { error: 'interrupted by restart' });
-          store.setStepStatus(st.id, 'failed');
-          o.journal.stepEvent(st, 'step_failed', {});
+          if (mode === 'idle' && updatedAt > cutoff) continue;
+          await killStep(st, 'interrupted by restart');
           break;
         }
         case 'gate': {
@@ -269,19 +346,22 @@ export const makeReconcile = (o: {
         }
       }
     }
-    // 队列自愈（2026-09-21 死槽实测）：占位的定义就是「当前步 running」——
-    // 重启守卫判死/漏放行的占位单（如 wf_944164165b24 幽灵槽）会把并发 1
-    // 的队列饿死全队。终态/非机器忙的占位一律放位并泵队；evaluateSlot/pump
-    // 幂等，60s 一扫对活链零影响。
-    for (const id of [...o.queue.activeIds]) {
-      const w = store.getWorkflow(id);
-      if (!w || w.status !== 'running' || !o.queue.machineBusy(id)) {
-        o.queue.activeIds.delete(id);
-        o.queue.pump();
-      }
-    }
+    if (mode === 'restart') healQueueSlots();
   };
 
-  return { reconcileStartup, reconcileInflightMs, autoSettleFeedbackRuns, autoSettleApprovedRuns };
+  // 两个显式入口：restart=重启对账（graceMs 恒 0，杀在途 + submitted
+  // 查账放行）；idle=周期对账（宽限 graceMs，绝不杀 agent/verify 步）。
+  const reconcileRestart = (): Promise<void> => reconcileInflight(0, 'restart');
+  // 周期对账在途闩：runtime 的 60s 定时器不等上一轮结束就再触发；上一轮还没
+  // 跑完时，新的调用直接拿到在途那一轮，不叠第二轮去重复排同一批锁。
+  let idleRun: Promise<void> | null = null;
+  const reconcileIdle = (graceMs: number): Promise<void> => {
+    if (idleRun !== null) return idleRun;
+    const run = reconcileInflight(graceMs, 'idle').finally(() => { idleRun = null; });
+    idleRun = run;
+    return run;
+  };
+
+  return { reconcileStartup, reconcileIdle, autoSettleFeedbackRuns, autoSettleApprovedRuns };
 };
 

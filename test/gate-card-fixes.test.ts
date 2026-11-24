@@ -11,9 +11,10 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createLedgerStore, type Step } from '@juli-os/ledger';
 import { createEngine, type EngineDeps } from '../src/business/workflow/engine.ts';
-import { createArtifactLedger, createDiskBackend, ok, sweepCaseInbox } from '@juli-os/artifacts';
+import { ok } from '../src/platform/shared/result.ts';
+import { createArtifactLedger, createDiskBackend, sweepCaseInbox } from '@juli-os/artifacts';
 import { gateSummary } from '../src/business/workflow/support.ts';
-import { fixedClock, makeEmail, seqIds } from './helpers.ts';
+import { fixedClock, makeEmail, seqIds, until } from './helpers.ts';
 import type { MailerPort, PusherPort } from '../src/contracts/ports.ts';
 
 interface World {
@@ -42,7 +43,6 @@ const makeWorld = (over: Partial<EngineDeps> = {}): World => {
         return ok(undefined);
       },
     },
-    syncDispatch: null,
     pusher: { async gateWaiting() {}, async workflowDone() {}, async workflowFailed() {} } satisfies PusherPort,
     mailer: { async send() { return ok({ messageId: '<x@j>' }); } } satisfies MailerPort,
     captureOutput: async () => null,
@@ -79,6 +79,16 @@ const deliverInbox = (inbox: string, files: Record<string, string>): void => {
   for (const [name, content] of Object.entries(files)) writeFileSync(join(inbox, name), content);
 };
 
+/** 第一回合收工：先等首步的任务卡确认送达（step_dispatched 落账），再收工。
+ * 2026-11-23 起收工回调只结算「卡已确认送达」的步（agentSettle 核对步骤上的
+ * 凭据）。startEmailWorkflow 入队即返，紧接着就收工的话，卡还没确认送达，
+ * 回调会被拦下——以前能过是因为结算会排队等派发那把锁。 */
+const settleFirstTurn = async (w: World, wfId: string, output: string): Promise<void> => {
+  const first = w.store.stepsForWorkflow(wfId)[0]!;
+  await until(() => w.store.entityEvents('step', first.id, 'step_dispatched').length > 0);
+  await w.engine.onAgentStopped('juli-reply', 'done', output);
+};
+
 describe('修复①：gateSummary 兜底链 draft‖plan‖note‖title', () => {
   const st = (input: Record<string, unknown>, title = '确认闸门'): Step =>
     ({ id: 'st_x', seq: 2, kind: 'gate', status: 'waiting_human', title, input, output: {} } as unknown as Step);
@@ -97,7 +107,7 @@ describe('修复②：rework 沿链找可回修步', () => {
   it('agent→gate→gate 链：确认闸驳回 → 意见落到 agent 步并重派（不再同卡空转）', async () => {
     const w = makeWorld();
     const wf = await w.engine.startEmailWorkflow(makeEmail());
-    await w.engine.onAgentStopped('juli-reply', 'done', '理解完成');
+    await settleFirstTurn(w, wf.id, '理解完成');
     const agent = w.store.stepsForWorkflow(wf.id)[0]!;
     expect(agent.status).toBe('completed');
     await w.engine.appendNode(wf.id, { kind: 'gate', title: '对齐闸门' });
@@ -127,6 +137,44 @@ describe('修复②：rework 沿链找可回修步', () => {
     expect(ev!.payload['target_seq']).toBe(agent.seq);
   });
 
+  it('非相邻链（agent→gate→gate）：中间步回置 pending，重做产物上得了等待闸门的卡（R1 P1-1，2026-11-04）', async () => {
+    const w = makeWorld();
+    const wf = await w.engine.startEmailWorkflow(makeEmail());
+    await settleFirstTurn(w, wf.id, '理解完成');
+    await w.engine.appendNode(wf.id, { kind: 'gate', title: '对齐闸门' });
+    const gate1 = w.store.stepsForWorkflow(wf.id).find((s) => s.title === '对齐闸门')!;
+    await w.engine.approve(gate1.id, '', 'boss');
+    await w.engine.appendNode(wf.id, {
+      kind: 'gate', title: '确认闸门',
+      input: { delivery: 'apply', draft: '方案段收工，diff 见工件' },
+    });
+    const gate2 = w.store.stepsForWorkflow(wf.id).find((s) => s.title === '确认闸门')!;
+    expect(gate2.status).toBe('waiting_human');
+    expect(w.store.getStep(gate1.id)!.status).toBe('completed'); // 中间闸门已批（修复前的病灶前提）
+
+    await w.engine.rework(gate2.id, '交付物没挂上，重交', 'iphone');
+
+    // (a) 中间步回置 pending（同 reworkSend human.ts 中间步回置先例口径）
+    expect(w.store.getStep(gate1.id)!.status).toBe('pending');
+    // agent 重做 → 播种落中间闸门 → 中间闸门重开等人审（先例语义：人审不可跳过）。
+    // 重做的那张卡先确认送达（第二张卡登记了、还没送达时到的收工回调会被拦下）。
+    const agent = w.store.stepsForWorkflow(wf.id)[0]!;
+    await until(() => w.store.entityEvents('step', agent.id, 'step_dispatched').length >= 2);
+    await w.engine.onAgentStopped('juli-reply', 'done', '新方案 V2：交付物已挂上');
+    await w.engine.advance(wf.id); // 排空 continueWorkflow 的 void advance
+    const gate1Reopened = w.store.getStep(gate1.id)!;
+    expect(gate1Reopened.status).toBe('waiting_human');
+    expect(gate1Reopened.input['draft']).toBe('新方案 V2：交付物已挂上');
+    await w.engine.approve(gate1Reopened.id, '', 'boss');
+    await w.engine.advance(wf.id); // 排空：等待闸门重开
+    // (b) 重做产物可达：等待闸门 input 带上一轮驳回意见（web/iOS 卡按 P2-6
+    // 渲染为独立条目）——不再与上一轮逐字节同卡
+    const gate2Reopened = w.store.getStep(gate2.id)!;
+    expect(gate2Reopened.status).toBe('waiting_human');
+    expect(gate2Reopened.input['feedback']).toBe('交付物没挂上，重交');
+    expect(Number(w.store.getWorkflow(wf.id)!.meta['round'])).toBe(2);
+  });
+
   it('无可回修步：驳回零状态变更显式拒驳（杀死空转重推）', async () => {
     const w = makeWorld();
     const wf = await w.engine.startEmailWorkflow(makeEmail());
@@ -150,7 +198,7 @@ describe('修复③：有机回合补扫 case-inbox → 等待闸门', () => {
   it('无在飞 agent 步的回合收尾：交付物收编进等待闸门 input + 文件消费', async () => {
     const w = makeWorld();
     const wf = await w.engine.startEmailWorkflow(makeEmail());
-    await w.engine.onAgentStopped('juli-reply', 'done', '理解完成'); // 回合1：有步，正常结算
+    await settleFirstTurn(w, wf.id, '理解完成'); // 回合1：有步，正常结算
     await w.engine.appendNode(wf.id, {
       kind: 'gate', title: '确认闸门',
       input: { delivery: 'apply', envelope: { feedback_refs: ['v4h6fq87019dm5y'] } },
@@ -188,10 +236,35 @@ describe('修复③：有机回合补扫 case-inbox → 等待闸门', () => {
     expect(((w.store.getStep(gate.id)!.input['deliverables']) as unknown[])).toHaveLength(1);
   });
 
+  it('sweep 补料进已开发送闸门后 checks 重算（R1 P2-5，2026-11-04）——不沿用陈旧绿灯', async () => {
+    const w = makeWorld();
+    const wf = await w.engine.startEmailWorkflow(makeEmail());
+    await settleFirstTurn(w, wf.id, '理解完成');
+    await w.engine.appendNode(wf.id, { kind: 'gate', title: '发送闸门', input: { draft: '第一版正文' } });
+    const gate = w.store.stepsForWorkflow(wf.id).find((s) => s.kind === 'gate')!;
+    expect(gate.status).toBe('waiting_human');
+    // 开闸转变沿已按「第一版正文」跑过 checks（appendNode 自动配对 send 步）
+    const stale = w.store.getStep(gate.id)!.input['checks'] as { name: string; status: string }[];
+    expect(stale.find((c) => c.name === 'redline')?.status).toBe('pass'); // 陈旧绿灯
+
+    // 有机回合补扫：新正文（含红线词「run号」）经申报单收编进闸门 input
+    deliverInbox(join(w.inbox, wf.id), {
+      'reply-v2.txt': '内部 run号 修正后的正文',
+      'reply.json': JSON.stringify({ deliverables: [{ file: 'reply-v2.txt', role: 'body', summary: '修订正文' }] }),
+    });
+    await w.engine.onAgentStopped('juli-reply', 'done', '修订版正文已写好');
+
+    const gateAfter = w.store.getStep(gate.id)!;
+    const checks = gateAfter.input['checks'] as { name: string; status: string }[];
+    expect(checks.find((c) => c.name === 'redline')?.status).toBe('fail'); // 新正文实测值，非沿用陈旧绿灯
+    expect(checks.find((c) => c.name === 'body')?.status).toBe('pass');
+    expect(w.store.listEvents(50).some((e) => e.type === 'send_checks_ran')).toBe(true);
+  });
+
   it('无等待闸门：有机回合不扫（产出不错记到无人认领的步）', async () => {
     const w = makeWorld();
     const wf = await w.engine.startEmailWorkflow(makeEmail());
-    await w.engine.onAgentStopped('juli-reply', 'done', '理解完成');
+    await settleFirstTurn(w, wf.id, '理解完成');
     deliverInbox(join(w.inbox, wf.id), { 'stray.txt': '无主文件' });
     await w.engine.onAgentStopped('juli-reply', 'done', '又一回合');
     expect(w.store.listEvents(50).some((e) => e.type === 'gate_deliverables_swept')).toBe(false);
@@ -204,7 +277,7 @@ describe('修复⑤：appendNode 空摘要闸门留痕告警', () => {
   it('无 draft/plan/note/deliverables 的闸门 → gate_missing_summary 事件；带 draft → 无', async () => {
     const w = makeWorld();
     const wf = await w.engine.startEmailWorkflow(makeEmail());
-    await w.engine.onAgentStopped('juli-reply', 'done', '理解完成');
+    await settleFirstTurn(w, wf.id, '理解完成');
     await w.engine.appendNode(wf.id, { kind: 'gate', title: '空卡闸' });
     expect(w.store.listEvents(50).some((e) => e.type === 'gate_missing_summary')).toBe(true);
 

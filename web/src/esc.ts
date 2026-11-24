@@ -12,7 +12,7 @@ export const esc = (v: unknown): string =>
 /**
  * href scheme 白名单（九跑 P0 双保险·前端侧，2026-09-28）：外部可控 page 会
  * 被渲染成 `<a href>`，esc() 只转义不判 scheme——`javascript:` 等带 scheme 的
- * 值经 esc 原样通过即存储型 XSS（写入面 /__fb/* 无鉴权）。白名单=无 scheme 的
+ * 值经 esc 原样通过即存储型 XSS。白名单=无 scheme 的
  * 相对引用（fb.js 的 pathname、裸词 'default'、#/route、wf_ 单号）+ http(s)
  * 绝对地址；false → 调用方降级纯文本，不渲染成链接（兜住存量脏数据）。
  * scheme 判定按 WHATWG URL 口径先剔首尾 C0/空格与全串 tab/LF/CR——否则

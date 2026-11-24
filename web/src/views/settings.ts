@@ -117,15 +117,6 @@ const SECTIONS: readonly SectionSpec[] = [
     ],
   },
   {
-    id: 'acp', title: 'ACP 执行器', nav: 'ACP 执行器',
-    fields: [
-      { path: 'acp.enabled', label: '启用', type: 'boolean' },
-      { path: 'acp.command', label: '启动命令', type: 'string' },
-      { path: 'acp.model', label: '模型', type: 'string' },
-      { path: 'secrets.acp_api_key', label: 'API Key', type: 'secret' },
-    ],
-  },
-  {
     id: 'crm', title: 'CRM（juli内部库）', nav: 'CRM juli库',
     fields: [
       { path: 'crm.enabled', label: '启用', type: 'boolean' },

@@ -3,7 +3,7 @@
 // 里——能力模块只认 ctx，不认引擎内部。
 
 import type { Logger } from '../../platform/events/bus.ts';
-import type { Clock } from '@juli-os/artifacts';
+import { type Clock } from '../../platform/shared/clock.ts';
 import type { LifecycleStore } from '@juli-os/ledger';
 import { type Step, type StepKind, type Workflow } from '@juli-os/ledger';
 import { isActiveStepStatus } from '../../contracts/statuses.ts';
@@ -13,6 +13,7 @@ import {
   type StepCtx, type StepHandler,
 } from './capabilities/index.ts';
 import { isSendGateDecision } from '../send/sendSeed.ts';
+import { tenantGuardFor } from './tenantScope.ts';
 import type { EngineDeps } from './engine.ts';
 import type { Journal } from './journal.ts';
 import type { Steps } from './steps.ts';
@@ -194,7 +195,19 @@ export const makeInterpreter = (o: {
 
   /** 能力注册表 = 解释器的分发表：kind → handler。 */
   const stepHandlers = (): Readonly<Record<StepKind, StepHandler>> => ({
-    triage: (ctx) => runWrappedLlm(ctx, () => runTriage(ctx, deps.routing, deps.availableSessions, deps.judgment), true),
+    // triage 收口（A2）：可用会话白名单与默认落点按本单租户过滤——acme
+    // 单的抽取候选里不出现 internal 会话、默认落 acme 的 default_session
+    // （internal = 全局 default_session 语义不变；guard=null 全视角原样）。
+    triage: (ctx) => {
+      const guard = tenantGuardFor(deps.tenants, ctx.workflow.tenant);
+      const routing = guard !== null
+        ? { ...deps.routing, defaultSession: guard.defaultSession() }
+        : deps.routing;
+      const candidates = guard === null
+        ? deps.availableSessions
+        : deps.availableSessions.filter((s) => guard.covers(s));
+      return runWrappedLlm(ctx, () => runTriage(ctx, routing, candidates, deps.judgment), true);
+    },
     gate: o.steps.openGate,
     agent: o.steps.runAgentStep,
     verify: o.steps.runAgentStep,

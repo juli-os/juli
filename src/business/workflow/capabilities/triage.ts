@@ -6,7 +6,7 @@
 // （fail-open 平凡——jev 挂了不许挂进件）。
 
 import { asString } from '../../../platform/shared/json.ts'
-import { type JsonRecord } from '@juli-os/artifacts'
+import { type JsonRecord } from '../../../platform/shared/json.ts'
 import { type Workflow, originalEmail } from '@juli-os/ledger';
 import { type JudgmentGateway } from '@juli-os/routing';
 import { parseLoose, type StepCtx } from './common.ts';

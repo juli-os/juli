@@ -1,21 +1,25 @@
 // 步执行器：闸门开启（openGate 含前置对账）与 agent/send 两类步的执行
-// （tmux 异步 / ACP 同步两条派发路径；发送步=守卫链+信封契约+SMTP 全链）。
+// （agent 步走 tmux 异步派发；发送步=守卫链+信封契约+SMTP 全链）。
 
 import { createHash } from 'node:crypto';
-import { rfc3339, type JsonRecord, type JsonValue } from '@juli-os/artifacts';
+import { rfc3339 } from '../../platform/shared/clock.ts';
+import type { JsonRecord, JsonValue } from '../../platform/shared/json.ts';
 import { asString } from '../../platform/shared/json.ts';
+import type { Result } from '../../platform/shared/result.ts';
 import type { Logger } from '../../platform/events/bus.ts';
 import { appendReference, type LifecycleStore, type Step } from '@juli-os/ledger';
+import { isActiveStepStatus } from '../../contracts/statuses.ts';
 import type { StepCtx, StepHandler } from './capabilities/index.ts';
-import { agentSessionOf, flowContext, planPrompt, renderFlowTemplate } from './capabilities/index.ts';
+import { agentLiveSessionOf, agentSessionOf, flowContext, planPrompt, renderFlowTemplate } from './capabilities/index.ts';
 import {
-  DEFAULT_REDLINE_WORDS, disclosureMissing, redlineHit, runSendChecks,
+  DEFAULT_REDLINE_WORDS, disclosureMissing, redlineHit, runSendChecks, type SendCheck,
 } from '../send/sendChecks.ts';
 import { composeTextBody, renderEmailHtml, SIGNATURE_TEXT, stripSignature } from '../send/emailView.ts';
 import {
   deliverablesBody, envelopeRefs, gateDelivery, isEffectDelivery, replySubject, resolveSendRecipient,
 } from '../send/sendSeed.ts';
-import { anchorPlan, claimsAttachment, gateSummary } from './support.ts';
+import { anchorPlan, claimsAttachment, gateSummary, isSoftSubmitFailure, RUNNING_SCAN_LIMIT } from './support.ts';
+import { candidatesInTenant, tenantGuardFor } from './tenantScope.ts';
 import type { EngineDeps } from './engine.ts';
 import type { Journal } from './journal.ts';
 import type { Queue } from './queue.ts';
@@ -31,6 +35,56 @@ export interface Steps {
    * plan；失败回退原文并留痕（事件+log），渲染异常绝不炸播种路径。 */
   renderSeedPlan(src: Step, tpl: string): string;
 }
+
+/** 闸门视角的正文候选（模块级导出，openGate 前置对账与 agentSettle 的 sweep
+ * 补料复算共用同一实现，防平行实现漂移）：优先 deliverables 里唯一 body 工件
+ * （按哈希取字节），退回内联 draft（旧链路/无契约）。取不到返回 null。 */
+export const resolveGateBodyText = async (
+  artifacts: EngineDeps['artifacts'],
+  gate: Step,
+): Promise<string | null> => {
+  const body = deliverablesBody(gate.input);
+  if (body !== null && artifacts?.getContent) {
+    const content = await artifacts.getContent(body.id).catch(() => null);
+    if (content !== null) return content.bytes.toString('utf8');
+    return null;
+  }
+  const inline = asString(gate.input['draft']);
+  return inline !== '' ? inline : null;
+};
+
+/** 发送决策闸的前置对账（模块级导出）：闸门开启之外，还有两处会改已开着的
+ *  闸门 input——agent 收工后引擎把交付物并进等待中的闸门（agentSettle 的
+ *  sweepWaitingGate）、人给等待中的闸门补料（human 的 amendStep）。正文改了，
+ *  红绿灯必须跟着重算，否则卡上的检查结果说的是改之前的正文。
+ *  做法：重读闸门 → 解析正文（工件优先，退回内联草稿）→ 红线词 / 称呼对账 /
+ *  URL 探活 / 契约检查 → checks + checked_at 覆盖写进闸门 input。
+ *  只给发送决策闸用（调用方先用 isSendGateDecision 判）；apply / artifact 闸
+ *  不发客户邮件，客户邮件的检查不适用。留痕由调用方按各自场景写。
+ *  openGate 那处没有并进来：它还要管 apply/artifact 闸清空 checks、回修时
+ *  强制重跑，条件不同，留在原处。 */
+export const runGateSendChecks = async (o: {
+  readonly deps: Pick<EngineDeps, 'artifacts' | 'redlineWords' | 'probeUrl'>;
+  readonly store: Pick<LifecycleStore, 'getStep' | 'setStepInput'>;
+  readonly gate: Step;
+  /** 称呼对账源（与 openGate 同源）：进件落的 from_name / 发件地址。 */
+  readonly sender: { readonly name?: string; readonly address?: string };
+  readonly now: () => Date;
+}): Promise<readonly SendCheck[]> => {
+  const cur = o.store.getStep(o.gate.id) ?? o.gate;
+  const body = await resolveGateBodyText(o.deps.artifacts, cur);
+  const checks = await runSendChecks(body ?? '', {
+    redlineWords: o.deps.redlineWords ?? DEFAULT_REDLINE_WORDS,
+    hasManifest: cur.input['manifest'] === true,
+    feedbackRefs: envelopeRefs(cur.input['envelope']),
+    probeUrls: true,
+    probeUrl: o.deps.probeUrl ?? undefined,
+    senderName: o.sender.name,
+    senderAddress: o.sender.address,
+  });
+  o.store.setStepInput(o.gate.id, { checks: checks as unknown as JsonValue, checked_at: rfc3339(o.now()) });
+  return checks;
+};
 
 export const makeSteps = (o: {
   readonly deps: EngineDeps;
@@ -127,18 +181,9 @@ export const makeSteps = (o: {
       (() => deps.pusher!.gateWaiting(w, fresh, gateSummary(fresh))));
   };
 
-  /** 闸门视角的正文候选：优先 deliverables 里唯一 body 工件（按哈希取字节），
-   * 退回内联 draft（旧链路/无契约）。取不到返回 null。 */
-  const resolveBodyText = async (gate: Step): Promise<string | null> => {
-    const body = deliverablesBody(gate.input);
-    if (body !== null && deps.artifacts?.getContent) {
-      const content = await deps.artifacts.getContent(body.id).catch(() => null);
-      if (content !== null) return content.bytes.toString('utf8');
-      return null;
-    }
-    const inline = asString(gate.input['draft']);
-    return inline !== '' ? inline : null;
-  };
+  /** 闸门视角的正文候选：委托模块级 resolveGateBodyText（sweep 补料复算共用）。 */
+  const resolveBodyText = (gate: Step): Promise<string | null> =>
+    resolveGateBodyText(deps.artifacts, gate);
 
   const gateWorkflowActive = (workflowId: string): string | null => {
     const w = store.getWorkflow(workflowId);
@@ -160,10 +205,53 @@ export const makeSteps = (o: {
     }
   };
 
+  /** 这一步是不是在派发途中被中止了（2026-11-23 全量审查）：forceClose 不持
+   * 工作流锁（原因见 lifecycle.ts forceClose 的注释），派发路径持锁等待期间它
+   * 照样把在途步置 cancelled。所以长 await 之后要重读步骤——已经不在在途状态
+   * 就停手，绝不把 cancelled 盖回去。 */
+  const stepClosedDuringDispatch = (stepId: string): boolean => {
+    const cur = store.getStep(stepId);
+    return cur === null || !isActiveStepStatus(cur.status);
+  };
+
+  /** 派发返回时这一步已经不在 running（2026-11-23 全量审查）：任务卡是在单子
+   * 被中止之后才送到的。不记 step_dispatched、不续心跳（续了会把会话的静默
+   * 计时重新归零，同会话下一张单真卡死时看门狗要多等一轮），单独留一条事件；
+   * 有现成的打断能力就尽量让 agent 停下来。 */
+  const onDispatchReturnedToClosedStep = (cur: Step, session: string, res: Result<void, Error>): void => {
+    const interruptSession = deps.interruptSession;
+    const soft = !res.ok && isSoftSubmitFailure(res.error.message);
+    if (!res.ok && !soft) {
+      // 派发自己失败了，任务卡没送出去：单已中止，这里不用再做什么。
+      log.info(`[engine] step ${cur.id} 派发失败时单已中止（${cur.status}）——不再落账：${res.error.message}`);
+      return;
+    }
+    // 打断只打没有别的步在用的会话：中止会放出队位，下一张单可能已经排到同
+    // 一个会话上，往那里发 C-c 会打断别人的任务。会话被占就只留痕。
+    const sessionInUse = store.listSteps('running', RUNNING_SCAN_LIMIT).some((s) =>
+      s.id !== cur.id && (s.kind === 'agent' || s.kind === 'verify')
+      && agentLiveSessionOf(s) === session);
+    const interrupt = interruptSession === null ? 'unavailable'
+      : sessionInUse ? 'skipped_session_in_use' : 'sent';
+    o.journal.stepEvent(cur, 'step_dispatched_after_cancel', {
+      session, status: cur.status, ...(soft ? { unconfirmed: true } : {}), interrupt,
+    });
+    log.warn(`[engine] step ${cur.id} 任务卡落在了已中止的步骤上（${cur.status}，session=${session}${soft ? '，提交未确认' : ''}）——不记 step_dispatched、不续心跳；打断=${interrupt}`);
+    if (interruptSession === null || interrupt !== 'sent') return;
+    // 不等它返回：这一段还在工作流锁里，打断的回执到了再落账。
+    void interruptSession(session).then(
+      (done) => o.journal.stepEvent(cur, done ? 'agent_interrupted' : 'agent_interrupt_failed', { session, reason: 'dispatch_after_cancel' }),
+      () => o.journal.stepEvent(cur, 'agent_interrupt_failed', { session, reason: 'dispatch_after_cancel' }),
+    );
+  };
+
   // ---- agent 执行 -----------------------------------------------------------------
 
   const runAgentStep = async (ctx: StepCtx): Promise<void> => {
     const { store: st0, step: st, workflow: w } = ctx;
+    // 租户守卫（A2 读侧边界的引擎腿）：会话候选/落点只在本单租户内。
+    // guard=null（未接登记表 / 单子租户未声明）= 与 A2 之前逐行为一致。
+    const guard = tenantGuardFor(deps.tenants, w.tenant);
     let plan = asString(st.input['plan']);
     // 统一干预消费（四件套，2026-09-28）：meta.override 在派发点一次性消费
     // 销账（override_applied 事件）——①session：覆盖一切会话来源（播种/继承/
@@ -179,7 +267,14 @@ export const makeSteps = (o: {
       const consumed: Record<string, unknown> = {};
       if (ovSession !== '') {
         consumed['session'] = ovSession;
-        st0.setStepInput(st.id, { session: ovSession, session_pinned: true });
+        // 落点快照一起改（2026-11-24 R2 复审 P2-E）：这次派发就落在人点名的会话上，
+        // resolved_session 却还停在上一回的落点（改道目标 / 默认会话）。插话、
+        // 卡死巡检、收工回调选步都按它读，读到的是旧会话——插话发错地方、巡检盯
+        // 错会话。改道痕迹和默认兜底标记一并撤掉（同 NAMED_SESSION_INPUT）。
+        st0.setStepInput(st.id, {
+          session: ovSession, session_pinned: true,
+          resolved_session: ovSession, busy_diverted_from: null, resolved_by_default: null,
+        });
         store.setWorkflowSession(w.id, ovSession);
       }
       if (ovContext !== '') { consumed['context'] = ovContext.slice(0, 80); plan = `${plan}\n\n[人工干预补充（优先级最高，随任务卡）]\n${ovContext}`; }
@@ -195,9 +290,17 @@ export const makeSteps = (o: {
     // 干预 session 是最高优先例外：人刚点名的会话盖过历史落点。
     const declared0 = agentSessionOf(st);
     const resolved0 = asString(st.input['resolved_session']);
+    // 默认兜底落点（2026-11-23 全量审查）：步骤没人点名会话时，引擎兜底到
+    // 默认会话，这条落点也写进步骤，并标 resolved_by_default（写点见下方
+    // 「落点回写」）。它和改道/别名/判定的落点差一处：步骤上原本没有声明
+    // 会话，所以后来出现的声明会话只能是人写的（retry 带 session 补丁、
+    // amend）。人点名的会话盖过它，道理同上面的干预例外。不带标记的落点，
+    // 优先级不变。
+    const byDefault = st.input['resolved_by_default'] === true;
     const session0 = ovSession !== ''
       ? ovSession
-      : (!declared0.includes('{{') && resolved0 !== '' ? resolved0 : declared0);
+      : byDefault && declared0 !== '' ? declared0
+        : (!declared0.includes('{{') && resolved0 !== '' ? resolved0 : declared0);
     // 模板流的参数化任务卡：缺 plan 时渲染本步 prompt 模板（{{.Input.*}} 等点
     // 路径），原文直读进任务——压缩摘要不再是 agent 的唯一信息源。
     if (plan.trim() === '') {
@@ -227,9 +330,16 @@ export const makeSteps = (o: {
     const fb = asString(st.input['feedback']);
     if (fb.trim() !== '') plan = `${plan}\n\n[人工回修指示（优先级最高）]\n${fb}`;
     let session = session0;
+    // 落点有没有被下面五条路改过（2026-11-24 复审 P3-⑧）：别名解析、route_fallback
+    // 判定、三无判定、档位孪生、忙闲改道。改过的落点不是「默认兜底」，落点回写
+    // 那里不给它标 resolved_by_default。不能用函数开头的旧局部变量判断——这五条
+    // 路的起点同样可能没人点名会话。
+    let landingRerouted = false;
     // 动态模型的会话解析链：步钉 > 默认会话（与复用优先路由器兜底同源）。
     // manifest 时代靠 triage 播种；进件首节点无钉，必须落 defaultSession。
-    if (session.trim() === '') session = deps.routing.defaultSession;
+    // 租户收口（A2）：本单租户声明了专属 default_session 时落它（internal
+    // = 全局 default_session，语义不变）；未收口走全局。
+    if (session.trim() === '') session = guard !== null ? guard.defaultSession() : deps.routing.defaultSession;
     // 参数化会话：session 带 {{...}} 时对 flow context 渲染（如
     // "{{.Steps.understand.output.session}}"——执行步自动跟随理解步实际落点）。
     if (session.includes('{{')) {
@@ -285,6 +395,7 @@ export const makeSteps = (o: {
         // LLM 路由会编造每邮件独立的会话名——派发前经别名接缝解析。
         const requested = session;
         session = deps.resolveSession(session);
+        if (session !== requested) landingRerouted = true;
         st0.setStepInput(st.id, { resolved_session: session });
         // 落回留痕（板B 审计行）：点名不存在被兜住不是静默事件——每次
         // requested→resolved 的改道都进账本，Agents 页审计表从这里读。
@@ -327,8 +438,10 @@ export const makeSteps = (o: {
               } else if (outcome.mode === 'shadow') {
                 o.journal.stepEvent(st, 'route_judgment', { mode: outcome.mode, scenario: 'route_fallback', answer: outcome.answer ?? '', confidence: outcome.confidence ?? 0, provider: outcome.provider, model: outcome.model ?? '', input_tokens: outcome.inputTokens ?? 0, output_tokens: outcome.outputTokens ?? 0, duration_ms: outcome.durationMs ?? 0 });
               } else {
-                const valid = declared.some((d) => d.session === outcome.answer);
+                const valid = declared.some((d) => d.session === outcome.answer)
+                  && (guard === null || guard.covers(outcome.answer ?? ''));
                 if (valid && (outcome.confidence ?? 0) >= outcome.threshold) {
+                  if (session !== outcome.answer!) landingRerouted = true;
                   session = outcome.answer!;
                   st0.setStepInput(st.id, { resolved_session: session });
                   store.setWorkflowSession(w.id, session);
@@ -360,19 +473,25 @@ export const makeSteps = (o: {
         if (deps.taskRoute !== undefined) {
           try {
             const landing = await deps.taskRoute(w.title, asString(tInput['brief']));
-            if (landing !== null && landing.session.trim() !== ''
-                && (landing.via === 'jev' || landing.diverted)) {
+            // 租户收口（A2）：判定落点越租户不采纳——fail-open 落本租户
+            // default_session（下方空值腿），绝不跨租户派发。
+            const landingOk = landing !== null && landing.session.trim() !== ''
+              && (landing.via === 'jev' || landing.diverted)
+              && (guard === null || guard.covers(landing.session.trim()));
+            if (landingOk) {
               tierReasons = { route_task: `${landing.note}（via=${landing.via}${landing.diverted ? ' 改道' : ''}）` };
+              if (session !== landing.session.trim()) landingRerouted = true;
               session = landing.session.trim();
               st0.setStepInput(st.id, { resolved_session: session });
             }
           } catch { /* fail-open：判定挂了不许挂派发 */ }
         }
         const twin = deps.highTwinFor !== undefined ? deps.highTwinFor(session) : '';
-        if (twin !== '' && deps.taskTier !== undefined) {
+        if (twin !== '' && deps.taskTier !== undefined && (guard === null || guard.covers(twin))) {
           const tier = await deps.taskTier(w.title, asString(tInput['brief'])).catch(() => null);
           if (tier === 'high') {
             tierReasons = { ...(tierReasons ?? {}), model_tier: `jev 判 high → 升档 ${twin}` };
+            landingRerouted = true;
             session = twin;
             st0.setStepInput(st.id, { resolved_session: session, model_tier: 'high', model_tier_by: 'jev' });
           }
@@ -399,6 +518,13 @@ export const makeSteps = (o: {
       // 闸门等批准都算），不再只看「正在跑的步」——等批准的会话不再被当
       // 空闲往里堆活。自排除：本单自己锚在目标会话且非终态，不排除=每次
       // 派发都自触发改道。
+      // 派发前重读（2026-11-23 全量审查）：上面的别名解析、三无判定、档位判定
+      // 都会 await（jev 最长 30 秒），期间人可以点中止。下面的全忙兜底会把单
+      // 置回 queued，再往下会派发——不重读就把已中止的单复活了。
+      if (stepClosedDuringDispatch(st.id)) {
+        log.info(`[engine] step ${st.id} 在路由判定期间被中止——任务卡不再发出`);
+        return;
+      }
       const isBoundSession = boundNames.has(session);
       // 钉住（上方定义）不被忙闲改道换人——排队等它空闲（派发器会等
       // 就绪），宁可慢不换人（换人=上下文丢失，双投事故同族观感）。
@@ -407,9 +533,9 @@ export const makeSteps = (o: {
         // high 档孪生不做改道目标（成本纪律「非必要不高智能」，0930 与
         // routeTaskMenu 对齐）；候选自排除 w 本体（重派/再派发时本单已锚在
         // 上次改道落点，不排除=候选永远被自己占死、来回换人）。
-        const others = (deps.routing.agents ?? [])
+        const others = candidatesInTenant(guard, (deps.routing.agents ?? [])
           .filter((a) => a.session !== '' && a.session !== session
-            && !boundNames.has(a.session) && a.model_tier !== 'high');
+            && !boundNames.has(a.session) && a.model_tier !== 'high'));
         const idleOf = (s: string): boolean =>
           (deps.availableSessions ?? []).includes(s) && !store.sessionHasOpenWork(s, w.id);
         const divert = [...others.filter((a) => a.company === home), ...others.filter((a) => a.company !== home)]
@@ -423,6 +549,7 @@ export const makeSteps = (o: {
           st0.setStepInput(st.id, { busy_diverted_from: session, resolved_session: divert });
           o.journal.stepEvent(st, 'route_busy_divert', { from: session, to: divert, by: 'busy_agent' });
           log.info(`[engine] step ${st.id} 忙闲改道：${session} → ${divert}（基会话有未完单，负载摊给声明 agent）`);
+          landingRerouted = true;
           session = divert;
           store.setWorkflowSession(w.id, session);
         } else {
@@ -473,55 +600,32 @@ export const makeSteps = (o: {
       o.journal.stepEvent(st, 'step_failed', { error: diag });
       return;
     }
+    // 落点回写（2026-11-23 全量审查）：步骤没写明会话、兜底到默认会话时，把
+    // 最终落点写进 resolved_session。此前只回填 workflow.session，步骤上读不
+    // 到会话，下游三处都把这一步当成「没有会话」：重启对账直接判失败
+    // （restart: no in-flight prompt，agent 其实还在干活）、卡死巡检跳过、
+    // 插话报 step has no session to intervene（现网 452 个 agent 步里 147 个）。
+    // 写在这里，是因为会话已经定下来、马上要登记 prompt——别名解析/判定/
+    // 改道算到一半的值不会被写进去。
+    // 只有纯兜底的落点才标 resolved_by_default（2026-11-24 复审 P3-⑧）：被上面
+    // 五条路改过的落点，各自已经写过 resolved_session，这里只把最终值再写一遍，
+    // 不带标记。这里的 resolved0 / declared0 是函数开头的旧值，只能说明「这一
+    // 步起点没人点名会话」，分不出纯兜底和被改过——所以要看 landingRerouted。
+    // 带标记的落点被人点名的会话改掉时，落点跟着改，标记一并撤掉。
+    if (ovSession === '' && resolved0 === '' && declared0 === '') {
+      st0.setStepInput(st.id, landingRerouted
+        ? { resolved_session: session }
+        : { resolved_session: session, resolved_by_default: true });
+    } else if (byDefault && resolved0 !== '' && session !== resolved0) {
+      st0.setStepInput(st.id, { resolved_session: session, resolved_by_default: null });
+    }
     st0.setStepStatus(st.id, 'running');
-    // 保证该工作流在被路由会话上有一个 run（prompt 意图记录的挂靠点）。
-    const run = st0.activeRunForSession(session);
-    if (!run || run.workflowId !== st.workflowId) {
-      st0.createRun(st.workflowId, session);
-    }
-    if (deps.syncDispatch) {
-      // ACP/同步路径：阻塞到协议级完成信号，最终消息直接进步 output。
-      o.journal.stepEvent(st, 'step_dispatched', { session, via: 'acp' });
-      const anchored = deps.workspaceFor
-        ? anchorPlan(session, deps.workspaceFor(session), plan)
-        : plan;
-      void (async () => {
-        let res;
-        try {
-          res = await deps.syncDispatch!.dispatchSync('email', session, planPrompt(anchored));
-        } catch (e) {
-          res = { ok: false as const, error: e instanceof Error ? e : new Error(String(e)) };
-        }
-        await o.withLock(st.workflowId, async () => {
-          if (!res.ok) {
-            st0.setStepOutput(st.id, { error: res.error.message, via: 'acp' });
-            st0.setStepStatus(st.id, 'failed');
-            o.journal.stepEvent(st, 'step_failed', { error: res.error.message, via: 'acp' });
-            return;
-          }
-          st0.setStepOutput(st.id, { output: res.value, via: 'acp', completed_at: rfc3339(now()) });
-          const steps = st0.stepsForWorkflow(st.workflowId);
-          const next = steps[st.seq];
-          // 同 completeAgentStep 的 P1-2 守卫：转派步不被同步派发路径的
-          // 结算播种覆盖（带 handoff_domain 标记的步整体跳过）。
-          if (next && asString(next.input['handoff_domain']) === '') {
-            // 播种与 completeAgentStep 同形：plan 回退渲染 prompt（模板流
-            // input.plan 为空，断点七键位不一致事故同源）；session 用实际
-            // 派发落点——override/判定/改道只活在局部 session 与库内
-            // resolved_session，st 旧快照的 input.session 读不到。
-            const seed: Record<string, JsonValue> = {
-              plan: asString(st.input['plan']) || renderSeedPlan(st, asString(st.input['prompt'])),
-              output: res.value, session,
-            };
-            st0.setStepInput(next.id, seed);
-          }
-          st0.setStepStatus(st.id, 'completed');
-          o.journal.stepEvent(st, 'step_completed', { via: 'acp' });
-          await o.late.advanceLocked(st.workflowId);
-        });
-      })().catch((e) => log.error(`syncDispatch settle: ${String(e)}`));
-      return;
-    }
+    // 保证该工作流在被路由会话上有一个 run（prompt 意图记录的挂靠点）；
+    // run 在手（新建或复用现成），供下方 write-ahead createPrompt 直接使用。
+    const existingRun = st0.activeRunForSession(session);
+    const run = existingRun !== null && existingRun.workflowId === st.workflowId
+      ? existingRun
+      : st0.createRun(st.workflowId, session);
     // tmux 路径：工作区锚定后异步派发，OnAgentStopped 负责结算。
     if (deps.workspaceFor) {
       plan = anchorPlan(session, deps.workspaceFor(session), plan);
@@ -546,24 +650,74 @@ export const makeSteps = (o: {
         `仅当本单要给客户发信才另产纯文本正文文件并申报 role=body——不发信不产 txt）。\n` +
         `仅写入该目录，发送由人工闸门决定。\n\n${plan}`;
     }
-    const res = await deps.dispatch.dispatch('email', session, planPrompt(plan));
+    // write-ahead（2026-11-07 审查 P1；登记已从 runtime 派发适配器挪进引擎）：
+    // prompt 意图先落账再发送——登记曾发生在发送成功之后
+    //（write-after-execute），herdr 把 send→登记窗口从 tmux 时代的毫秒级放大
+    // 到秒~分钟级。该窗被重启对账扫中时「账上无 submitted」被误读成「agent
+    // 没收到」而杀步：账 failed、卡实际在途并执行完（wf_49f86a13ec91 同型账
+    // 实分裂）。挪进引擎后「每个 DispatcherPort 派发都先登记」是引擎自身
+    // 不变量，不再依赖注入实现自觉；run 在手（上方 createRun 兜底），
+    // createPrompt 必然落空不了——runtime 适配器的 prompt_intent_lost 兜底
+    // 分支随之删除（现拓扑不可达）。
+    // 凭据（2026-11-23 全量审查；2026-11-24 复审 P1-① 改了含义）：凭据说的是
+    // 「这一步本次派发尝试的卡已经交出去了」，收工回调（agentSettle.
+    // onAgentStopped）靠它挑该结算哪一步。所以每次派发前先清空——重试、看门狗
+    // 重派时步骤上还留着上一张卡的凭据，不清的话，新卡还在派发途中时来的旧收工
+    // 回调会把它当成「卡已交出」去结算。写在 output 里：它是合并写，后面的写入
+    // 冲不掉；重试只清 error，也不动它。
+    st0.setStepOutput(st.id, { dispatched_prompt_id: null, dispatched_at: null });
+    const promptText = planPrompt(plan);
+    const prompt = st0.createPrompt(run.id, promptText, 'send');
+    const res = await deps.dispatch.dispatch('email', session, promptText);
+    // 派发返回先重读这一步（2026-11-23 全量审查）：dispatch 要等 agent 就绪
+    // （忙时约 20 秒，冷启动最长 240 秒），期间人可以点中止。返回时不看状态
+    // 就记 step_dispatched，账本里会出现 step_cancelled 早于 step_dispatched
+    // ——单子已取消，任务卡照样送到，agent 照着已取消的单子开工。
+    const afterDispatch = st0.getStep(st.id);
+    if (afterDispatch === null) return;
+    if (afterDispatch.status !== 'running') {
+      onDispatchReturnedToClosedStep(afterDispatch, session, res);
+      return;
+    }
+    // 交出凭据：派发成功、或提交未确认（卡可能已经入队、稍后被消费）之后才写。
+    // dispatched_at 记交出去的时刻——同一个会话里排着几张卡时，收工回调按它
+    // 从早到晚找「最早交出去、还在等收工的那张」（终端是先来先做）。硬失败
+    // 不写：卡没交出去。
+    const markCardDelivered = (): void => {
+      st0.setStepOutput(st.id, { dispatched_prompt_id: prompt.id, dispatched_at: rfc3339(now()) });
+    };
     if (!res.ok) {
-      // 提交未确认（submit_unconfirmed/submit_lost）不判死（2026-09-21 深夜
-      // 用户实测假阴性：agent 忙时 prompt 入队稍后才消费——判死会把做完了
-      // 的单记成 failed，还诱导重试双投）。步保持 running：真被吞=看门狗
-      // 静默判僵尸打断重派；真消费=Stop hook 正常结算。tmux 层硬错误仍
-      // 显性 failed。
       const msg = res.error.message;
-      if (msg.includes('submit_unconfirmed') || msg.includes('submit_lost')) {
+      if (isSoftSubmitFailure(msg)) {
+        // 提交未确认（submit_unconfirmed/submit_lost）不判死（2026-09-21 深夜
+        // 用户实测假阴性：agent 忙时 prompt 入队稍后才消费——判死会把做完了
+        // 的单记成 failed，还诱导重试双投）。步保持 running、prompt 保持
+        // submitted：真被吞=看门狗静默判僵尸打断重派；真消费=Stop hook 正常
+        // 结算。tmux 层硬错误仍显性 failed。凭据照写：卡可能已经被消费，之后
+        // 它的收工回调要能结算。
+        markCardDelivered();
         o.journal.stepEvent(st, 'submit_unverified', { error: msg, session });
         log.warn(`[engine] step ${st.id} 提交未确认但保持 running（看门狗兜底）：${msg}`);
         return;
       }
+      // 确定性失败：先落账。step_failed 经 journal 把工作流置 failed，ledger
+      // 随之把该单的 run 置 failed。
       st0.setStepOutput(st.id, { error: msg });
       st0.setStepStatus(st.id, 'failed');
       o.journal.stepEvent(st, 'step_failed', { error: msg });
+      // prompt 回写 failed 只为账面整洁与审计。重启守卫经 latestPromptForSession
+      // 只读活跃 run，上面的级联已让这条 prompt 对守卫不可见，回写与否都不影响
+      // 放行。ledger 关门（2026-11-12）：直写 SQL 改正规出口 setPromptStatus
+      //（0.4.0 起 API 在位）。它排在落账之后，失败只告警，不能连累上面的
+      // 状态转变。
+      try {
+        st0.setPromptStatus(prompt.id, 'failed');
+      } catch (e) {
+        log.warn(`[engine] step ${st.id} prompt ${prompt.id} 回写 failed 未成（账面留 submitted，守卫不可见，不影响放行）：${e instanceof Error ? e.message : String(e)}`);
+      }
       return;
     }
+    markCardDelivered();
     o.journal.stepEvent(st, 'step_dispatched', { session });
     o.zombie.touchSession(session); // 派发时点种心跳；此后会话的每个 hook 事件续命。
   };

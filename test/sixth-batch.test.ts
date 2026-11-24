@@ -14,7 +14,7 @@ import { parseSkill, expandPrompt, createSkillRegistry } from '@juli-os/agents';
 import { probePane } from '@juli-os/agents';
 import { createDesktopNotifier } from '../src/platform/push/notify.ts';
 import type { TmuxClient } from '@juli-os/agents';
-import { ok } from '@juli-os/artifacts';
+import { ok } from '../src/platform/shared/result.ts';
 
 const hasTmux = (() => {
   try {

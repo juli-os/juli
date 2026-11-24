@@ -4,7 +4,7 @@
 // 在完整摄取一轮之后才打。
 
 import { ImapFlow, type FetchMessageObject, type MailboxLockObject } from 'imapflow';
-import { err, ok, toResult, type Result } from '@juli-os/artifacts';
+import { err, ok, toResult, type Result } from '../shared/result.ts';
 import { decodeRfc2047, MAX_SOURCE_BYTES, parseFullMessage, type InboxMessage } from './inbox.ts';
 
 export interface ImapParams {

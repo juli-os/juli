@@ -10,7 +10,7 @@
 // chat:X 线上协议——/ws/chat 的 iOS 客户端零改动吃到。
 
 import { createOrchestrator, type ChatLlmPort, type Orchestrator, type OrchestratorEvent, type Tool } from '@juli-os/agents';
-import type { Result } from '@juli-os/artifacts';
+import { type Result } from '../../platform/shared/result.ts';
 
 export interface IntakeLanding {
   readonly session: string;
@@ -49,59 +49,169 @@ export interface ChatIntakeEvent {
  * 路由层镜像进 chatHub 供 /ws/chat 客户端渲染）+ 进件事件（chat:X 计划卡相位）。 */
 export type ChatIntakeStreamEvent = ChatIntakeEvent | OrchestratorEvent;
 
-const INTAKE_PLAN_RE = /```intake-plan(?![a-z0-9-])\s*([\s\S]*?)\s*```/;
 // 2026-10-27 手机「JSON 堆 + 卡不弹」事故：glm-5.3-flash 四次提议三次漏写闭合
 // 围栏（JSON 完整、结尾断在 `"}`）。提取/在场只认闭合围栏 → 卡永不弹，且
 // 半开形态连 hasIntakePlanBlock 都不认 →「JSON 炸了」告警也被静默吞。半开
-// 容差：在场 = 围栏起笔在场；提取 = 闭合围栏失配时退半开围栏取尾段，
-// firstBalancedObject 兜住尾部手抖。提取/在场三条正则统一词边界（同
-// strip 防 ```plaintext 撞名——漏边界则 ```intake-plans 撞名块会被提取
-// 成卡而 strip 不剥，JSON 糊屏经 typo 围栏名回归）。
-const INTAKE_PLAN_OPEN_RE = /```intake-plan(?![a-z0-9-])[ \t]*\r?\n?([\s\S]*)$/;
-const INTAKE_PLAN_HAS_RE = /```intake-plan(?![a-z0-9-])/;
+// 容差：在场 = 围栏起笔在场；提取 = 从围栏后第一个括号配平的 JSON 对象取
+// （闭合围栏在不在都行）。
+// 提取/在场只认 intake-plan 单名（进件语义要「第一处 intake-plan 内容」，不随
+// 剥除显示面的双名走）；名字带词边界（b45 R1-FX P2：```intake-plans 是别的
+// 代码块，不许被误认）。
+const INTAKE_PLAN_RE = /```intake-plan(?![a-z0-9-])/;
 
-/** 从任意文本里提取第一个平衡的 {...}（边界纪律：LLM 输出=外部数据，尾巴
- * 带 `};`/换行废话等手抖属常态——2026-10-17「开单卡不弹」事故：严格
- * JSON.parse 撞 `"}"};` 尾巴直接炸，catch 静默 null，计划无声丢弃、相位
- * 永停 discuss，而 LLM 可见文本还在承诺「我按这个提议开单」）。 */
-const firstBalancedObject = (raw: string): Record<string, unknown> | null => {
-  const start = raw.indexOf('{');
-  if (start < 0) return null;
+// ---- intake-plan 剥除（服务端与 webapp 逐字符同构，含分号；chat-strip-parity.test.ts 钉两侧同文）----
+// 摘要面剥除与 webapp 客户端 stripPlanFences（chat-live.ts）必须同法（b44 R2
+// NEW-γ）：全局、双名（intake-plan|plan）、半开围栏也剥。否则 LLM 输出 ```plan
+// 围栏或双 intake-plan 时服务端 reply 残留围栏 ≠ 客户端剥净稿，heal 把围栏
+// JSON 原文写回显示面。
+// 2026-11-23 修「brief 里带 ``` 时确认卡不弹、屏幕上漏 JSON」：旧实现靠非贪婪
+// 正则 ```intake-plan…``` 找结尾，brief 的字符串里只要出现三个反引号（比如写了
+// 一条命令），正则就停在正文内部——取出来是半截 JSON（解析失败，卡不弹），
+// 剥除也只剥到那里（后面的 JSON 留在屏幕上）。2026-10-27 修过同类事故（模型
+// 漏写闭合围栏），没覆盖这种写法。
+// 现在按「JSON 对象括号配平」找结尾：从围栏后第一个能解析的 {...} 起算，数
+// 花括号时认得字符串（字符串里的括号、转义引号、反引号都不影响），对象结束
+// 就是计划块结束；对象之后【紧跟着】的光杆 ``` 才是闭合围栏，一并剥掉。
+// 2026-11-24 修「计划块剥除多删正文」（R1 审查 P2-③）：此前按「对象之后第一个
+// 光杆围栏」找闭合，模型漏写闭合围栏、后面的正文里又有代码块、第二块计划或
+// 错位的围栏时，中间的正文被一起删掉了。现在闭合围栏只有紧跟着才算（见
+// intakePlanBlockEndAfter）。
+/** 围栏起点：```intake-plan 或 ```plan（只用于剥除——提取/在场仍只认 intake-plan）。
+ *  名字后不许再跟小写字母/数字/连字符：```plaintext / ```plantuml / ```intake-plans
+ *  是别的代码块（b45 R1-FX P2）。 */
+const INTAKE_PLAN_FENCE_RE = /```(?:intake-plan|plan)(?![a-z0-9-])/g;
+/** text 里 from 起第一个「光杆 ```」的下标；找不到返回 -1。后面还跟着字母数字的
+ *  是别的代码块的开栏（```bash），不算闭合围栏。 */
+const intakePlanCloseFence = (text: string, from: number): number => {
+  for (let at = text.indexOf('```', from); at >= 0; at = text.indexOf('```', at + 3)) {
+    if (!/[A-Za-z0-9]/.test(text.charAt(at + 3))) return at;
+  }
+  return -1;
+};
+/** 从 open（一个 `{`）起字符串-aware 地数花括号，返回对象结束下标（不含）；
+ *  扫到 upto（缺省文末）还没配平返回 -1。字符串里的括号不计，`\"` 不翻字符串态。 */
+const jsonEndOf = (text: string, open: number, upto = text.length): number => {
   let depth = 0;
   let inString = false;
   let escaped = false;
-  for (let i = start; i < raw.length; i++) {
-    const ch = raw[i]!;
-    if (escaped) { escaped = false; continue; }
-    if (ch === '\\') { if (inString) escaped = true; continue; }
-    if (ch === '"') { inString = !inString; continue; }
-    if (inString) continue;
-    if (ch === '{') depth++;
-    else if (ch === '}') {
-      depth--;
-      if (depth === 0) {
-        try {
-          return JSON.parse(raw.slice(start, i + 1)) as Record<string, unknown>;
-        } catch {
-          return null;
-        }
-      }
+  for (let i = open; i < upto; i++) {
+    const ch = text.charAt(i);
+    if (escaped) {
+      escaped = false;
+    } else if (ch === '\\') {
+      if (inString) escaped = true;
+    } else if (ch === '"') {
+      inString = !inString;
+    } else if (!inString) {
+      if (ch === '{') depth++;
+      else if (ch === '}' && --depth === 0) return i + 1;
     }
   }
-  return null;
+  return -1;
 };
+/** text 里 from 起第一个「括号配平且能 JSON.parse」的对象，返回 [起点, 结束)；
+ *  找不到返回 null。括号配平但解析不了的跳过往后找（围栏里的散文花括号、
+ *  夹进来的别的 JSON）；扫到文末都没配平（JSON 截断）就是找不到。 */
+const intakePlanObject = (text: string, from: number): readonly [number, number] | null => {
+  let at = from;
+  for (;;) {
+    const open = text.indexOf('{', at);
+    if (open < 0) return null;
+    const end = jsonEndOf(text, open);
+    if (end < 0) return null;
+    try {
+      JSON.parse(text.slice(open, end));
+      return [open, end];
+    } catch {
+      at = end;
+    }
+  }
+};
+/** text[at] 起是不是一个括号配平、能 JSON.parse 的对象；是就返回它的结束下标
+ *  （不含），不是返回 -1。只认「正好从 at 起头」的，不往后找。 */
+const jsonObjectAt = (text: string, at: number): number => {
+  if (text.charAt(at) !== '{') return -1;
+  const end = jsonEndOf(text, at);
+  if (end < 0) return -1;
+  try {
+    JSON.parse(text.slice(at, end));
+    return end;
+  } catch {
+    return -1;
+  }
+};
+/** 从 from（围栏起点之后）算计划块的结束下标（不含）。
+ *  · 有能解析的对象：交给 intakePlanBlockEndAfter（闭合围栏只有紧跟着才算）。
+ *  · 没有能解析的对象（JSON 截断、围栏里没 JSON）：候选闭合围栏之前 JSON 还
+ *    没结束（引号/花括号没合上）→ 它是 brief 里的反引号，往后找；都没有就
+ *    剥到文末（流式半开的旧口径）。 */
+const intakePlanBlockEnd = (text: string, from: number): number => {
+  const obj = intakePlanObject(text, from);
+  if (obj !== null) return intakePlanBlockEndAfter(text, obj[1]);
+  const open = text.indexOf('{', from);
+  for (let at = intakePlanCloseFence(text, from); at >= 0; at = intakePlanCloseFence(text, at + 3)) {
+    if (open >= 0 && open < at && jsonEndOf(text, open, at) < 0) continue;
+    return at + 3;
+  }
+  return text.length;
+};
+/** 对象结束后「可以紧跟着」的填充：空白，以及手抖多打的 `;` 和 `}`。 */
+const INTAKE_PLAN_TAIL_RE = /^[\s;}]*/;
+/** 从对象结束处（end）算计划块的结束下标（不含）——闭合围栏只有【紧跟着】才
+ *  算（R1 审查 P2-③，2026-11-24）。模型漏写闭合围栏时，后面正文里的代码块、
+ *  第二块计划、错位的围栏都不是这一块的；按「后面第一个围栏」去找会把中间
+ *  的正文一起删掉。所以从 end 起只认三种紧挨着的东西，一格一格往后挪：
+ *  ① 空白和手抖多打的 `;` `}`；
+ *  ② 又一个能解析的 JSON 对象（围栏里混进两个对象的形态——都是计划块的 JSON，
+ *     不是正文，留一个在屏幕上就是漏 JSON）；
+ *  ③ 光杆的闭合围栏（后面不跟字母数字——跟了名字的是别的代码块的开栏）。
+ *  遇到别的字符就停：计划块到最后一个对象结束为止，后面的正文照留。 */
+const intakePlanBlockEndAfter = (text: string, end: number): number => {
+  let last = end;
+  for (let at = end; ; ) {
+    const padding = INTAKE_PLAN_TAIL_RE.exec(text.slice(at));
+    at += padding === null ? 0 : padding[0].length;
+    if (text.startsWith('```', at) && !/[A-Za-z0-9]/.test(text.charAt(at + 3))) return at + 3;
+    const next = jsonObjectAt(text, at);
+    if (next < 0) return last;
+    last = next;
+    at = next;
+  }
+};
+/** 剥掉计划块（朗读 / 回显不念 JSON）。全局：一块文本里多个计划块都剥；
+ *  围栏起点落在已剥的块里（brief 里写了围栏名）不再当新块。 */
+const stripPlanFences = (text: string): string => {
+  let out = '';
+  let last = 0;
+  for (const m of text.matchAll(INTAKE_PLAN_FENCE_RE)) {
+    if (m.index === undefined || m.index < last) continue;
+    const end = intakePlanBlockEnd(text, m.index + m[0].length);
+    out += text.slice(last, m.index);
+    last = end;
+  }
+  return (out + text.slice(last)).trim();
+};
+// ---- intake-plan 剥除结束 ----
 
+/** 摘要面剥掉计划块（朗读 / 回显不念 JSON）。 */
+export const stripIntakePlanBlock = stripPlanFences;
+
+/** 提取计划：围栏后第一个括号配平且能解析的 JSON 对象，取 title/summary/brief。
+ * 宽容边界（LLM 输出=外部数据，尾巴带 `};`/换行废话等手抖属常态——
+ * 2026-10-17「开单卡不弹」事故：严格 JSON.parse 撞 `"}"};` 尾巴直接炸，catch
+ * 静默 null，计划无声丢弃、相位永停 discuss，而 LLM 可见文本还在承诺「我按
+ * 这个提议开单」）。 */
 export const extractIntakePlanBlock = (text: string): StagedIntakePlan | null => {
   const m = INTAKE_PLAN_RE.exec(text);
-  const raw = (m !== null ? m[1]! : INTAKE_PLAN_OPEN_RE.exec(text)?.[1] ?? '').trim();
-  if (raw === '') return null;
-  let v: Record<string, unknown> | null = null;
+  if (m === null) return null;
+  const span = intakePlanObject(text, m.index + m[0].length);
+  if (span === null) return null;
+  let v: Record<string, unknown>;
   try {
-    v = JSON.parse(raw) as Record<string, unknown>;
+    v = JSON.parse(text.slice(span[0], span[1])) as Record<string, unknown>;
   } catch {
-    v = firstBalancedObject(raw);
+    return null; // intakePlanObject 已验过可解析；这里只是不让解析异常外溢
   }
-  if (v === null) return null;
   const title = typeof v['title'] === 'string' ? v['title'] : '';
   const brief = typeof v['brief'] === 'string' ? v['brief'] : '';
   if (title === '' || brief === '') return null;
@@ -115,23 +225,7 @@ export const extractIntakePlanBlock = (text: string): StagedIntakePlan | null =>
 
 /** 计划块是否在场（与解析成败无关）——2026-10-27 起半开围栏也算在场：turn
  * 侧用它区分「没提议」和「提议了但 JSON 炸了」（后者必须显性告警，不能再无声吞）。 */
-export const hasIntakePlanBlock = (text: string): boolean => INTAKE_PLAN_HAS_RE.test(text);
-
-// b44 R2 NEW-γ：摘要面剥除与 webapp 客户端 stripPlanFences（chat-live.ts）
-// 逐字符同法——全局、双名（intake-plan|plan）、半开围栏也剥。否则 LLM 输出
-// ```plan 围栏或双 intake-plan 时服务端 reply 残留围栏 ≠ 客户端剥净稿，
-// heal 把围栏 JSON 原文写回 DOM/transcript 显示面。b45 R1-FX P2：围栏名加
-// 词边界 (?![a-z0-9-])——```plaintext/```plantuml 等前缀撞名块不误吃，
-// 三处正则（本文件/webapp chat-live/web chat-live）+ parity 测试字面量同步。
-// 提取/在场判定
-// （extractIntakePlanBlock / hasIntakePlanBlock）保持 INTAKE_PLAN_RE 原语义：
-// 它们要「第一处 intake-plan 内容」的进件语义，不随 strip 的显示面对齐。
-const INTAKE_PLAN_STRIP_RE_FULL = /```(?:intake-plan|plan)(?![a-z0-9-])\s*[\s\S]*?```/g;
-const INTAKE_PLAN_STRIP_RE_OPEN = /```(?:intake-plan|plan)(?![a-z0-9-])\s*[\s\S]*$/g;
-
-/** 摘要面剥掉计划块（朗读 / 回显不念 JSON）。 */
-export const stripIntakePlanBlock = (text: string): string =>
-  text.replace(INTAKE_PLAN_STRIP_RE_FULL, '').replace(INTAKE_PLAN_STRIP_RE_OPEN, '').trim();
+export const hasIntakePlanBlock = (text: string): boolean => INTAKE_PLAN_RE.test(text);
 
 export const INTAKE_SYSTEM_PROMPT = [
   '你是 juli 的开单助手。用户（juli 的运营者）会用一段话——常是语音转写——说出想做的事；你的唯一目标：把这一单聊清楚，然后提议开单。',
@@ -169,8 +263,10 @@ export interface ChatIntakeDeps {
   readonly model: string;
   readonly tools: readonly Tool[];
   /** 确认后的开单正门（与 #/trigger 表单同一个 startTask）；session 为路由
-   * 层判定的落点（0930）——input.session 钉死起点，引擎侧零新机制。 */
-  readonly startTask: (title: string, brief: string, session?: string, autoApprove?: boolean) => Promise<Result<{ readonly id: string }, Error>>;
+   * 层判定的落点（0930），input.session 钉死起点，引擎侧零新机制；tenant
+   * 为确认卡显式租户（A3 写侧打标记，HTTP 边界校验过才进来），空缺省 =
+   * 引擎按进件信号自行判定。 */
+  readonly startTask: (title: string, brief: string, session?: string, autoApprove?: boolean, tenant?: string) => Promise<Result<{ readonly id: string }, Error>>;
   /** 路由层落点判定（runtime 接 routeTask）——chat 层不自选会话。缺省 =
    * 无落点（落 default，测试/降级用）。 */
   readonly resolveLanding?: (title: string, brief: string) => Promise<IntakeLanding>;
@@ -202,8 +298,9 @@ export interface ChatIntakeState {
 
 export interface ChatIntake {
   turn(input: string, opts?: ChatIntakeTurnOpts): Promise<ChatIntakeTurn>;
-  /** autoApprove=计划卡「本单免批」勾选（人的决定，随 confirm 进 meta）。 */
-  confirm(opts?: { autoApprove?: boolean }): Promise<ChatIntakeConfirm>;
+  /** autoApprove=计划卡「本单免批」勾选（人的决定，随 confirm 进 meta）；
+   * tenant=确认卡显式租户（A3，人的决定，HTTP 边界校验过才进来）。 */
+  confirm(opts?: { autoApprove?: boolean; tenant?: string }): Promise<ChatIntakeConfirm>;
   deny(): ChatIntakeTurn;
   state(): ChatIntakeState;
 }
@@ -296,7 +393,7 @@ export const createChatIntake = (deps: ChatIntakeDeps): ChatIntake => {
     return { events, reply: stripIntakePlanBlock(lastText) };
   };
 
-  const doConfirm = async (opts?: { autoApprove?: boolean }): Promise<ChatIntakeConfirm> => {
+  const doConfirm = async (opts?: { autoApprove?: boolean; tenant?: string }): Promise<ChatIntakeConfirm> => {
     const events: ChatIntakeEvent[] = [];
     const plan = staged;
     staged = null;
@@ -314,7 +411,12 @@ export const createChatIntake = (deps: ChatIntakeDeps): ChatIntake => {
     // 暂不判档、恒 standard——53c3cc8 有意收窄在 /tasks 无键路径（lifecycle.ts
     // 第二跳），chat 线未收。采用口径唯一事实源 = runtime taskTier；若裁定
     // chat 线也要判档，走共享进件助手收编（扩功能待人裁，勿在此悄悄补）。
-    const res = await deps.startTask(plan.title, plan.brief, session !== '' ? session : undefined, opts?.autoApprove === true);
+    const res = await deps.startTask(
+      plan.title, plan.brief,
+      session !== '' ? session : undefined,
+      opts?.autoApprove === true,
+      opts?.tenant !== undefined && opts.tenant !== '' ? opts.tenant : undefined,
+    );
     if (!res.ok) {
       // 开单失败显性报错回到讨论——单没开出去，对话不能装作成功。
       events.push({ type: 'chat:error', data: `开单失败: ${res.error.message}` });
@@ -322,7 +424,7 @@ export const createChatIntake = (deps: ChatIntakeDeps): ChatIntake => {
     }
     events.push({ type: 'chat:dispatched', data: res.value.id });
     events.push({ type: 'chat:phase', data: 'discuss' });
-    events.push({ type: 'chat:system', data: `已开单 ✓ ${res.value.id}${opts?.autoApprove === true ? '（本单免批：非发送闸门将自动批准）' : ''}` });
+    events.push({ type: 'chat:system', data: `已开单 ✓ ${res.value.id}${opts?.autoApprove === true ? '（本单免批：申报为 apply / artifact 的审批会自动批准；发送审批和问询仍等你）' : ''}` });
     if (session !== '') {
       // 留痕只记「注过」的落点（十一跑 P1-1 次生症状）：fail-open 不注就不留
       // route_decision——裸会话名当 reason 会把「没判」记成「判过」（HTTP 侧

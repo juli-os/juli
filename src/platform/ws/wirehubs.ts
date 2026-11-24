@@ -10,6 +10,7 @@ import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { safeEqual } from '../shared/secure.ts';
 import { sanitizeConv } from '../shared/conv.ts';
+import { closeReason } from './ptyhub.ts';
 import type { ChatHub } from './chathub.ts';
 import type { TmuxClient } from '@juli-os/agents';
 
@@ -89,6 +90,15 @@ export const attachChatWireWs = (deps: {
   readonly server: Server;
   readonly chatHub: ChatHub;
   readonly password: string;
+  /** conv → 租户登记（2026-11-08 提案 A2）：租户订阅按本表逐帧过滤——one
+   * 只见同租户 conv，未登记 conv 只进 all。逐帧求值让「先订阅后开线程」
+   * 的时序成立；解析与登记表在 runtime（本文件不 import business 层）。
+   * 缺省不接 = 全视角（旧行为零变化）。 */
+  readonly convTenantOf?: (conv: string) => string | null;
+  /** X-Juli-Tenant 解析（header 或同名 query）：one=按租户收口、all=全视角、
+   * null=非法值（拒连，HTTP 面 400 的等价）。 */
+  readonly resolveScope?: (raw: string | undefined) =>
+    { readonly kind: 'one'; readonly tenant: string } | { readonly kind: 'all' } | null;
   readonly log?: (m: string) => void;
 }): void => {
   const wss = new WebSocketServer({ noServer: true });
@@ -99,11 +109,23 @@ export const attachChatWireWs = (deps: {
       // 清洗与 HTTP 侧同口径（sanitizeConv，R1-F2）：空串/非法 id 一律归
       // main，不会订阅永不存在的线程静默零帧。
       const conv = sanitizeConv(url.searchParams.get('conv'));
+      // 租户订阅（A2）：解析失败（未声明的租户 id）= HTTP 面 400 的等价——
+      // 销毁 socket 不降级。解析体在 runtime，本文件零租户知识。
+      const scope = deps.resolveScope !== undefined
+        ? deps.resolveScope((Array.isArray(req.headers['x-juli-tenant'])
+          ? req.headers['x-juli-tenant'][0]
+          : req.headers['x-juli-tenant']) ?? url.searchParams.get('X-Juli-Tenant') ?? undefined)
+        : { kind: 'all' as const };
+      if (scope === null) {
+        socket.destroy();
+        return;
+      }
       const send = (frame: { type: string; data: string }): void => {
         if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame));
       };
       const unsub = deps.chatHub.subscribe((e) => {
         if (e.conv !== conv) return;
+        if (scope.kind === 'one' && (deps.convTenantOf?.(e.conv) ?? null) !== scope.tenant) return;
         const w = toWireEvent(e.type, e.data);
         send(w);
       });
@@ -122,6 +144,15 @@ export const attachSnapshotWireWs = (deps: {
   readonly server: Server;
   readonly tmux: TmuxClient;
   readonly password: string;
+  /** 租户握手（2026-11-08 提案 A2，与 ptyhub 同款）：resolve 解析
+   * X-Juli-Tenant（header 或同名 query）——返回 one=按租户收口（会话不属
+   * 该租户 1008 拒）、all=全视角、null=非法值（拒连）。解析本体在 runtime
+   * 装配侧注入。缺省不接 = 全视角（旧行为零变化）。 */
+  readonly tenants?: {
+    readonly resolve: (headerValue: string | undefined) =>
+      { readonly kind: 'one'; readonly tenant: string } | { readonly kind: 'all' } | null;
+    readonly tenantOfSession: (session: string) => string | undefined;
+  };
   readonly log?: (m: string) => void;
 }): void => {
   const wss = new WebSocketServer({ noServer: true });
@@ -138,6 +169,22 @@ export const attachSnapshotWireWs = (deps: {
       } catch {
         ws.terminate();
         return;
+      }
+      // 租户握手（A2，与 ptyhub 同款）：本 hub 的租户闸在 handleUpgrade 之后
+      //（acceptWithToken 内），非法租户与越租户都以 close 1008 拒（HTTP 面
+      // 400 的 WS 等价——upgrade 已完成，不能再写裸 400 响应行）。
+      if (deps.tenants !== undefined) {
+        const raw = req.headers['x-juli-tenant'];
+        const scope = deps.tenants.resolve((Array.isArray(raw) ? raw[0] : raw)
+          ?? url.searchParams.get('X-Juli-Tenant') ?? undefined);
+        if (scope === null) {
+          ws.close(1008, 'unknown tenant');
+          return;
+        }
+        if (scope.kind === 'one' && deps.tenants.tenantOfSession(session) !== scope.tenant) {
+          ws.close(1008, closeReason(`cross-tenant session（会话 ${session} 不属于租户 ${scope.tenant}）`));
+          return;
+        }
       }
       const historyLines = Math.max(0, Math.trunc(Number(url.searchParams.get('history') ?? '0')) || 0);
       const intervalMs = Math.max(30, Math.min(5000, Math.trunc(Number(url.searchParams.get('interval') ?? '100')) || 100));

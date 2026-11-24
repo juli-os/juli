@@ -11,7 +11,12 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { configSchema } from '../src/platform/config/schema.ts';
 import { createRuntime } from '../src/runtime.ts';
-import type { JsonValue } from '@juli-os/artifacts';
+import { type JsonValue } from '../src/platform/shared/json.ts';
+
+/** 账本第二连接（ledger 0.5.0 句柄私有，白盒摆数/对账走这里）。 */
+const probeOf = (rt: { config: { data_dir: string } }): import('node:sqlite').DatabaseSync =>
+  new DatabaseSync(join(rt.config.data_dir, 'lifecycle.db'));
+
 
 /** 一张「agent 已完成 + 闸门已批」的 nodes 单（时间戳默认 10 分钟前——
  * 静默判据①过线）。gateAt/agentAt 传 'now' 造新鲜事件测静默守卫。 */
@@ -25,21 +30,21 @@ const makeApprovedRun = (
     kind: 'adhoc', title: '回流执行单', status: 'running',
     meta: { mode: o.mode ?? 'nodes' },
   });
-  rt.store.db.prepare('UPDATE workflows SET session=?, created_at=?, updated_at=? WHERE id=?')
+  probeOf(rt).prepare('UPDATE workflows SET session=?, created_at=?, updated_at=? WHERE id=?')
     .run('juli-a', shift(staleMin + 30), shift(staleMin), w.id);
   const st = rt.store.createStep({ workflowId: w.id, seq: 1, kind: 'agent', title: '理解与接单' });
-  rt.store.db.prepare('UPDATE workflow_steps SET status=?, started_at=?, updated_at=? WHERE id=?')
+  probeOf(rt).prepare('UPDATE workflow_steps SET status=?, started_at=?, updated_at=? WHERE id=?')
     .run('completed', shift(staleMin + 20), shift(staleMin + 10), st.id);
   const g = rt.store.createStep({
     workflowId: w.id, seq: 2, kind: 'gate', title: '确认闸门',
     input: o.gateInput ?? { delivery: 'apply' },
   });
-  rt.store.db.prepare('UPDATE workflow_steps SET status=?, started_at=?, updated_at=? WHERE id=?')
+  probeOf(rt).prepare('UPDATE workflow_steps SET status=?, started_at=?, updated_at=? WHERE id=?')
     .run(o.gateStatus ?? 'completed', shift(staleMin + 5), shift(staleMin), g.id);
   // 事件链：闸门批准留痕 + 回流回合 turn_done（ts 均造 staleMin 分钟前）。
   rt.store.appendEvent('workflow', w.id, 'gate_approved', { note: '', by: 'iphone' });
   rt.store.appendEvent('workflow', w.id, 'session_turn', { session: 'juli-a', event: 'turn_done' });
-  rt.store.db.prepare(
+  probeOf(rt).prepare(
     `UPDATE events SET ts=? WHERE entity_type='workflow' AND entity_id=?`,
   ).run(shift(staleMin), w.id);
   if (o.withRelay === true) {

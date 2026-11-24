@@ -18,11 +18,24 @@ export interface AuthzPolicy {
 export const defaultAuthzPolicy: AuthzPolicy = { mode: AUTHZ_ALLOWLIST, allow: [], deny: [] };
 
 /** 渠道策略编译（对齐 Go inbox.Compiled）：渠道无任何规则 = open（渠道不加
- * 额外限制，全局引擎策略兜底）；任一规则翻成 allowlist。 */
-export const compileChannelPolicy = (allow: readonly string[], deny: readonly string[]): AuthzPolicy =>
-  allow.length === 0 && deny.length === 0
+ * 额外限制，全局引擎策略兜底）；任一规则翻成 allowlist。
+ *
+ * mode 是 open 时直接产出 open 策略（2026-11-23 全量审查修复）：此前只收
+ * allow/deny 两个名单、不看 mode——「模式设成全部放行 + 名单里有内容」会被
+ * 翻成白名单，open 的语义是「除黑名单外都放行」，实际却是所有人被渠道闸
+ * 拒掉（邮件被跳过，不建单也不留痕，只有一行日志）。open 下黑名单照常
+ * 生效，白名单不起作用——所以编译结果里不带 allow。
+ * mode 缺省（配置没写）按 allowlist 口径处理，与引擎侧的缺省一致。 */
+export const compileChannelPolicy = (
+  mode: string | undefined,
+  allow: readonly string[],
+  deny: readonly string[],
+): AuthzPolicy => {
+  if (mode === AUTHZ_OPEN) return { mode: AUTHZ_OPEN, allow: [], deny };
+  return allow.length === 0 && deny.length === 0
     ? { mode: AUTHZ_OPEN, allow: [], deny: [] }
     : { mode: AUTHZ_ALLOWLIST, allow, deny };
+};
 
 /** 单模式匹配：`*` 全匹配；`*@domain` 匹配整域；其余精确（大小写/空白不敏感）。 */
 export const matchPattern = (addr: string, pattern: string): boolean => {

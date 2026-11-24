@@ -9,12 +9,12 @@ import { agentLiveSessionOf } from './capabilities/index.ts';
 import { paneAwaitingInput } from '@juli-os/agents';
 import { parsePaneQuestion } from '@juli-os/agents';
 import { asString } from '../../platform/shared/json.ts';
-import type { JsonValue } from '@juli-os/artifacts';
+import { type JsonValue } from '../../platform/shared/json.ts';
 import { parseDur, type Template, type ZombiePolicy } from '../templates/template.ts';
 import type { EngineDeps } from './engine.ts';
 import type { Journal } from './journal.ts';
 import type { Queue } from './queue.ts';
-import { DEFAULT_MAX_ZOMBIE_ATTEMPTS, DEFAULT_ZOMBIE_TIMEOUT_MS } from './support.ts';
+import { DEFAULT_MAX_ZOMBIE_ATTEMPTS, DEFAULT_ZOMBIE_TIMEOUT_MS, RUNNING_SCAN_LIMIT } from './support.ts';
 
 export interface Zombie {
   readonly lastBeat: Map<string, Date>;
@@ -205,7 +205,10 @@ export const makeZombie = (o: {
       const s = store.getStep(id);
       if (!s || s.status !== 'running') awaitingNotified.delete(id);
     }
-    const running = store.listSteps('running', 200);
+    const running = store.listSteps('running', RUNNING_SCAN_LIMIT);
+    if (running.length >= RUNNING_SCAN_LIMIT) {
+      o.log.warn(`[zombie] running 步扫描触顶 ${RUNNING_SCAN_LIMIT}——尾部步本轮未盯（并发堆积请排查）`);
+    }
     for (const st of running) {
       if (st.kind !== 'agent' && st.kind !== 'verify') continue;
       const { timeoutMs, maxAttempts } = zombiePolicyFor(st);

@@ -21,7 +21,7 @@ import { createEngine, type EngineDeps } from '../src/business/workflow/engine.t
 import { configSchema } from '../src/platform/config/schema.ts';
 import { createRuntime, type RuntimeSeams } from '../src/runtime.ts';
 import { createHttpApp } from '../src/http/app.ts';
-import { ok } from '@juli-os/artifacts';
+import { ok } from '../src/platform/shared/result.ts';
 import { makeClock, makeEmail, seqIds, until } from './helpers.ts';
 import type { ArtifactPort, MailerPort, PusherPort } from '../src/contracts/ports.ts';
 
@@ -38,7 +38,6 @@ const makeWorld = (over: Partial<EngineDeps> = {}) => {
     llm: null, model: 't',
     routing: { defaultSession: 'juli-reply', defaultProject: 'p' },
     dispatch: { async dispatch(_s, session, text) { dispatched.push({ session, text }); return ok(undefined); } },
-    syncDispatch: null,
     pusher: { async gateWaiting() {}, async workflowDone() {}, async workflowFailed() {} } satisfies PusherPort,
     mailer: {
       async send(cmd) { sent.push({ to: cmd.to, subject: cmd.subject, cc: cmd.cc }); return ok({ messageId: '<out-1@juli.local>' }); },
@@ -341,7 +340,6 @@ describe('P3 近匹配绑定会话守卫（大小写变体不落回默认会话�
         boundAgents: [{ session: BOUND, cwd: '/srv/project-b', senders: [SENDER] }],
       },
       dispatch: { async dispatch(_s, session, text) { dispatched.push({ session, text }); return ok(undefined); } },
-      syncDispatch: null,
       pusher: { async gateWaiting() {}, async workflowDone() {}, async workflowFailed() {} } satisfies PusherPort,
       mailer: { async send() { return ok({ messageId: '<x@j>' }); } } satisfies MailerPort,
       captureOutput: async () => null, workspaceFor: null,
@@ -431,10 +429,16 @@ const mkApp = (emailCfg: Record<string, unknown>, seams: RuntimeSeams = {}, extr
   // 此前裸跑落宿主 default socket——POST /api/sessions 的真实 tmux 调用
   // 在用户面真建 normal-session 并孵化 server。指向 tmpdir 专属 socket，
   // 会话与 server 都圈在沙箱里，afterAll 统一 kill-server。
+  // 后端要显式钉 tmux（2026-11-24）：缺省后端 11-12 起是 herdr，不钉的话这个
+  // tmux 沙箱根本不生效——会直接去连本机真实的 herdr 服务；CI 机器上没有
+  // herdr，每次连接都要等满 10 秒，启动失败的错误还没人接住，整套测试被判
+  // 失败（#35 的 CI 实测）。这些用例断言的是「绑定会话旁道被拒」，和用哪个
+  // 终端后端无关。
   const tmuxSock = join(dataDir, 'tmux.sock');
   spawnedTmuxSocks.push(tmuxSock);
   const rt = createRuntime(configSchema.parse({
     data_dir: dataDir,
+    agent_backend: 'tmux',
     tmux_socket_path: tmuxSock,
     email: { default_session: 'agent-a', default_project: 'demo', ...emailCfg },
     ...extraCfg,

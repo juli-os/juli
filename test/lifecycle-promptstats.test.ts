@@ -10,6 +10,11 @@ import { configSchema } from '../src/platform/config/schema.ts';
 import { createRuntime } from '../src/runtime.ts';
 import { createHttpApp } from '../src/http/app.ts';
 
+/** 账本第二连接（ledger 0.5.0 句柄私有，白盒摆数/对账走这里）。 */
+const probeOf = (rt: { config: { data_dir: string } }): import('node:sqlite').DatabaseSync =>
+  new DatabaseSync(join(rt.config.data_dir, 'lifecycle.db'));
+
+
 const insertTurn = (db: DatabaseSync, session: string, input: number, output: number, at: string): void => {
   db.prepare(`INSERT INTO prompt_usage (source, note, model, input_tokens, output_tokens, cached_tokens, duration_ms, error, created_at, tmux_session)
     VALUES ('claude_code', '', 'claude-test', ?, ?, 0, 0, '', ?, ?)`).run(input, output, at, session);
@@ -26,10 +31,10 @@ describe('GET /api/lifecycle/workflows/:id promptStats（P2-1 双键归属）', 
       const w = rt.store.createWorkflow({
         kind: 'adhoc', title: '转派单', meta: { assigned_session: 'juli-b' },
       });
-      rt.store.db.prepare('UPDATE workflows SET session=? WHERE id=?').run('juli-a', w.id);
+      probeOf(rt).prepare('UPDATE workflows SET session=? WHERE id=?').run('juli-a', w.id);
       // agent 步窗口 [01:00, 02:00]
       const st = rt.store.createStep({ workflowId: w.id, seq: 1, kind: 'agent', title: '执行' });
-      rt.store.db.prepare('UPDATE workflow_steps SET started_at=?, updated_at=? WHERE id=?')
+      probeOf(rt).prepare('UPDATE workflow_steps SET started_at=?, updated_at=? WHERE id=?')
         .run('2026-10-05T01:00:00Z', '2026-10-05T02:00:00Z', st.id);
       const udb = new DatabaseSync(join(dir, 'prompt_usage.db'));
       insertTurn(udb, 'juli-b', 100, 10, '2026-10-05T01:10:00.000Z'); // 执行会话窗内
@@ -57,9 +62,9 @@ describe('GET /api/lifecycle/workflows/:id promptStats（P2-1 双键归属）', 
       }));
       const app = createHttpApp(rt);
       const w = rt.store.createWorkflow({ kind: 'adhoc', title: '普通单' });
-      rt.store.db.prepare('UPDATE workflows SET session=? WHERE id=?').run('juli-a', w.id);
+      probeOf(rt).prepare('UPDATE workflows SET session=? WHERE id=?').run('juli-a', w.id);
       const st = rt.store.createStep({ workflowId: w.id, seq: 1, kind: 'agent', title: '执行' });
-      rt.store.db.prepare('UPDATE workflow_steps SET started_at=?, updated_at=? WHERE id=?')
+      probeOf(rt).prepare('UPDATE workflow_steps SET started_at=?, updated_at=? WHERE id=?')
         .run('2026-10-05T01:00:00Z', '2026-10-05T02:00:00Z', st.id);
       const udb = new DatabaseSync(join(dir, 'prompt_usage.db'));
       insertTurn(udb, 'juli-a', 100, 10, '2026-10-05T01:10:00.000Z');

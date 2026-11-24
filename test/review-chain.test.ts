@@ -10,7 +10,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { createLedgerStore } from '@juli-os/ledger';
 import { createEngine } from '../src/business/workflow/engine.ts';
 import { parseTemplate } from '../src/business/templates/template.ts';
-import { createArtifactLedger, createDiskBackend, ok, sweepCaseInbox } from '@juli-os/artifacts';
+import { ok } from '../src/platform/shared/result.ts';
+import { createArtifactLedger, createDiskBackend, sweepCaseInbox } from '@juli-os/artifacts';
 import { extractFinalMessage, parseHookStdin } from '@juli-os/agents';
 import { fixedClock, seqIds } from './helpers.ts';
 import type { MailerPort, PusherPort } from '../src/contracts/ports.ts';
@@ -81,7 +82,6 @@ const makeWorld = (over: { yaml?: string; redlineWords?: readonly string[] } = {
         return ok(undefined);
       },
     },
-    syncDispatch: null,
     pusher: { async gateWaiting() {}, async workflowDone() {}, async workflowFailed() {} } satisfies PusherPort,
     mailer: {
       async send(cmd) {

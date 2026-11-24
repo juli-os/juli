@@ -7,7 +7,7 @@ import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { safeEqual } from '../shared/secure.ts';
 import type { PtyOpts, PtySession } from '@juli-os/agents';
-import type { Result } from '@juli-os/artifacts';
+import { type Result } from '../shared/result.ts';
 
 export interface PtyHubDeps {
   readonly server: Server;
@@ -25,6 +25,16 @@ export interface PtyHubDeps {
    * （app.ts /api/sessions/:name/send，同信任级）同判据：命中绑定会话一律
    * 1008 拒连。合法的「人要看会计终端」走只读快照 /ws/snapshot/{session}。 */
   readonly boundSessions?: readonly string[];
+  /** 租户握手（2026-11-08 提案 A2）：resolve 解析 X-Juli-Tenant（header 或
+   * 同名 query）——返回 one=按租户收口（会话不属该租户 1008 拒）、all=全
+   * 视角、null=非法值（拒连）。解析本体在 runtime（装配侧注入；本文件不
+   * import business 层——结构宪法 platform 禁依赖 business）。缺省不接 =
+   * 全视角（旧行为零变化）。 */
+  readonly tenants?: {
+    readonly resolve: (headerValue: string | undefined) =>
+      { readonly kind: 'one'; readonly tenant: string } | { readonly kind: 'all' } | null;
+    readonly tenantOfSession: (session: string) => string | undefined;
+  };
   readonly log?: (m: string) => void;
 }
 
@@ -62,8 +72,26 @@ export const attachPtyHub = (deps: PtyHubDeps): void => {
       socket.destroy();
       return;
     }
+    // 租户握手（A2）：解析失败（未声明的租户 id）= HTTP 面 400 的 WS 等价——
+    // 拒连不降级。one 且会话越租户 → 1008，理由点名 cross-tenant。
+    if (deps.tenants !== undefined) {
+      const raw = req.headers['x-juli-tenant'];
+      const scope = deps.tenants.resolve((Array.isArray(raw) ? raw[0] : raw)
+        ?? url.searchParams.get('X-Juli-Tenant') ?? undefined);
+      if (scope === null) {
+        socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      if (scope.kind === 'one' && deps.tenants.tenantOfSession(session) !== scope.tenant) {
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          ws.close(1008, closeReason(`cross-tenant session（会话 ${session} 不属于租户 ${scope.tenant}）`));
+        });
+        return;
+      }
+    }
     wss.handleUpgrade(req, socket, head, (ws) => {
-      void serveSession(deps, ws, session);
+      void serveSession(deps, ws, session, initialSizeOf(url) ?? undefined);
     });
   });
 };
@@ -80,7 +108,25 @@ export const closeReason = (s: string): string => {
   return out;
 };
 
-const serveSession = async (deps: PtyHubDeps, ws: WebSocket, session: string): Promise<void> => {
+/** 连接 URL 首建尺寸（与 size 帧同 clamp：20<cols≤400、10<rows≤200）。
+ * 客户端建连前已量好容器即可带上——首建即真实尺寸，免去「120x32 起建 →
+ * size 帧到达 → kill 重建」的一整轮 attach（herdr takeover 全流程要跑两遍，
+ * 这是签页点击到终端出字的显性等待）。缺失/非法回默认 120x32（旧客户端
+ * 零变化）。 */
+const initialSizeOf = (url: URL): { cols: number; rows: number } | null => {
+  const cols = Number(url.searchParams.get('cols'));
+  const rows = Number(url.searchParams.get('rows'));
+  if (!Number.isInteger(cols) || !Number.isInteger(rows)) return null;
+  if (cols <= 20 || rows <= 10) return null;
+  return { cols: Math.min(400, cols), rows: Math.min(200, rows) };
+};
+
+const serveSession = async (
+  deps: PtyHubDeps,
+  ws: WebSocket,
+  session: string,
+  initial?: { cols: number; rows: number },
+): Promise<void> => {
   const log = deps.log ?? (() => undefined);
   if (session.trim() === '') {
     ws.close(1008, 'session required');
@@ -109,8 +155,8 @@ const serveSession = async (deps: PtyHubDeps, ws: WebSocket, session: string): P
     ws.ping();
   }, 15_000);
   let pty: PtySession | null = null;
-  let cols = 120;
-  let rows = 32;
+  let cols = initial?.cols ?? 120;
+  let rows = initial?.rows ?? 32;
   // 建连仲裁（2026-09-29 泄漏根因）：首建 create 在途（hasSession 要跑一次
   // tmux CLI，几十 ms），客户端 onopen 立刻发来的 size 帧就到了——处理器看
   // pty=null 再建一个 → 双建，先建者永不被 kill 成孤儿（实测 120x32 残留
@@ -129,6 +175,14 @@ const serveSession = async (deps: PtyHubDeps, ws: WebSocket, session: string): P
     creating = false;
     if (seq !== createSeq) {
       // 等待期间有更新的 create 入场：这条作废——kill 掉，绝不留双 attach。
+      if (res.ok) res.value.kill();
+      return;
+    }
+    // attach 在途时连接已断（A-P2-1）：close 回调跑的时候 pty 还是 null，没人
+    // 关这块 PTY。以前 attach 只要几十毫秒，窗口很窄；ready-attach 之后 attach
+    // 要先等 agent 拉起，最长四分钟——用户点开终端等几秒没反应就切走是常见
+    // 操作，每次漏一个 herdr attach 进程。落地后补查连接：不在 OPEN 即 kill。
+    if (ws.readyState !== ws.OPEN) {
       if (res.ok) res.value.kill();
       return;
     }

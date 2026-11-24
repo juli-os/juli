@@ -119,4 +119,33 @@ describe.skipIf(!canRunPtyE2E)('ptyhub resize 交换不自毁', () => {
     try { clients = execFileSync('tmux', ['-S', e2eSock, 'list-clients', '-t', session], { encoding: 'utf8' }); } catch { clients = ''; }
     expect(clients, `孤儿 attach 残留：${alive}`).toBe('');
   }, 12000);
+
+  it('URL 首建尺寸（cols/rows query）：一次 attach 即真实尺寸，无 kill 重建轮', async () => {
+    logs.length = 0;
+    try { execFileSync('tmux', ['-S', e2eSock, 'kill-session', '-t', session], { stdio: 'ignore' }); } catch { /* 已不在 */ }
+    execFileSync('tmux', ['-S', e2eSock, 'new-session', '-d', '-s', session, '-x', '100', '-y', '30', 'sh'], { stdio: 'ignore' });
+
+    const port = (server.address() as { port: number }).port;
+    // 建连即带尺寸（新客户端行为）：服务端首建 PTY 直接 100x30，xterm 打开后的
+    // 首帧 size 同尺寸 → 不再触发 kill+重建（herdr 引擎下重建=整段 RPC 探测重来）。
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/xterm/${session}?token=pw&cols=100&rows=30`);
+    const closed: { code: number; reason: string }[] = [];
+    let got = '';
+    ws.on('message', (m) => { got += typeof m === 'string' ? m : Buffer.from(m as ArrayBuffer).toString('utf8'); });
+    ws.on('close', (code, reason) => closed.push({ code, reason: reason.toString() }));
+
+    await new Promise<void>((r) => ws.once('open', r));
+    ws.send(JSON.stringify({ type: 'size', cols: 100, rows: 30 })); // 同尺寸首帧：不得重建
+    await new Promise((r) => setTimeout(r, 1000));
+    ws.send('echo URLSIZE_OK\n');
+    await new Promise((r) => setTimeout(r, 1800));
+
+    expect(closed, `连接被关闭：${JSON.stringify(closed)}`).toEqual([]);
+    expect(got).toContain('URLSIZE_OK');
+    // 一次 attach、且建的就是 100x30（日志格式 "attach <session> (100x30)"）。
+    const attaches = logs.filter((l) => l.includes('attach'));
+    expect(attaches, `期望恰好一次 attach，实际：${JSON.stringify(attaches)}`).toHaveLength(1);
+    expect(attaches[0]).toContain('(100x30)');
+    ws.close();
+  }, 12000);
 });

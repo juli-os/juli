@@ -7,6 +7,7 @@
 // 4. web 对齐副本逐字对齐单一事实源（web 不引 src，测试强制同步）。
 // 5. Task 投影（store 层聚合）——一 Task 多流水，链爬根 + 环守卫 + 端点冒烟。
 
+import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -22,7 +23,7 @@ import {
   isActiveStepStatus, isActiveWorkflowStatus, isLiveNodeStatus, isSettledStepStatus,
   isSettledWorkflowStatus, isTerminalStepStatus, sqlInList, statusLabelOf,
 } from '../src/contracts/statuses.ts';
-import type { JsonRecord } from '@juli-os/artifacts'
+import type { JsonRecord } from '../src/platform/shared/json.ts'
 import {
   KANBAN_ARCHIVE_KEY, KANBAN_COLUMNS, KANBAN_OTHER_KEY, KANBAN_WAITING_KEY,
   LIFECYCLE_FILTERS, ALL_STATUS_LABELS, STEP_STATUSES as WEB_STEP_STATUSES,
@@ -51,7 +52,10 @@ describe('状态唯一名单：完整性', () => {
   });
 
   it('真实 DB 状态全集 ⊆ 名单（同一 sqlite schema 内存库全状态写入后回读）', () => {
-    const store: LifecycleStore = createLedgerStore(':memory:');
+    // ledger 0.5.0 句柄私有：白盒对账走第二连接（文件库）
+    const dir2 = mkdtempSync(join(tmpdir(), 'juli-statuses-mem-'));
+    const store: LifecycleStore = createLedgerStore(join(dir2, 'statuses.db'));
+    const probe = new DatabaseSync(join(dir2, 'statuses.db'));
     for (const s of WORKFLOW_STATUSES) {
       store.createWorkflow({ kind: 'adhoc', title: s.label, status: s.key as WorkflowStatus });
     }
@@ -62,8 +66,8 @@ describe('状态唯一名单：完整性', () => {
       const st = store.createStep({ workflowId: wf.id, seq: ++seq, kind: kinds[seq % 2]!, title: s.label });
       store.setStepStatus(st.id, s.key as StepStatus);
     }
-    const wfRows = store.db.prepare('SELECT DISTINCT status FROM workflows').all() as { status: string }[];
-    const stepRows = store.db.prepare('SELECT DISTINCT status FROM workflow_steps').all() as { status: string }[];
+    const wfRows = probe.prepare('SELECT DISTINCT status FROM workflows').all() as { status: string }[];
+    const stepRows = probe.prepare('SELECT DISTINCT status FROM workflow_steps').all() as { status: string }[];
     const wfKeys = new Set(WORKFLOW_STATUSES.map((s) => s.key));
     const stepKeys = new Set(STEP_STATUSES.map((s) => s.key));
     for (const r of wfRows) expect(wfKeys.has(r.status), `账本状态 ${r.status} 不在名单`).toBe(true);

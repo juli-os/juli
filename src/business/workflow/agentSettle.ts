@@ -3,9 +3,9 @@
 // feedback 单链尾自愈补闸（autoAppendFeedbackGate）与发送后自动收口
 // （autoSettleAfterSend）。
 
-import { rfc3339 } from '@juli-os/artifacts';
+import { rfc3339 } from '../../platform/shared/clock.ts';
 import { asString, truncate } from '../../platform/shared/json.ts'
-import type { JsonRecord, JsonValue } from '@juli-os/artifacts'
+import type { JsonRecord, JsonValue } from '../../platform/shared/json.ts'
 import type { Logger } from '../../platform/events/bus.ts';
 import type { LifecycleStore } from '@juli-os/ledger';
 import { type Step, type Workflow } from '@juli-os/ledger';
@@ -13,7 +13,10 @@ import { isSettledStepStatus } from '../../contracts/statuses.ts';
 import { appendExecution } from '@juli-os/ledger';
 import type { DeliverableRef } from '@juli-os/artifacts';
 import { isDeliverableRef } from '@juli-os/artifacts';
-import { briefDeclaresApply, feedbackRecordIdOf, hasLiveGate } from './support.ts';
+import { isSendGateDecision } from '../send/sendSeed.ts';
+import { agentLiveSessionOf } from './capabilities/index.ts';
+import { briefDeclaresApply, feedbackRecordIdOf, hasLiveGate, RUNNING_SCAN_LIMIT } from './support.ts';
+import { runGateSendChecks } from './steps.ts';
 import type { EngineDeps } from './engine.ts';
 import type { Journal } from './journal.ts';
 import type { Queue } from './queue.ts';
@@ -105,12 +108,109 @@ export const makeAgentSettle = (o: {
       if (res.warnings.length > 0) patch['contract_warnings'] = res.warnings;
       store.setStepInput(gate.id, patch);
       o.journal.stepEvent(cur, 'gate_deliverables_swept', { count: res.count });
+      // 补料重算 checks（R1 审查 P2-5，2026-11-04）：sweep 把 deliverables/
+      // body merge 进已开着闸门的 input，正文变了而 checks 还是 openGate
+      // 转变沿跑的旧值——approve 拦截按陈旧 checks 裁决，新正文的红线状态
+      // 未验证即上卡可批（steps.ts「陈旧的红灯/绿灯都是对审阅契约的欺骗」
+      // 同罪）。与 openGate 转变沿同口径：发送决策闸（isSendGateDecision
+      // 单一事实源）才重算，重读合并后的 input 解析正文（resolveGateBodyText
+      // 与 openGate 共用实现），覆盖写 checks + send_checks_ran 留痕。
+      if (isSendGateDecision(cur.title, cur.input)) {
+        // 实现在 steps.ts 的 runGateSendChecks（人给闸门补料那条路也用它）。
+        const checks = await runGateSendChecks({
+          deps, store, gate: cur, now,
+          // 称呼对账源（与 openGate 同源）：进件落的 from_name/from。
+          sender: {
+            name: asString(w.meta['from_name']) || undefined,
+            address: asString(w.meta['from']) || undefined,
+          },
+        });
+        o.journal.stepEvent(cur, 'send_checks_ran', {
+          checks: checks.map((c) => `${c.name}:${c.status}`), recompute: true,
+        });
+      }
     });
   };
 
+  /** 这一步本次派发尝试的卡交出去了没有（2026-11-23 全量审查；2026-11-24 复审
+   * P1-① 改含义）：只看步骤 output 里的凭据 dispatched_prompt_id 是不是非空。
+   * 凭据由 steps.ts 在卡交出去之后写（派发成功、或提交未确认），每次派发前先
+   * 清空——所以它说的是「这一步这一回的卡已经交出去了」。
+   * 不拿它和「会话上最新的 submitted prompt」比：同一个会话里可以排着几张卡
+   * （线上并发 10，绑定会话不改道），后一张卡一登记，前一张的卡号就对不上，
+   * 正常的收工回调会被误拦，那一步只能等看门狗重派。 */
+  const cardDelivered = (st: Step): boolean => asString(st.output['dispatched_prompt_id']) !== '';
+
+  /** 会话上「在跑、卡已经交出去、还在等收工回调」的步里，卡最早交出去的那一个
+   * （2026-11-24 复审 P1-①）。只在一种情况下用：按会话名找到的步凭据为空（它
+   * 的卡还没交出去）——这个回调不是在回答它，回答的是同会话里更早交出去的卡。
+   * 先看 dispatched_at；相同再看 updatedAt、id。没有 dispatched_at 的是升级前交
+   * 出去的卡（重启对账只补卡号），算最早。只收所属工作流还在 running 的步——
+   * 单子已经收口，这一步结算不了。
+   *
+   * 不拿它当通用规则（2026-11-24 R2 复审 P1-B 撤回了「一律结算最早的一张」）：
+   * 收工回调不带「我在回答哪张卡」的信息，「最早的那张」只是猜。前一张卡的
+   * 回合被人打断、或者卡其实丢了的时候，猜「最早」会把后面一张卡的产出记到
+   * 它头上；按会话名找（既有的「最近更新的在途步」）这些情况反而是对的。
+   * 两种猜法各有一半情况不对（另一种：两张卡都交出去了、前一张的收工回调
+   * 先到，产出会记到后一张头上）。要分清楚得让任务卡自带标记、收工回调把
+   * 标记带回来，另案。 */
+  const earliestCardAwaitingStop = (session: string): Step | null => {
+    const out = store.listSteps('running', RUNNING_SCAN_LIMIT).filter((s) =>
+      (s.kind === 'agent' || s.kind === 'verify')
+      && cardDelivered(s)
+      && agentLiveSessionOf(s) === session
+      && store.getWorkflow(s.workflowId)?.status === 'running');
+    out.sort((a, b) => {
+      const ta = asString(a.output['dispatched_at']);
+      const tb = asString(b.output['dispatched_at']);
+      if (ta !== tb) {
+        if (ta === '') return -1; // 没有 dispatched_at = 升级前的旧卡，最早
+        if (tb === '') return 1;
+        return ta < tb ? -1 : 1; // rfc3339，同一个时钟出来，按字符串比就是按时间比
+      }
+      const ua = new Date(a.updatedAt).getTime();
+      const ub = new Date(b.updatedAt).getTime();
+      if (ua !== ub) return ua - ub;
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    });
+    return out[0] ?? null;
+  };
+
   const onAgentStopped = async (session: string, status: string, finalMessage?: string): Promise<void> => {
-    const st = store.runningAgentStepForSession(session);
-    if (!st) {
+    // 这个收工回调该结算哪一步（2026-11-23 全量审查；2026-11-24 两轮复审定稿）：
+    //   · 按会话名找到在途步（既有：最近更新的那一步）、且它的卡已经交出去 →
+    //     结算它（既有行为）。
+    //   · 找到的在途步凭据为空：它的卡还没交出去，这个回调不是在回答它。同会话
+    //     里有更早交出去、还在等收工的卡 → 结算那一张；没有 → 不结算，按无主
+    //     回合处理并留痕（stop_ignored_card_not_delivered）。
+    //   · 没找到在途步 → 既有行为：无主回合。
+    // recordActivity 那条路不动，它照旧按会话名找。
+    const found = store.runningAgentStepForSession(session);
+    let st: Step | null = null;
+    if (found !== null) {
+      if (cardDelivered(found)) {
+        st = found;
+      } else {
+        const earlier = earliestCardAwaitingStop(session);
+        if (earlier !== null) {
+          st = earlier;
+          // 实际结算的步和按会话名找到的步不是同一个：多留一条，写明结算了哪一步、为什么。
+          const reason = '按会话名找到的步凭据为空（它的卡还没交出去），结算的是同会话里最早交出去的那张卡';
+          o.journal.stepEvent(earlier, 'stop_settled_earliest_card', {
+            session, settled_step: earlier.id, found_step: found.id, reason, raw_status: status,
+          });
+          log.info(`[engine] 收工回调结算了 ${earlier.id}（不是按会话名找到的 ${found.id}）：${reason}`);
+        } else {
+          const latest = store.latestPromptForSession(session, ['submitted']);
+          o.journal.stepEvent(found, 'stop_ignored_card_not_delivered', {
+            session, step_prompt_id: '', latest_prompt_id: latest?.id ?? '', raw_status: status,
+          });
+          log.warn(`[engine] 收工回调被拦下（stop_ignored_card_not_delivered）：step ${found.id} 的任务卡还没交出去（session=${session}，会话上最新的卡=${latest?.id ?? '无'}）——不结算，按无主回合处理`);
+        }
+      }
+    }
+    if (st === null) {
       // 有机回合收尾：Stop hook 的最终答复进容器账本（审计/时间线素材）。
       if (typeof finalMessage === 'string' && finalMessage.trim() !== '') {
         journalSessionTurn(session, 'turn_done', finalMessage);
@@ -194,7 +294,7 @@ export const makeAgentSettle = (o: {
   };
 
   const completeAgentStep = async (st: Step, session: string, status: string, output: string): Promise<boolean> => {
-    // 原子认领让 hook/对账/同步派发的竞态 settle-once。认领锁外先行（CAS 即
+    // 原子认领让 hook 与对账的竞态 settle-once。认领锁外先行（CAS 即
     // settle-once，输家在此返回，绝不排队抢锁）；结算体（读-收编-案卷-播种）
     // 持工作流锁（九跑 P2）：否则可与持锁闸门动作同键 merge 互踩（后写胜），
     // 与 engine.ts 并发模型声明不符。withLock 不可重入——审计过锁体内无嵌套

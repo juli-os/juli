@@ -2,9 +2,9 @@
 // deny（人工否决）、resolve（已在别处处理收口）、rework（驳回回修环）、
 // align（对齐修正升工件）。全部走 gateAction 公共壳（锁内校验+落账+播种）。
 
-import { rfc3339 } from '@juli-os/artifacts';
+import { rfc3339 } from '../../platform/shared/clock.ts';
 import { asString } from '../../platform/shared/json.ts'
-import type { JsonValue } from '@juli-os/artifacts'
+import type { JsonValue } from '../../platform/shared/json.ts'
 import type { Logger } from '../../platform/events/bus.ts';
 import type { LifecycleStore } from '@juli-os/ledger';
 import { type Step } from '@juli-os/ledger';
@@ -232,6 +232,18 @@ export const makeGateActions = (o: {
         rework_from_gate: st.seq,
       });
       store.setStepStatus(target.id, 'pending');
+      // 中间步退回 pending（同 reworkSend 口径，human.ts 显式中间步回置先例）：
+      // 非相邻链（agent→gate→gate）里中间闸门不回置的话，重做产物只会播种进
+      // 中间闸门 input，而本闸 openGate 的 carry 只读相邻 prev 的 output
+      // （approve 决定对象无 draft）——新产物永远上不了等待闸门的卡。人审
+      // 不可跳过：闸门重开 = 审新版本。只回置 completed/failed：cancelled/
+      // skipped 是人弃/人跳的步不复活，在途步不抢（与上方 target 同规）。
+      for (let i = target.seq; i <= st.seq - 2; i++) {
+        const mid = steps[i]!;
+        if (mid.status === 'completed' || mid.status === 'failed') {
+          store.setStepStatus(mid.id, 'pending');
+        }
+      }
       const w = store.getWorkflow(st.workflowId);
       const round = Number(w?.meta['round'] ?? 1) + 1;
       store.updateWorkflowMeta(st.workflowId, { round });
@@ -294,6 +306,12 @@ export const makeGateActions = (o: {
     await gateAction(stepId, async (st) => {
       const inactive = o.steps.gateWorkflowActive(st.workflowId);
       if (inactive) throw new Error(inactive);
+      // 空否决理由先判后动（对齐 rework 拒空）：denied_reason='' 会让 retry
+      // 的否决守卫（human.ts 读 meta 判 reason!==''）读不到理由，人工否决可
+      // 被盲重试绕过。web/iOS 入口已拦空，这里兜 HTTP/CLI 直调面。
+      if (note.trim() === '') {
+        throw new Error('否决必须写明理由（为什么不能通过）——空 note 让 denied_reason 落空，盲重试可绕过人工否决');
+      }
 
       store.setStepOutput(st.id, { denied: true, note, by, at: rfc3339(now()) });
       o.journal.recordDecision(st.workflowId, st.seq, 'denied', note, by);

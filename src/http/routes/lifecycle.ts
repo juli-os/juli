@@ -5,25 +5,46 @@ import type { Hono, Context } from 'hono';
 import { stepToGo, workflowToGo } from '../../platform/shared/goShape.ts';
 import { type StepKind } from '@juli-os/ledger';
 import type { Runtime } from '../../runtime.ts';
-import type { JsonRecord } from '@juli-os/artifacts';
-import { bodyStr, clampInt, readBody, type AppEnv } from '../helpers.ts';
+import { type JsonRecord } from '../../platform/shared/json.ts';
+import {
+  bodyStr, clampInt, foreignSessionError, operatorFaceBlocked, pinTenantCreateInput, readBody, tenantFilterOf, tenantScopeOf, type AppEnv,
+} from '../helpers.ts';
+import { scopeSees } from '../../business/workflow/tenantScope.ts';
 import { usageAggOf } from '../../business/workflow/costContext.ts';
 
 export const registerLifecycleRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
 
-  // ---- 生命周期 ---------------------------------------------------------------
+  // ---- 写面租户闸（2026-11-11 A-P1-4）-------------------------------------------
+  // one 身份的写请求只能落在本租户的单子/步骤/会话上。他租户与不存在同响应
+  // （404 not found），不泄露别家单子在不在、什么状态。all（无头 operator /
+  // iOS / CLI hook）不过闸，行为逐字节不变。
+
+  /** 单子或步骤不属请求租户（含查无此物）→ true。 */
+  const ownerBlocked = (c: Context<AppEnv>, owner: 'workflow' | 'step', id: string): boolean => {
+    const scope = tenantScopeOf(c);
+    if (scope.kind === 'all') return false;
+    if (owner === 'workflow') return !scopeSees(scope, rt.store.getWorkflow(id)?.tenant ?? null);
+    const st = rt.store.getStep(id);
+    return !scopeSees(scope, st === null ? null : (rt.store.getWorkflow(st.workflowId)?.tenant ?? null));
+  };
+
+  // 钉会话闸与建单入参闸（foreignSessionError / pinTenantCreateInput）在 http/helpers.ts，
+  // 本文件、pipelines 起流、chat 开单确认共用一份。
 
   app.get('/api/lifecycle/workflows', (c) => {
     const limit = clampInt(c.req.query('limit'), 100, 1, 500);
     // status 可选等值过滤（NEW-2）：非法值=空结果，语义无害；不加 session 参数
     // （那要牵 meta.assigned_session JSON 面，超出本参数所需）。
     const status = c.req.query('status');
-    // hold 透明化（2026-09-28）：在途单被工作窗 hold 时前端必须看得见——
-    // held_ids + hold_until（窗口终点 HH:MM）随清单下发，流水页据此挂徽标。
+    // 租户收口（A2 读侧边界）：X-Juli-Tenant=one 时下推 tenant 参数到 store；
+    // all（无头 operator）原样全量。hold 名单同口径按租户单子收窄。
+    const tenant = tenantFilterOf(c);
     const qs = rt.engine.queueStatus();
+    const rows = rt.store.listWorkflows(limit, status, tenant);
+    const visible = new Set(rows.map((w) => w.id));
     return c.json({
-      workflows: rt.store.listWorkflows(limit, status),
-      held_ids: [...qs.held],
+      workflows: rows,
+      held_ids: [...qs.held].filter((id) => visible.has(id)),
       hold_until: rt.config.work_hours.mode !== 'off' ? `${rt.config.work_hours.start}–${rt.config.work_hours.end}` : '',
     });
   });
@@ -33,23 +54,68 @@ export const registerLifecycleRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
   // 硬边界不变（问询/外发仍等人）。留痕 auto_approve_set。
   app.post('/api/lifecycle/workflows/:id/auto-approve', async (c) => {
     const id = c.req.param('id');
-    const w = rt.store.getWorkflow(id);
-    if (!w) return c.json({ error: 'not found' }, 404);
     const body = await readBody(c);
+    const w = rt.store.getWorkflow(id);
+    // 写面租户闸（A-P1-4）：读体后才查归属（同 engineAction 壳，校验与动作间
+    // 无窗口）；他租户与不存在同响应 404。
+    if (!w || ownerBlocked(c, 'workflow', id)) return c.json({ error: 'not found' }, 404);
     const on = body['on'] === true;
     rt.store.updateWorkflowMeta(id, on ? { auto_approve: true } : { auto_approve: null });
     rt.store.appendEvent('workflow', id, 'auto_approve_set', {
       on, by: 'human',
-      note: on ? '本单免批：非发送闸门自动批准（问询与外发邮件仍等人）' : '恢复人工批准',
+      note: on ? '本单免批：显式申报为 apply / artifact 的审批自动批准（问询、发送审批、没申报交付类型的审批仍等人）' : '恢复人工批准',
     });
     let acted = 0;
     if (on) acted = await rt.runAutoApproveSweep();
     return c.json({ ok: true, on, gates_acted: acted });
   });
 
+  // 租户认领（A3 写侧打标记的改判通道）：租户归属的写动词只有 all 身份
+  // 能动，one 身份连存在与否都看不到。只对 queued 开放：running/终态单已在
+  // 消费租户上下文（A2 守卫、SSE 推送面），中途改判会让同一单前后两半
+  // 归属不同租户；409 点名现状态。basis 覆写为 claimed，记录「人认领的，
+  // 不是信号判的」；改判前的 basis 记进 tenant_claimed 事件（prev_basis），
+  // 租户未变（default 单认领回原租户）时这是 basis 变化的唯一留痕。
+  // 窗口分析。await readBody 是本路由唯一的让出点，期间别的请求能改这张单
+  // （并发认领，派发把它推离 queued）。单子因此在 await 之后才读，404、409、
+  // 幂等判断与事件 from 共用这一份快照。读完到写完没有 await，进程内无交错，
+  // from 就是写入前的真实租户。ledger 0.2.0 未暴露事务接口，tenant 列、
+  // meta.basis、事件仍分三步写（先列后 meta 再事件），残缺只剩进程崩在两步
+  // 之间。列与 meta 按快照比对补写。事件按账本判，最近一条 tenant_claimed
+  // 已记到目标租户就跳过，所以同租户重复认领零写入，并发认领只记一条，重试
+  // 补上崩掉的那条事件。补写那条的 from 与 prev_basis 取崩溃后的现值（可能
+  // from=to），真实改前租户在 setWorkflowTenant 自记的 tenant_changed 事件里。
+  app.post('/api/lifecycle/workflows/:id/tenant', async (c) => {
+    if (operatorFaceBlocked(c)) return c.json({ error: 'not found' }, 404);
+    const id = c.req.param('id');
+    const body = await readBody(c);
+    const w = rt.store.getWorkflow(id);
+    if (!w) return c.json({ error: 'not found' }, 404);
+    const tenant = bodyStr(body, 'tenant').trim();
+    if (!rt.tenants.stampableTenants.has(tenant)) {
+      return c.json({ error: `未知租户 "${tenant}"，可选值：${[...rt.tenants.stampableTenants].join('、')}` }, 400);
+    }
+    if (w.status !== 'queued') {
+      return c.json({ error: `只能认领 queued 状态的单子（${id} 现状态 ${w.status}）` }, 409);
+    }
+    const prevBasis = typeof w.meta['tenant_basis'] === 'string' ? w.meta['tenant_basis'] : '';
+    if (w.tenant !== tenant || prevBasis !== 'claimed') {
+      rt.store.setWorkflowTenant(id, tenant);
+      rt.store.updateWorkflowMeta(id, { tenant_basis: 'claimed' });
+    }
+    if (rt.store.entityEvents('workflow', id, 'tenant_claimed').at(-1)?.payload['to'] !== tenant) {
+      rt.store.appendEvent('workflow', id, 'tenant_claimed', {
+        from: w.tenant, to: tenant, prev_basis: prevBasis, by: bodyStr(body, 'by', 'operator'),
+      });
+    }
+    return c.json({ ok: true, id, tenant, basis: 'claimed' });
+  });
+
   app.get('/api/lifecycle/workflows/:id', (c) => {
     const w = rt.store.getWorkflow(c.req.param('id'));
     if (!w) return c.json({ error: 'not found' }, 404);
+    // 租户收口（A2）：one 身份看他租户的单 = 404（与不存在同响应，不泄露在否）。
+    if (!scopeSees(tenantScopeOf(c), w.tenant)) return c.json({ error: 'not found' }, 404);
     // iOS LifecycleWorkflowTree：workflow.created_at/updated_at 必填 snake_case，
     // steps[].workflow_id/updated_at 同理——camelCase 会整体解码失败
     // （"The data couldn't be read because it is missing"）。case_file/其余
@@ -105,7 +171,8 @@ export const registerLifecycleRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
       prompts: number; totalCny: number; unpriced: boolean;
       byModel: Map<string, { label: string; totalCny: number }>;
     }
-    const inRange = rt.store.listWorkflows(5000).filter((w) => since === '' || (w.createdAt ?? '') >= since);
+    const inRange = rt.store.listWorkflows(5000, undefined, tenantFilterOf(c))
+      .filter((w) => since === '' || (w.createdAt ?? '') >= since);
     const orders: OrderAgg[] = [];
     let zeroCost = 0;
     let pricingRetrievedAt = '';
@@ -185,7 +252,15 @@ export const registerLifecycleRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
     // type=逗号分隔多类型过滤（路由图回放：稀有 route_* 深埋 12 万行窗口外，
     // 过滤后 limit 全花在该类型上——真实历史可达，无需模拟）。
     const types = (c.req.query('type') ?? '').split(',').map((t) => t.trim()).filter(Boolean);
-    return c.json({ events: rt.store.listEvents(limit, types.length > 0 ? types : undefined) });
+    // 租户条件进查询再截断（A-P2-7）：先按 limit 截断再按租户过滤，别家事件一多
+    // 本租户能看到的就很少甚至为空（acme 头 limit=5 回 0 条、limit=500 才有）。
+    // all 原样走 store.listEvents（operator 行为不变）。
+    const scope = tenantScopeOf(c);
+    const wanted = types.length > 0 ? types : undefined;
+    const rows = scope.kind === 'one'
+      ? rt.store.listEventsForTenant(scope.tenant, limit, wanted)
+      : rt.store.listEvents(limit, wanted);
+    return c.json({ events: rows });
   });
 
   // ---- 引擎动作路由的公共壳 -----------------------------------------------------
@@ -196,19 +271,41 @@ export const registerLifecycleRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
   // 返回体 object：领域接口对象（Step/Workflow，无索引签名）也可直返——
   // 此前被 `as unknown as JsonRecord` 双重断言硬塞（R1 P2#7）。不用 unknown：
   // hono c.json 约束 T extends JSONValue | {}，object 是满足约束的最小放宽。
-  const engineAction = (fn: (id: string, body: JsonRecord) => Promise<object | void>) =>
-    async (c: Context): Promise<Response> => {
+  // owner：路径参数指向的资源种类——'workflow' | 'step' 时 one 身份先做属主
+  // 校验（A-P1-4），null = 无 id 的建单口（建单租户闸在 fn 里做）。
+  const engineAction = (
+    owner: 'workflow' | 'step' | null,
+    fn: (id: string, body: JsonRecord, c: Context<AppEnv>) => Promise<object | void>,
+  ) =>
+    async (c: Context<AppEnv>): Promise<Response> => {
       try {
-        const out = await fn(c.req.param('id') ?? '', await readBody(c));
+        const id = c.req.param('id') ?? '';
+        const body = await readBody(c);
+        // 校验与 fn 起步之间不再有 await（先读体再查归属，查询同步），进程内
+        // 没有可插的窗口。
+        if (owner !== null && ownerBlocked(c, owner, id)) return c.json({ error: 'not found' }, 404);
+        const sessionErr = foreignSessionError(c, rt, body);
+        if (sessionErr !== '') return c.json({ error: sessionErr }, 400);
+        const out = await fn(id, body, c);
         return c.json(out ?? { ok: true });
       } catch (e) {
         return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
       }
     };
 
+  /** gates 域统一审计（第 5 步）：旧步级端点保留转发可用——动作成功后把
+   * 决策落 gate_items（与新端点 /api/gates/:id/<verb> 同一审计面）。 */
+  const recordGateDecision = (id: string, verb: 'approve' | 'deny' | 'resolve' | 'rework' | 'align' | 'amend', note: string, by: string): void => {
+    const st = rt.store.getStep(id);
+    if (st === null || st.kind !== 'gate') return; // 非闸门步（agent 重试等）不进拍板审计
+    const now = new Date().toISOString();
+    rt.gates.register({ id: st.id, kind: 'workflow_gate', workflowId: st.workflowId, stepId: st.id, title: st.title, payload: st.input, now });
+    rt.gates.decide(st.id, verb, by, note, by === 'juli-auto', now);
+  };
+
   // send_at 类型守卫：approve 专属的定时发参数（其余动作忽略）。
   const stepAction = (action: 'approve' | 'deny' | 'resolve' | 'retry') =>
-    engineAction(async (id, body) => {
+    engineAction('step', async (id, body) => {
       const note = bodyStr(body, 'note');
       const by = bodyStr(body, 'by', 'operator');
       // 干预重试（agent/verify/llm 步）：携带 plan/prompt/session 补丁，
@@ -223,6 +320,7 @@ export const registerLifecycleRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
       else if (action === 'deny') await rt.engine.deny(id, note, by);
       else if (action === 'resolve') await rt.engine.resolve(id, note, by);
       else await rt.engine.retry(id, Object.keys(patch).length > 0 ? patch : undefined, by);
+      if (action !== 'retry') recordGateDecision(id, action, note, by);
     });
 
   app.post('/api/lifecycle/steps/:id/approve', stepAction('approve'));
@@ -230,26 +328,41 @@ export const registerLifecycleRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
   app.post('/api/lifecycle/steps/:id/resolve', stepAction('resolve'));
   app.post('/api/lifecycle/steps/:id/retry', stepAction('retry'));
   // 收单台快照（0920）：并发上限 / 正占位 / 等待中（队序）。CLI juli queue 同源。
-  app.get('/api/queue', (c) => c.json(rt.engine.queueStatus()));
+  // 租户收口（A2）：与 workflows 端点对 held_ids 同款——one 身份三个名单
+  //（active/waiting/held）都按单子归属过滤，他租户在途单号不外泄；
+  // concurrency 是全局槽位数，无租户语义，原样给。
+  app.get('/api/queue', (c) => {
+    const qs = rt.engine.queueStatus();
+    const scope = tenantScopeOf(c);
+    if (scope.kind === 'all') return c.json(qs);
+    const sees = (id: string): boolean => scopeSees(scope, rt.store.getWorkflow(id)?.tenant ?? null);
+    return c.json({
+      concurrency: qs.concurrency,
+      active: qs.active.filter(sees),
+      waiting: qs.waiting.filter(sees),
+      held: qs.held.filter(sees),
+    });
+  });
 
-  app.post('/api/lifecycle/steps/:id/rework', engineAction(async (id, body) => {
+  app.post('/api/lifecycle/steps/:id/rework', engineAction('step', async (id, body) => {
     await rt.engine.rework(id, bodyStr(body, 'feedback'), bodyStr(body, 'by', 'operator'));
+    recordGateDecision(id, 'rework', bodyStr(body, 'feedback'), bodyStr(body, 'by', 'operator'));
   }));
 
   // 发送守卫拒发的打回补正：内容缺陷 retry 不好，回 agent 补正后重新过闸。
-  app.post('/api/lifecycle/steps/:id/rework-send', engineAction(async (id, body) => {
+  app.post('/api/lifecycle/steps/:id/rework-send', engineAction('step', async (id, body) => {
     await rt.engine.reworkSend(id, bodyStr(body, 'feedback'), bodyStr(body, 'by', 'operator'));
   }));
 
   // hold 人工放行（2026-09-28 透明化配套）：窗口内立即派发——人的动词优先
   // 于窗口策略，meta.hold_released 持久 + hold_released 事件留痕。
-  app.post('/api/lifecycle/workflows/:id/release-hold', engineAction(async (id, body) => {
+  app.post('/api/lifecycle/workflows/:id/release-hold', engineAction('workflow', async (id, body) => {
     rt.engine.releaseHold(id, bodyStr(body, 'by', 'web'));
   }));
 
   // 统一干预（四件套，2026-09-28）：session/context 派发点消费；priority/
   // 时机即时生效。任何状态可设——状态迁移时人插得进手。
-  app.post('/api/lifecycle/workflows/:id/override', engineAction(async (id, body) => {
+  app.post('/api/lifecycle/workflows/:id/override', engineAction('workflow', async (id, body) => {
     const pr = body['priority'];
     rt.engine.setOverride(id, {
       ...(typeof body['session'] === 'string' ? { session: body['session'] } : {}),
@@ -261,42 +374,54 @@ export const registerLifecycleRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
   }));
 
   // 转派（task-handoff）：agent 提案 domain，引擎四道校验后追加执行步。
-  app.post('/api/lifecycle/workflows/:id/handoff', engineAction(async (id, body) => {
+  app.post('/api/lifecycle/workflows/:id/handoff', engineAction('workflow', async (id, body) => {
     const r = await rt.engine.handoff(id, bodyStr(body, 'domain'), bodyStr(body, 'reason'), bodyStr(body, 'by', 'agent'));
     return r;
   }));
 
   // 单步取消（断点六③）：auto-pair 与手动 send 撞车后多余 pending 节点的
   // 合规取消通道——此前单步只有直改 SQLite 一条路（已被权限层拦截）。
-  app.post('/api/lifecycle/steps/:id/cancel', engineAction(async (id, body) => {
+  app.post('/api/lifecycle/steps/:id/cancel', engineAction('step', async (id, body) => {
     await rt.engine.cancelStep(id, bodyStr(body, 'note'), bodyStr(body, 'by', 'operator'));
   }));
 
   // 补料：给卡住/失败步骤补缺失 input（in_reply_to 等）——快照不解锁，
   // 修正本身记账（step_input_amended 事件：改前/改后/操作人）。
-  app.post('/api/lifecycle/steps/:id/amend', engineAction(async (id, body) => {
+  app.post('/api/lifecycle/steps/:id/amend', engineAction('step', async (id, body) => {
     const raw = body['patch'] ?? {};
     const patch = (raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}) as JsonRecord;
     await rt.engine.amendStep(id, patch, bodyStr(body, 'by', 'operator'));
+    recordGateDecision(id, 'amend', JSON.stringify(patch), bodyStr(body, 'by', 'operator'));
   }));
 
   // 补料候选值：从关联单 meta / 本单字段推导预填——人只裁断不当检索器。
-  app.get('/api/lifecycle/workflows/:id/amend-suggestions', engineAction(async (id) => {
-    return rt.engine.amendSuggestions(id);
-  }));
+  // 租户收口（A2）：与单子详情本体同判据——他租户/不存在一律 404（engineAction
+  // 壳只兜引擎异常，越权守卫要在此显式做）。
+  app.get('/api/lifecycle/workflows/:id/amend-suggestions', async (c) => {
+    const w = rt.store.getWorkflow(c.req.param('id'));
+    if (!w) return c.json({ error: 'not found' }, 404);
+    if (!scopeSees(tenantScopeOf(c), w.tenant)) return c.json({ error: 'not found' }, 404);
+    try {
+      const suggestions: object = rt.engine.amendSuggestions(w.id); // c.json 约束的最小放宽（同 engineAction 壳）
+      return c.json(suggestions);
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+    }
+  });
 
   // 一等插话：向在途 agent 步递补充指示——投递+留痕一体（区别于裸
   // /api/sessions/:name/send 的无账本 send-keys）。
-  app.post('/api/lifecycle/steps/:id/intervene', engineAction(async (id, body) => {
+  app.post('/api/lifecycle/steps/:id/intervene', engineAction('step', async (id, body) => {
     await rt.engine.intervene(id, bodyStr(body, 'text'), bodyStr(body, 'by', 'operator'));
   }));
 
   // 对齐修正：审阅人就地改理解——修正成为新工件，下游 agent 锚定人定稿版本。
-  app.post('/api/lifecycle/steps/:id/align', engineAction(async (id, body) => {
+  app.post('/api/lifecycle/steps/:id/align', engineAction('step', async (id, body) => {
     await rt.engine.align(id, bodyStr(body, 'amendment'), bodyStr(body, 'by', 'operator'));
+    recordGateDecision(id, 'align', bodyStr(body, 'amendment'), bodyStr(body, 'by', 'operator'));
   }));
 
-  app.post('/api/lifecycle/workflows/:id/nodes', engineAction(async (id, body) => {
+  app.post('/api/lifecycle/workflows/:id/nodes', engineAction('workflow', async (id, body) => {
     const kind = bodyStr(body, 'kind');
     const title = bodyStr(body, 'title') || kind;
     const rawInput = body['input'] ?? {};
@@ -308,9 +433,14 @@ export const registerLifecycleRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
   }));
 
   // 免模板起单（动态模型标准入口）：POST /api/lifecycle/tasks {title, input}
-  app.post('/api/lifecycle/tasks', engineAction(async (_id, body) => {
+  // 建单租户闸（A-P1-4 / A-P2-8）：one 身份的请求租户当显式租户——裸建落本租户
+  // （不再落 internal 让开单人自查 404）；显式他租户、钉他会话、关联他租户单
+  // 一律 400 点名（helpers.pinTenantCreateInput）。
+  app.post('/api/lifecycle/tasks', engineAction(null, async (_id, body, c) => {
     const rawInput = body['input'] ?? {};
-    const input = (rawInput !== null && typeof rawInput === 'object' && !Array.isArray(rawInput) ? rawInput : {}) as JsonRecord;
+    let input = (rawInput !== null && typeof rawInput === 'object' && !Array.isArray(rawInput) ? rawInput : {}) as JsonRecord;
+    const scope = tenantScopeOf(c);
+    if (scope.kind === 'one') input = pinTenantCreateInput(scope.tenant, rt, input);
     // 判定收敛执行层（2026-10-13 用户裁定「排队后再决定路由」）：进件只
     // 收倾向（显式 session/挂靠/档位原样透传），落点与档位判定移到派发
     // 时刻（engine steps 三无腿，jev 对实时忙闲判）——进件快照过期就此
@@ -319,103 +449,112 @@ export const registerLifecycleRoutes = (app: Hono<AppEnv>, rt: Runtime): void =>
     return { workflow: w };
   }));
 
-  app.post('/api/lifecycle/workflows/:id/settle', engineAction(async (id, body) => {
+  app.post('/api/lifecycle/workflows/:id/settle', engineAction('workflow', async (id, body) => {
     await rt.engine.settle(id, bodyStr(body, 'by', 'operator'));
   }));
 
   // 人工中止 running 单（前端"中止"按钮）：在跑步/闸门全 cancelled，审计留痕。
-  app.post('/api/lifecycle/workflows/:id/force-close', engineAction(async (id, body) => {
+  app.post('/api/lifecycle/workflows/:id/force-close', engineAction('workflow', async (id, body) => {
     await rt.engine.forceClose(id, bodyStr(body, 'note'), bodyStr(body, 'by', 'operator'));
   }));
 
-  app.post('/api/lifecycle/workflows/:id/close', engineAction(async (id, body) => {
+  app.post('/api/lifecycle/workflows/:id/close', engineAction('workflow', async (id, body) => {
     await rt.engine.closeWorkflow(id, bodyStr(body, 'note'), bodyStr(body, 'by', 'operator'));
   }));
 
-  app.post('/api/lifecycle/workflows/:id/assign', engineAction(async (id, body) => {
+  app.post('/api/lifecycle/workflows/:id/assign', engineAction('workflow', async (id, body) => {
     await rt.engine.assignSession(id, bodyStr(body, 'session'), bodyStr(body, 'by', 'operator'));
   }));
 
   app.get('/api/lifecycle/steps', (c) => {
     const status = c.req.query('status') ?? '';
     const limit = clampInt(c.req.query('limit'), 30, 1, 200);
-    const rows = rt.store.db.prepare(
-      `SELECT s.id, s.workflow_id, s.seq, s.kind, s.title, s.status, s.input, s.output,
-              s.summary, s.updated_at, s.started_at, s.completed_at,
-              w.id AS w_id, w.title AS w_title, w.kind AS w_kind, w.status AS w_status
-       FROM workflow_steps s LEFT JOIN workflows w ON w.id = s.workflow_id
-       ${status !== '' ? 'WHERE s.status = ?' : ''}
-       ORDER BY s.updated_at DESC LIMIT ?`,
-    ).all(...(status !== '' ? [status, limit] : [limit])) as Record<string, string | number | null>[];
-    const steps = rows.map((r) => {
-      const parse = (v: string | number | null): Record<string, unknown> => {
-        try { return JSON.parse(String(v ?? '{}')) as Record<string, unknown>; } catch { return {}; }
-      };
-      return {
-        step: stepToGo({
-          id: String(r['id'] ?? ''), workflowId: String(r['workflow_id'] ?? ''),
-          seq: Number(r['seq'] ?? 0), kind: String(r['kind'] ?? ''),
-          title: String(r['title'] ?? ''), status: String(r['status'] ?? ''),
-          input: parse(r['input'] as string | null), output: parse(r['output'] as string | null),
-          summary: r['summary'] === null ? undefined : String(r['summary']),
-          updatedAt: String(r['updated_at'] ?? ''),
-          startedAt: String(r['started_at'] ?? ''),
-          completedAt: r['completed_at'] === null ? null : String(r['completed_at'] ?? ''),
-        }),
-        workflow: r['w_id'] === null ? undefined : {
-          id: r['w_id'], title: r['w_title'], kind: r['w_kind'], status: r['w_status'],
-        },
-      };
+    // 租户收口（A2）：按关联单 w.tenant 过滤（孤儿步=无单归属，one 不可见）。
+    const tenant = tenantFilterOf(c);
+    // ledger 关门（2026-11-12）：直查改 listStepsWithWorkflow（status/tenant
+    // 过滤 + updated_at 倒序语义随迁）。
+    const rows = rt.store.listStepsWithWorkflow({
+      status: status === '' ? undefined : status,
+      tenant,
+      limit,
     });
+    const steps = rows.map((r) => ({
+      step: stepToGo(r.step),
+      workflow: r.workflow === undefined ? undefined : {
+        id: r.workflow.id, title: r.workflow.title, kind: r.workflow.kind, status: r.workflow.status,
+      },
+    }));
     return c.json({ steps });
   });
 
   // workflows2 = workflows 的防缓存别名（POST 空 body = 列表查询，iOS 在用）。
-  const listWorkflowsGo = (query: { status?: string; limit?: string }): Record<string, unknown>[] => {
+  const listWorkflowsGo = (query: { status?: string; limit?: string }, tenant?: string): Record<string, unknown>[] => {
     const limit = clampInt(query.limit, 100, 1, 1000);
     const status = query.status ?? '';
-    const rows = rt.store.db.prepare(
-      `SELECT w.*, 
-         (SELECT COUNT(*) FROM workflow_steps s WHERE s.workflow_id = w.id AND s.status = 'waiting_human') AS waiting_steps
-       FROM workflows w ${status !== '' ? 'WHERE w.status = ?' : ''} 
-       ORDER BY w.created_at DESC, w.rowid DESC LIMIT ?`,
-    ).all(...(status !== '' ? [status, limit] : [limit])) as Record<string, string | number | null>[];
-    return rows.map((r) => {
-      let meta: unknown = undefined;
-      try { meta = JSON.parse(String(r['meta'] ?? '')) as unknown; } catch { /* 无 meta */ }
+    // ledger 关门（2026-11-12）：直查改 listWorkflowsWithWaiting（Go 形列表
+    // 附 waiting_human 计数，过滤语义随迁）。
+    const rows = rt.store.listWorkflowsWithWaiting({
+      status: status === '' ? undefined : status,
+      tenant,
+      limit,
+    });
+    return rows.map(({ workflow: r, waitingSteps }) => {
       return workflowToGo(
         {
-          id: String(r['id'] ?? ''), kind: String(r['kind'] ?? ''), title: String(r['title'] ?? ''),
-          status: String(r['status'] ?? ''),
-          session: r['session'] === null ? null : String(r['session']),
-          project: r['project'] === null ? null : String(r['project']),
-          path: r['path'] === null ? null : String(r['path']),
-          threadId: r['thread_id'] === null || r['thread_id'] === undefined ? null : String(r['thread_id']),
-          meta, createdAt: String(r['created_at'] ?? ''), updatedAt: String(r['updated_at'] ?? ''),
+          id: r.id, kind: r.kind, title: r.title, status: r.status,
+          session: r.session ?? null,
+          project: r.project ?? null,
+          path: r.path ?? null,
+          threadId: r.threadId ?? null,
+          meta: r.meta, createdAt: r.createdAt, updatedAt: r.updatedAt,
         },
-        Number(r['waiting_steps'] ?? 0),
+        waitingSteps,
       );
     });
   };
 
-  app.get('/api/lifecycle/workflows2', (c) => c.json({ workflows: listWorkflowsGo(c.req.query()) }));
+  app.get('/api/lifecycle/workflows2', (c) => c.json({ workflows: listWorkflowsGo(c.req.query(), tenantFilterOf(c)) }));
   // Task 投影（第四期最小转正）：store 层从任务卡+挂链聚出的归属面——
   // 前端 kanban/流水列表项的「属 Task」徽标与同 Task 过滤只吃这一个端点，
-  // 不新开 tab、不建新表。
+  // 不新开 tab、不建新表。租户收口（A2）：taskViews 全量扫无租户参数——
+  // 在本投影层按租户单子过滤（视图保留仍有可见单的，workflow_ids 收窄到
+  // 可见子集；map 同步剔除不可见行）。
   app.get('/api/lifecycle/task-map', (c) => {
     const { views, map } = rt.store.taskViews();
+    const tenant = tenantFilterOf(c);
+    if (tenant === undefined) {
+      return c.json({
+        tasks: views.map((t) => ({
+          id: t.taskId, title: t.title, status: t.status, workflow_ids: t.workflowIds,
+        })),
+        map,
+      });
+    }
+    const visible = new Set(rt.store.listWorkflows(Number.MAX_SAFE_INTEGER, undefined, tenant).map((w) => w.id));
+    const scopedMap = Object.fromEntries(Object.entries(map).filter(([wfId]) => visible.has(wfId)));
+    const scopedViews = views
+      .map((t) => ({ ...t, workflowIds: t.workflowIds.filter((id) => visible.has(id)) }))
+      .filter((t) => t.workflowIds.length > 0);
     return c.json({
-      tasks: views.map((t) => ({
+      tasks: scopedViews.map((t) => ({
         id: t.taskId, title: t.title, status: t.status, workflow_ids: t.workflowIds,
       })),
-      map,
+      map: scopedMap,
     });
   });
   app.post('/api/lifecycle/workflows2', async (c) => {
     const body = await readBody(c);
     const title = bodyStr(body, 'title');
-    if (title === '') return c.json({ workflows: listWorkflowsGo(c.req.query()) });
-    const w = rt.store.createWorkflow({ kind: bodyStr(body, 'kind', 'adhoc'), title });
+    if (title === '') return c.json({ workflows: listWorkflowsGo(c.req.query(), tenantFilterOf(c)) });
+    // 建单租户闸（A-P1-4 / A-P2-8）：one 身份带标题建单按请求租户打显式戳，
+    // 不再落 internal 让开单人自查 404。all 原样（无信号不 stamp，与旧行为一致）。
+    const scope = tenantScopeOf(c);
+    const w = rt.store.createWorkflow({
+      kind: bodyStr(body, 'kind', 'adhoc'), title,
+      ...(scope.kind === 'one'
+        ? { tenant: scope.tenant, meta: { tenant_basis: 'explicit' as const } }
+        : {}),
+    });
     return c.json({ workflow: { id: w.id, kind: w.kind, title: w.title, status: w.status, created_at: w.createdAt, updated_at: w.updatedAt } });
   });
 };

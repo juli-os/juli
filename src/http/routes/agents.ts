@@ -7,13 +7,24 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { cloneBaseOf } from '../../platform/shared/sessionClone.ts';
 import type { Runtime } from '../../runtime.ts';
-import { bodyStr, clampInt, readBody, type AppEnv } from '../helpers.ts';
+import { bodyStr, clampInt, readBody, tenantScopeOf, type AppEnv } from '../helpers.ts';
+import { scopeSees } from '../../business/workflow/tenantScope.ts';
 
 export const registerAgentsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
+  // 会话名租户归属（A2 读侧边界）：A1 bySession（含内置老会话别名）；
+  // 未登记的会话（临时 tmux 会话等）只进 all。
+  const sessionTenantOf = (name: string): string | null => rt.tenants.bySession[name] ?? null;
+  // 租户收口（A2）：与 /api/sessions 名单同判据（bySession）——one 身份且会话
+  // 不属该租户（含未登记的临时会话，只进 all）→ 404（与不存在同响应）。
+  // 读（capture）与写（send / 删 / 建 / hook 上报，A-P1-4）共用这一个判断。
+  const captureBlocked = (c: Context<AppEnv>, name: string): boolean =>
+    !scopeSees(tenantScopeOf(c), sessionTenantOf(name));
   // ---- agent 结算上报（tmux hook / 外部执行器回调的服务端路径）----------------
   // 没有这条路由，部署形态下 agent 步只能靠僵尸扫描 3 轮后转人工。
+  // 写面租户闸（A-P1-4）：hook 自己不带租户头（all，原样）；one 身份只能替
+  // 本租户会话上报——替别家会话报 stopped 等于替别家结算在途步。
   const sessionAction = (kind: 'stopped' | 'activity' | 'heartbeat') =>
-    async (c: Context): Promise<Response> => {
+    async (c: Context<AppEnv>): Promise<Response> => {
       const session = c.req.param('session') ?? '';
       const body = await readBody(c);
       const status = bodyStr(body, 'status', 'ok');
@@ -22,6 +33,7 @@ export const registerAgentsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
       const text = bodyStr(body, 'text');
       const event = bodyStr(body, 'event', 'hook');
       if (session === '') return c.json({ error: 'session required' }, 400);
+      if (captureBlocked(c, session)) return c.json({ error: 'not found' }, 404);
       try {
         if (kind === 'stopped') await rt.engine.onAgentStopped(session, status, finalMessage);
         else if (kind === 'activity') await rt.engine.recordActivity(session, event, output || text);
@@ -40,6 +52,7 @@ export const registerAgentsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
     const session = c.req.param('session') ?? '';
     const body = await readBody(c);
     if (session === '') return c.json({ error: 'session required' }, 400);
+    if (captureBlocked(c, session)) return c.json({ error: 'not found' }, 404);
     // noteAwaiting 持工作流锁（问询闸挂闸段）——hook 路径 fire-and-forget，
     // 绝不让 pane 采集/等锁阻塞 HTTP 响应；异常吞掉（尽力而为信号）。
     void rt.engine.noteAwaiting(session, bodyStr(body, 'message')).catch(() => undefined);
@@ -56,6 +69,7 @@ export const registerAgentsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
     const body = await readBody(c);
     const claudeId = bodyStr(body, 'claude_session_id');
     if (session === '' || claudeId === '') return c.json({ error: 'session and claude_session_id required' }, 400);
+    if (captureBlocked(c, session)) return c.json({ error: 'not found' }, 404);
     rt.usage.recordClaudeSessionPrecise(claudeId, session);
     return c.json({ ok: true });
   });
@@ -65,6 +79,7 @@ export const registerAgentsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
     const body = await readBody(c);
     const skill = bodyStr(body, 'skill');
     if (session === '' || skill === '') return c.json({ error: 'session and skill required' }, 400);
+    if (captureBlocked(c, session)) return c.json({ error: 'not found' }, 404);
     rt.store.appendEvent('agent', session, 'skill_used', {
       skill,
       tool: bodyStr(body, 'tool_name'),
@@ -164,9 +179,11 @@ export const registerAgentsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
     // 不再逐会话 display-message（N+1 消除：一次请求一次 tmux 调用）。
     const det = await rt.tmux.listSessionsDetailed();
     if (!det.ok) return c.json([]); // tmux 缺失/不可用降级为空列表（与旧 listSessions 语义一致）
+    // 租户收口（A2）：名单按 bySession 收窄；all 原样。
+    const scope = tenantScopeOf(c);
     // project 未分类必须省略键（而非空串）：iOS AgentsView 的 owns() 用
     // s.project == (p.project ?? p.name) 归属——空串会让每个 profile 认领全部会话。
-    return c.json(det.value.map((s) => ({
+    return c.json(det.value.filter((s) => scopeSees(scope, sessionTenantOf(s.name))).map((s) => ({
       name: s.name, active: s.attached, working: false, unread: 0,
       agent: s.cmd.includes('claude') ? 'claude' : s.cmd.includes('codex') ? 'codex' : '',
       path: s.path,
@@ -178,6 +195,13 @@ export const registerAgentsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
     const name = bodyStr(body, 'name');
     const cwd = typeof body['cwd'] === 'string' ? body['cwd'] : undefined;
     if (name === '') return c.json({ error: 'name required' }, 400);
+    // 写面租户闸（A-P1-4）：one 身份只能新建本租户声明的会话。未声明的名字建
+    // 出来只会落在 internal 的终端 server 上（租户路由对表外会话兜底 internal），
+    // 而且本租户视角的会话名单里看不到它。他租户会话名与未声明的名字同文拒绝，
+    // 不泄露别家会话在不在。先于绑定会话守卫（那条报错会点名「是绑定会话」）。
+    if (captureBlocked(c, name)) {
+      return c.json({ error: '单租户身份只能新建本租户声明的会话——其他会话名请切到「全部」视角新建' }, 403);
+    }
     // 绑定会话守卫（2026-09-20 P2 预建旁路；先于 tmux 可用性判断，与
     // /api/sessions/:name/send 守卫同序）：绑定会话由引擎按配置 cwd 自建
     // （dispatch provision），不接受预建——预建可指定任意目录，项目级 skill
@@ -191,31 +215,41 @@ export const registerAgentsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
   });
 
   app.post('/api/sessions/:name/capture', async (c) => {
+    const name = c.req.param('name') ?? '';
+    if (captureBlocked(c, name)) return c.json({ error: 'not found' }, 404);
     if (!rt.tmux) return c.json({ error: 'tmux not available' }, 503);
     const lines = clampInt(c.req.query('lines'), 400, 10, 5000);
-    const res = await rt.tmux.capturePane(c.req.param('name') ?? '', lines);
+    const res = await rt.tmux.capturePane(name, lines);
     return res.ok ? c.json({ output: res.value }) : c.json({ error: res.error.message }, 400);
   });
 
   // iOS GET capture 兼容面：content 键给 iOS，output 键保 web 兼容（同一文本）；
   // 语义 = tmux capturePane(name, 2000)。
   app.get('/api/sessions/:name/capture', async (c) => {
+    const name = c.req.param('name') ?? '';
+    if (captureBlocked(c, name)) return c.json({ error: 'not found' }, 404);
     if (!rt.tmux) return c.json({ error: 'tmux not available' }, 503);
-    const res = await rt.tmux.capturePane(c.req.param('name') ?? '', 2000);
+    const res = await rt.tmux.capturePane(name, 2000);
     return res.ok
       ? c.json({ content: res.value, output: res.value })
       : c.json({ error: res.error.message }, 400);
   });
 
   // iOS 会话删除：杀 tmux 会话（kill 失败 = 会话不存在 → 404）。
+  // 写面租户闸（A-P1-4）：one 身份删他租户会话 = 404（与 capture 同判据同响应）。
   app.delete('/api/sessions/:name', async (c) => {
+    const name = c.req.param('name') ?? '';
+    if (captureBlocked(c, name)) return c.json({ error: 'not found' }, 404);
     if (!rt.tmux) return c.json({ error: 'tmux not available' }, 503);
-    const res = await rt.tmux.killSession(c.req.param('name') ?? '');
+    const res = await rt.tmux.killSession(name);
     return res.ok ? c.body(null, 204) : c.json({ error: res.error.message }, 404);
   });
 
   app.post('/api/sessions/:name/send', async (c) => {
     const name = c.req.param('name') ?? '';
+    // 写面租户闸（A-P1-4）：读终端（capture）早就按租户拦了，发文本此前没拦——
+    // 两边对齐。先于绑定会话守卫：那条报错会点名「是绑定会话」，他租户不该看到。
+    if (captureBlocked(c, name)) return c.json({ error: 'not found' }, 404);
     // 绑定会话旁道守卫（2026-09-20 P1 旁道 A，与引擎 session_bound 同语义）：
     // 裸 send-keys 无闸门、无账本、无守卫——绑定会话（专用 agent 隔离）只开
     // 邮件口，会话名命中 bound_agents 一律拒。对在途步的合法递话走
@@ -235,33 +269,31 @@ export const registerAgentsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
 
   // ---- iOS App 兼容面（Go routes.go 逐字对齐；字段名 snake_case 勿改）----------
 
-  // Agents：juli 无 ACP 线程 → agents 恒空数组（Go 关 ACP 时同行为）；
+  // Agents：agents 恒空数组；
   // history = 最近失败的 agent/verify 步（triage/gate 等 'failed' 是上游噪声，
   // 会把 iOS AgentsView 的"待处理"列表刷爆——kind 过滤收口）。
   app.get('/api/agents', (c) => {
     const limit = clampInt(c.req.query('limit'), 30, 1, 200);
-    const rows = rt.store.db.prepare(
-      `SELECT s.id AS step_id, s.workflow_id, s.seq, s.title, s.output, s.updated_at,
-              w.title AS workflow_title, w.session AS session
-       FROM workflow_steps s LEFT JOIN workflows w ON w.id = s.workflow_id
-       WHERE s.status = 'failed' AND s.kind IN ('agent','verify') ORDER BY s.updated_at DESC LIMIT ?`,
-    ).all(limit) as Record<string, string | number | null>[];
+    // 租户收口（A2）：失败步按关联单 w.tenant 过滤；all 原样。
+    const scope = tenantScopeOf(c);
+    // ledger 关门（2026-11-12）：直查改 listFailedSteps（租户过滤语义随迁）。
+    const rows = rt.store.listFailedSteps({ limit, tenant: scope.kind === 'one' ? scope.tenant : undefined });
     const history = rows.map((r) => {
       let error = '';
       let outSession = '';
       try {
-        const out = JSON.parse(String(r['output'] ?? '{}')) as Record<string, unknown>;
+        const out = JSON.parse(r.outputRaw) as Record<string, unknown>;
         error = typeof out['error'] === 'string' ? out['error'] : '';
         outSession = typeof out['session'] === 'string' ? out['session'] : '';
       } catch { /* 无 output */ }
-      const wfSession = r['session'] === null ? '' : String(r['session']);
+      // session 取值回退链：w.session → 步 output JSON 的 session → 空
+      const wfSession = r.session;
       return {
-        step_id: String(r['step_id'] ?? ''), workflow_id: String(r['workflow_id'] ?? ''),
-        seq: Number(r['seq'] ?? 0), title: String(r['title'] ?? ''), error,
-        // session 取值回退链：w.session → 步 output JSON 的 session → 空
+        step_id: r.stepId, workflow_id: r.workflowId,
+        seq: r.seq, title: r.title, error,
         session: wfSession !== '' ? wfSession : outSession,
-        updated_at: String(r['updated_at'] ?? ''),
-        workflow_title: r['workflow_title'] === null ? undefined : String(r['workflow_title']),
+        updated_at: r.updatedAt,
+        workflow_title: r.workflowTitle === "" ? undefined : r.workflowTitle,
       };
     });
     return c.json({ agents: [], history });
@@ -270,11 +302,13 @@ export const registerAgentsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
   app.get('/api/agents/profiles', async (c) => {
     // profiles 从现存 tmux 会话派生（iOS 按 profile 分组会话）；更新时间=毫秒。
     // 与 /api/sessions 同源：单条 list-sessions 批量取（N+1 消除）。
+    // 租户收口（A2）：与 /api/sessions 同判据（bySession）。
+    const scope = tenantScopeOf(c);
     const profiles: Record<string, unknown>[] = [];
     if (rt.tmux) {
       const det = await rt.tmux.listSessionsDetailed();
       if (det.ok) {
-        for (const s of det.value) {
+        for (const s of det.value.filter((x) => scopeSees(scope, sessionTenantOf(x.name)))) {
           profiles.push({
             name: s.name, runtime: 'tmux',
             cwd: s.path,
@@ -305,6 +339,11 @@ export const registerAgentsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
     return tmuxSnap;
   };
   app.get('/api/agents/graph', async (c) => {
+    // 租户收口（A2）：节点只列本租户会话；recent/audit 按事件归属单子过滤
+    //（route_decision=workflow 事件；route_fallback 等是 step 事件，经
+    // eventTenant 查单子）。all 原样。
+    const scope = tenantScopeOf(c);
+    const tenantOkSession = (name: string): boolean => scopeSees(scope, sessionTenantOf(name));
     const decls = rt.config.agents;
     const bound = rt.config.email.bound_agents;
     const declBy = new Map(decls.map((d) => [d.session, d]));
@@ -321,7 +360,8 @@ export const registerAgentsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
     }
     // 克隆规则与 iOS owns() 同源（单一事实源 shared/sessionClone.ts）：
     // name-<纯数字> 且 base 存在 → 挂卡不占顶层。
-    const known = new Set<string>([...declBy.keys(), ...bound.map((b) => b.session), ...live.keys()]);
+    const known = new Set<string>([...declBy.keys(), ...bound.map((b) => b.session), ...live.keys()]
+      .filter((name) => tenantOkSession(name)));
     const cloneOf = (name: string): string | null => {
       const base = cloneBaseOf(name);
       return base !== null && known.has(base) ? base : null;
@@ -349,19 +389,26 @@ export const registerAgentsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
     const companies = [...new Set(nodes.filter((n) => n.company !== '' && n.clone_of === null).map((n) => n.company))];
     // 去重键只担身份，值直取声明字段——旧实现按 '|' 回拆 key，company 含 '|'
     // 时会错位成 (company 前段, company 后段)。
+    // domains 收口（A-P1-5）：与 nodes 同判据（tenantOkSession）——只出本租户
+    // 会话的声明域。nodes 早就过滤了，domains 是同响应里漏出来的另外一列。
     const domains = [...new Map(decls
-      .filter((d) => d.domain !== '')
+      .filter((d) => d.domain !== '' && tenantOkSession(d.session))
       .map((d) => [`${d.company}|${d.domain}`, { company: d.company, name: d.domain }])).values()];
     // 活动回放：route_decision（最近分发）+ route_fallback/session_bound_route（审计行）。
-    const evs = rt.store.listEvents(1500);
-    const recent = evs
-      .filter((e) => e.type === 'route_decision')
-      .slice(0, 10)
+    // 租户收口：workflow/step 事件按 entity 查单子租户，查无归属不推。one 身份
+    // 的租户条件进查询再截断（A-P2-7）：原来取最近 1500 条再过滤，别家事件一多
+    // 本租户的路由事件就被挤出窗口。all 原样（1500 窗口内取）。
+    const AUDIT_TYPES = ['route_fallback', 'session_bound_route', 'route_content_handoff', 'route_busy_divert'];
+    const window = scope.kind === 'all' ? rt.store.listEvents(1500) : [];
+    const recentEvs = scope.kind === 'one'
+      ? rt.store.listEventsForTenant(scope.tenant, 10, ['route_decision'])
+      : window.filter((e) => e.type === 'route_decision').slice(0, 10);
+    const auditEvs = scope.kind === 'one'
+      ? rt.store.listEventsForTenant(scope.tenant, 20, AUDIT_TYPES)
+      : window.filter((e) => AUDIT_TYPES.includes(e.type)).slice(0, 20);
+    const recent = recentEvs
       .map((e) => ({ id: e.id, ts: e.ts, workflow: e.entityId, ...e.payload }));
-    const audit = evs
-      .filter((e) => e.type === 'route_fallback' || e.type === 'session_bound_route'
-        || e.type === 'route_content_handoff' || e.type === 'route_busy_divert')
-      .slice(0, 20)
+    const audit = auditEvs
       // route_fallback 是 step 事件（entityId=step id）——workflow 真值在
       // payload.workflow_id（stepEvent 注入）；session_bound_route 直接是 workflow。
       .map((e) => {
@@ -370,12 +417,16 @@ export const registerAgentsRoutes = (app: Hono<AppEnv>, rt: Runtime): void => {
           workflow: (typeof p['workflow_id'] === 'string' ? p['workflow_id'] : e.entityId), ...p };
       });
     return c.json({
-      default_session: rt.config.email.default_session,
+      // default_session 收口（A-P1-5）：one 身份给本租户自己的兜底落点——他租户
+      // 的会话名不能从这里漏出去。all 保持原样（email 段 legacy 值，Go 口径）。
+      default_session: scope.kind === 'one'
+        ? (rt.tenants.tenants.find((t) => t.id === scope.tenant)?.defaultSession ?? '')
+        : rt.config.email.default_session,
       companies, domains, nodes, recent, audit,
     });
   });
 
-  app.get('/api/agents/:id', (c) => c.json({ error: 'no acp threads' }, 404));
+  app.get('/api/agents/:id', (c) => c.json({ error: 'no such agent thread' }, 404));
   app.delete('/api/agents/:id', (c) => c.body(null, 204));
 
   // iOS 会话页辅助动作（juli 语义下为已确认空操作）。会话产物列表自本分册

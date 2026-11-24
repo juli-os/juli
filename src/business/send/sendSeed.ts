@@ -11,7 +11,8 @@
 // 任务流维持 nodes 才认申报（断点十）。
 
 import { asString } from '../../platform/shared/json.ts'
-import { type JsonRecord, type JsonValue, type DeliverableRef, isDeliverableRef, parseEnvelope } from '@juli-os/artifacts';
+import type { JsonRecord, JsonValue } from '../../platform/shared/json.ts';
+import { type DeliverableRef, isDeliverableRef, parseEnvelope } from '@juli-os/artifacts';
 import { type LifecycleStore, type Step } from '@juli-os/ledger';
 
 export const replySubject = (subject: string): string => {

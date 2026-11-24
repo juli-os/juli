@@ -2,7 +2,7 @@
 // ~/.juli-service/config.json；环境变量恒覆盖文件（部署友好）。密钥值可为
 // 字面量或 `keychain:<service>` 引用，加载期解析；密码类优先取环境变量。
 
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { z } from 'zod';
@@ -34,7 +34,10 @@ export const configSchema = z.object({
   // herdr=终端工作区运行时（herdr.dev，一 agent 会话一 workspace）。切换是
   // 重启级动作：hooks 命令组/名单源/PTY attach/boot 包装随 backend 整体换血
   // （差异全部收敛在 @juli-os/agents 的 createAgentBackend，引擎零分支）。
-  agent_backend: z.enum(['tmux', 'herdr']).default('tmux'),
+  // 缺省 herdr（2026-11-12 用户裁定）：workspace 管理 + server 不在场自动
+  // 拉起（ping 失败 → spawn herdr server，baton herdr.ts）。tmux 完整保留
+  // 为显式选项（存量配置写 agent_backend:'tmux' 的实例零影响）。
+  agent_backend: z.enum(['tmux', 'herdr']).default('herdr'),
   // herdr 命名 session namespace（仅 agent_backend=herdr 生效；默认 'juli'，
   // 等价 tmux 专属 socket 的隔离位）。
   herdr_session: z.string().default('juli'),
@@ -229,14 +232,6 @@ export const configSchema = z.object({
     })
     .default({}),
 
-  acp: z
-    .object({
-      enabled: z.boolean().default(false),
-      command: z.string().default('codex app-server'),
-      model: z.string().default(''),
-    })
-    .default({}),
-
   // 财务备份巡检（自部署可选项，默认关）：
   // ssh 单发 aliyun oss ls 核对最新 bundle 年龄，过期邮件告警（每 episode 一封防重）。
   // 默认关：部署处显式开启。
@@ -252,7 +247,6 @@ export const configSchema = z.object({
   secrets: z
     .object({
       llm_api_key: z.string().default(''),
-      acp_api_key: z.string().default(''),
       s3_secret_key: z.string().default(''),
       email_password: z.string().default(''),
       smtp_password: z.string().default(''),
@@ -341,8 +335,10 @@ export const configSchema = z.object({
   // 闸门自动批准（2026-10-07 用户裁定「有的 workflow 不需要我干预/批准」）：
   // 规则匹配 → 复用 approve 正门（by='juli-auto' 全审计留痕）。mode 三态
   // 照 hold/alert_grade 惯例：off=关（默认）/shadow=只留痕不动作/on=真批。
-  // 两条硬安全边界在 autoApprove 模块内钉死：问询闸门永不自动批；发送闸门
-  // （delivery=email，真实外发）须规则显式 include_send 才在自动面内。
+  // 两条硬安全边界在 autoApprove 模块内钉死：问询闸门永不自动批；只有显式
+  // 申报 delivery=apply / artifact 的审批才在自动面内，申报 email 的和没申报
+  // delivery 的都按发送审批处理、须规则显式 include_send（2026-11-24 审查
+  // 修复，原因见 business/gates/rules.ts 文件头）。
   auto_approve: z
     .object({
       mode: z.enum(['off', 'shadow', 'on']).default('off'),
@@ -375,6 +371,36 @@ export const configSchema = z.object({
       }),
     )
     .default([]),
+  // 租户登记（2026-11-08 多租户提案 A1）：desktop 双租户隔离的声明面——
+  // internal（juli Labs）与 acme（Meridian）在 service 侧各占一段 agent、
+  // 邮件身份与反馈前缀。逐项语义：
+  //   id                 租户键（tenant 列的值），kebab 小写；internal 必须存在
+  //   name               人读名
+  //   herdr_session      herdr workspace namespace；'' 原样透传，回落发生在消费方（A2）
+  //   agents             归属 agent 会话名——每个 agent 恰好属于一个租户（启动校验）
+  //   default_session    该租户的路由兜底落点
+  //   sender_addresses   认领的完整发件邮箱（回填/判租户按小写比对）
+  //   sender_domains     认领的发件域名（同上，小写比对）
+  //   feedback_prefixes  认领的反馈页面前缀（如 /site）
+  // 顶层缺省 []：config 不写 tenants = 单 internal 租户收编全部 agent 与
+  // 全局 default_session（存量部署零迁移）；跨项校验（agent 单属、规则同
+  // 租户、internal 在位）在 src/platform/config/tenants.ts 的
+  // parseTenantDecls，启动与回填 CLI 同吃一份。
+  tenants: z
+    .array(
+      z.object({
+        id: z.string().regex(/^[a-z][a-z0-9-]*$/, '租户 id 须小写字母开头，仅含小写字母/数字/连字符'),
+        name: z.string().default(''),
+        herdr_session: z.string().default(''),
+        agents: z.array(z.string()).default([]),
+        default_session: z.string().default(''),
+        sender_addresses: z.array(z.string()).default([]),
+        sender_domains: z.array(z.string()).default([]),
+        feedback_prefixes: z.array(z.string()).default([]),
+      }),
+    )
+    .default([]),
+
   ledger_retention_days: z.number().int().default(0),
   pb_url: z.string().default(''),
   pb_collection: z.string().default('users'),
@@ -478,7 +504,7 @@ export const SECRET_SENTINEL = '__MASKED__';
 const SECRET_PATHS: readonly string[] = [
   'password',
   'ai.api_key',
-  'secrets.llm_api_key', 'secrets.acp_api_key', 'secrets.s3_secret_key',
+  'secrets.llm_api_key', 'secrets.s3_secret_key',
   'secrets.email_password', 'secrets.smtp_password',
   'crm.admin_pass', 'party.api_key', 'bark_key', 's3.access_key_id',
 ];
@@ -595,24 +621,34 @@ export const loadConfig = (deps: LoadConfigDeps): Config => {
   return Object.freeze(merged) as unknown as Config;
 };
 
+/** keychain 读命令的执行器：文件 + 参数数组（2026-11-23 审查修复）。测试注入点
+ *  与默认实现是同一签名——假执行器与生产走的是同一条调用线，注入的用例测到
+ *  的参数形状就是真执行器收到的形状。失败 = 返回 null。 */
+export type SecretRunner = (file: string, args: readonly string[]) => string | null;
+
 /** 密钥解析：环境变量 > secrets 配置；`keychain:<svc>` 经 macOS security CLI。 */
 export const resolveSecret = (
   spec: { readonly envValue?: string; readonly configured: string },
-  deps: { readonly run?: (cmd: string) => string | null } = {},
+  deps: { readonly run?: SecretRunner } = {},
 ): string => {
   if (spec.envValue) return spec.envValue;
   if (!spec.configured.startsWith('keychain:')) return spec.configured;
   const service = spec.configured.slice('keychain:'.length);
-  const run =
+  // 2026-11-23 全量审查修复（命令注入）：此前把服务名拼进一条命令行交给 shell
+  //（execSync）。服务名裹在双引号里，但双引号挡不住 $(...) 和反引号——能写
+  // 配置的人（crm.admin_pass / secrets.*）就能让引擎执行任意命令。现在文件
+  // 与参数逐个传，execFileSync 不经过 shell。顺带加 5 秒超时：钥匙串授权框
+  // 卡住时不拖死启动。stderr 丢弃 = 原先的 2>/dev/null。
+  const run: SecretRunner =
     deps.run ??
-    ((cmd: string): string | null => {
+    ((file, args): string | null => {
       try {
-        return execSync(cmd, { encoding: 'utf8' });
+        return execFileSync(file, [...args], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] });
       } catch {
         return null;
       }
     });
-  const out = run(`/usr/bin/security find-generic-password -s ${JSON.stringify(service)} -w 2>/dev/null`);
+  const out = run('/usr/bin/security', ['find-generic-password', '-s', service, '-w']);
   // security -w 输出带尾部换行——必须 trim，否则密码含不可引用字符，
   // IMAP LOGIN 会报 "Unquotable character in IMAP string value"。
   return out === null ? '' : out.replace(/[\r\n]+$/, '');

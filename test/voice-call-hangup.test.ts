@@ -10,7 +10,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Hono } from 'hono';
-import { ok } from '@juli-os/artifacts';
+import { ok } from '../src/platform/shared/result.ts';
 import { createVoiceCall, type CallMode, type ChatLlmPort } from '@juli-os/agents';
 import { createChatIntake } from '../src/business/intake/chatIntake.ts';
 import { registerChatRoutes } from '../src/http/routes/chat.ts';

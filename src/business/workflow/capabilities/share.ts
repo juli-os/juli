@@ -1,7 +1,8 @@
 // share：把案卷工件经 ExternalLink 接缝换成可访问 URL——质量闸门审的是
 // 真实可达的链接，不是本地路径。share_url 记忆化：已分享过的不重传。
 
-import { asRecord, rfc3339, type JsonRecord } from '@juli-os/artifacts';
+import { rfc3339 } from '../../../platform/shared/clock.ts';
+import { asRecord, type JsonRecord } from '../../../platform/shared/json.ts';
 import type { StepCtx } from './common.ts';
 
 /** share：把案卷工件经 ExternalLink 接缝换成可访问 URL——质量闸门审的是

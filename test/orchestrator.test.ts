@@ -10,7 +10,7 @@ import {
   createSessionAssessor, makeAllTools,
   type ChatLlmPort, type ChatResult, type ToolCallRequest,
 } from '@juli-os/agents';
-import { err, ok } from '@juli-os/artifacts';
+import { err, ok } from '../src/platform/shared/result.ts';
 
 const collect = (): { events: ReturnType<typeof ev>[], emit: (e: ReturnType<typeof ev>) => void } => {
   const events: ReturnType<typeof ev>[] = [];

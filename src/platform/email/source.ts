@@ -11,7 +11,7 @@
 import { checkAuthz, type AuthzPolicy } from '../../contracts/authz.ts';
 import { inboxDedupKey, withDedupe, type InboxMessage, type MessageHandler } from './inbox.ts';
 import { dialImap, type ImapParams } from './imap.ts';
-import type { Clock } from '@juli-os/artifacts';
+import { type Clock } from '../shared/clock.ts';
 
 export interface SourceStatus {
   readonly enabled: boolean;
@@ -47,6 +47,10 @@ export interface MailSource {
   /** 热改轮询间隔（Settings 页）；未启动时只记值，下次 start 生效。
    *  返回是否接受（非法值拒绝——调用方据此如实上报，不谎报已生效）。 */
   setIntervalSec(sec: number): boolean;
+  /** 热改渠道授权策略（授权面板 / Settings 页，2026-11-23）：下一轮轮询起按
+   *  新策略过滤。渠道闸是收信的第一步，被它挡掉的邮件不建单也不留痕——
+   *  策略改了它不跟着变，面板上新加的地址就还是被挡在外面。 */
+  setAuthzPolicy(policy: AuthzPolicy): void;
 }
 
 export const createMailSource = (deps: SourceDeps): MailSource => {
@@ -59,6 +63,9 @@ export const createMailSource = (deps: SourceDeps): MailSource => {
   let polling = false; // 一轮在途不并发再入：同邮箱双拉=同一封双摄取竞态
   // 间隔放闭包变量而非常量——Settings 页热改时 tick 重排读到的就是新值。
   let intervalSec = deps.intervalSec && deps.intervalSec > 0 ? deps.intervalSec : 60;
+  // 渠道策略同样放闭包变量：初值取自 deps，热改只改这里——deps 是调用方的
+  // 对象，这里不改它。
+  let channelAuthz: AuthzPolicy = deps.channelAuthz;
   const now = (): Date => deps.clock?.now() ?? new Date();
 
   // 发布 = 记数（\Seen 提示由本源依据账本探针的最终判定统一处理）。
@@ -86,10 +93,13 @@ export const createMailSource = (deps: SourceDeps): MailSource => {
         deps.log(`[inbox] ${envelopes.error.message}`);
         return;
       }
+      // 本轮用的渠道策略在每轮开头取一次：一轮之内不会前后用两份策略，热改
+      // 从下一轮开始算。
+      const authz = channelAuthz;
       // 阶段二门：渠道授权 + 账本去重（被拒的不算已摄取——策略放行时邮件必须能流）。
       const newUids: number[] = [];
       for (const e of envelopes.value) {
-        const reason = checkAuthz(deps.channelAuthz, e.from);
+        const reason = checkAuthz(authz, e.from);
         if (reason !== null) {
           deps.log(`[inbox] 渠道拒绝发件人 ${e.from}: ${reason}`);
           continue;
@@ -171,6 +181,10 @@ export const createMailSource = (deps: SourceDeps): MailSource => {
       if (!Number.isFinite(sec) || sec < 1) return false;
       intervalSec = Math.trunc(sec);
       return true;
+    },
+
+    setAuthzPolicy(policy: AuthzPolicy): void {
+      channelAuthz = policy;
     },
 
     stop() {

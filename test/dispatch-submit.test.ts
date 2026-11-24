@@ -9,7 +9,7 @@ import {
   promptFingerprints,
   type TmuxClient,
 } from '@juli-os/agents';
-import { ok } from '@juli-os/artifacts';
+import { ok } from '../src/platform/shared/result.ts';
 
 const PROMPT = ['【feedback 工单】record x', '■ 原文：轮播图太快了', '执行完成后给出简要汇报'].join('\n');
 const TAIL = '执行完成后给出简要汇报';

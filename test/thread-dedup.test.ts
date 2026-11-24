@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import { createLedgerStore } from '@juli-os/ledger';
 import { createEngine, type EngineDeps } from '../src/business/workflow/engine.ts';
-import { ok } from '@juli-os/artifacts';
+import { ok } from '../src/platform/shared/result.ts';
 import { makeClock, makeEmail, seqIds } from './helpers.ts';
 import type { MailerPort, PusherPort } from '../src/contracts/ports.ts';
 
@@ -21,7 +21,6 @@ const makeWorld = (over: Partial<EngineDeps> = {}) => {
     dispatch: {
       async dispatch() { return ok(undefined); },
     },
-    syncDispatch: null,
     pusher: { async gateWaiting() {}, async workflowDone() {}, async workflowFailed() {} } satisfies PusherPort,
     mailer: { async send() { return ok({ messageId: '<x@j>' }); } } satisfies MailerPort,
     captureOutput: async () => null,

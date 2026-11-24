@@ -2,7 +2,7 @@
 // 的事实源已收编 npm 包 @juli-os/agents（10-10 影子清除）——本文件只留
 // Anthropic/OpenAI 两个协议实现（引擎装配面）。
 
-import { err, ok, toResult } from '@juli-os/artifacts';
+import { err, ok, toResult } from '../shared/result.ts';
 import type { ChatLlmPort } from '@juli-os/agents';
 
 

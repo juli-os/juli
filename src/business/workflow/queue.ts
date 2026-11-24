@@ -1,7 +1,8 @@
 // 收单台（0920 定案，docs/designs/intake-queue-and-twenty-architecture.md §二）
 // 六语义：入队即返（创建置 queued）/ FIFO 并发=1（可调）/ 闸门放队位 /
 // 队列落库（queued 在 SQLite，重启由启动扫描按到达序重排）/ 纯事件驱动
-// （入队与释放各泵一次，无定时器）/ 续走口统一（创建走队尾；闸门批准等
+// （入队与释放各泵一次；唯一的定时泵是 holdSweep 的 60 秒心跳，见 timers.ts，
+// 只管放行被压住的单）/ 续走口统一（创建走队尾；闸门批准等
 // 续走插队头——人刚花过注意力，不重新排队）。
 // 占队位的是「机器在干活」：当前步 running（含已派发 tmux 等 Stop hook 的
 // 异步执行）即占位；停在人工闸门 / 终态 / nodes 空档即放位。不改 per-workflow
@@ -36,8 +37,8 @@ export const makeQueue = (o: {
   /** 晚绑 advance（runChain 续推整机链）：引擎装配完毕后才指向真身。 */
   readonly late: { advance: (workflowId: string) => Promise<void> };
   /** hold gate（2026-09-28 工作时间窗）：返回 true=该单暂缓派发。作用于
-   * **agent 执行链**（pump 扫描跳过、保队位不 shift——窗口关后由 holdSweep/
-   * pump 自然放行，不造幽灵槽，收单台 F1 教训）。注意：闸门步的轻量循环
+   * **agent 执行链**（pump 扫描跳过、保队位不 shift——窗口关后由 holdSweep
+   * （timers.ts 每 60 秒一次）/pump 自然放行，不造幽灵槽，收单台 F1 教训）。注意：闸门步的轻量循环
    * **不受 hold 约束**会 shift 出队——闸门开启零机器 token，hold 的立意是省
    * 机器开销，双发事故④的诉求恰是审批卡不被挡（2026-10-28 R&R 对齐口径）。
    * 缺省=永不 hold（旧行为）。 */
@@ -107,7 +108,7 @@ export const makeQueue = (o: {
     }
     while (activeIds.size < queueConcurrency && waitingIds.length > 0) {
       // hold 感知（2026-09-28）：跳过被窗口 hold 的单取第一张可派单；全队
-      // 被 hold 则整体留在原序等放行（holdSweep 到点再泵）。绝不 shift 后
+      // 被 hold 则整体留在原序等放行（holdSweep 心跳每 60 秒泵一次）。绝不 shift 后
       // 丢回——队位即到达序，丢了就是脱队幽灵槽（F1 教训的 hold 变体）。
       // 同会话避让不在此层（2026-10-27 裁定）：挂靠继承单必须先派出、由
       // 引擎路由（routeTask 的忙闲改道）决定去留——队列级扣留会把该改道的

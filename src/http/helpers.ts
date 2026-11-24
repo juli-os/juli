@@ -4,9 +4,27 @@
 import { createHmac } from 'node:crypto';
 import type { Context } from 'hono';
 import { safeEqual } from '../platform/shared/secure.ts';
-import type { JsonRecord } from '@juli-os/artifacts';
+import { type JsonRecord } from '../platform/shared/json.ts';
+import type { TenantScope } from '../business/workflow/tenantScope.ts';
 
-export type AppEnv = { Variables: { user: string } };
+export type AppEnv = { Variables: { user: string; tenantScope: TenantScope | null } };
+
+/** 请求租户（A2 读侧边界）：中间件已解析并挂到 context；取不到（未过中间件
+ * 的装配形态）按 all 处理——operator 形态绝不因缺键收窄。 */
+export const tenantScopeOf = (c: Context<AppEnv>): TenantScope => c.get('tenantScope') ?? { kind: 'all' };
+
+/** scope=one 时的租户 id（all 返回 undefined）——读 API 下推过滤的取值面。 */
+export const tenantFilterOf = (c: Context<AppEnv>): string | undefined => {
+  const s = tenantScopeOf(c);
+  return s.kind === 'one' ? s.tenant : undefined;
+};
+
+/** 运营面守卫（A2，2026-11-09）：one 身份一律 404——这些端点是 operator 专用
+ * 面（全租户聚合/系统级状态/客户档案池），无逐条租户归属信号，逐租户精细
+ * 归属是 follow-up，不做过度设计。有意豁免（连 404 都不加）的运营面清单见
+ * tenantScope.ts 头注。all（operator 缺省）行为零变化。 */
+export const operatorFaceBlocked = (c: Context<AppEnv>): boolean =>
+  tenantScopeOf(c).kind === 'one';
 
 /** 数值查询参数夹取：畸形值回退默认，绝不让 NaN 摸进 sqlite 绑定。 */
 export const clampInt = (raw: string | undefined, fallback: number, lo: number, hi: number): number => {
@@ -37,6 +55,34 @@ export const bodyStr = (body: JsonRecord, key: string, fallback = ''): string =>
 export const inlineDisposition = (name: string): string => {
   const ascii = name.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, '');
   return `inline; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+};
+
+/** 内联直开响应的浏览器安全头（2026-11-23 全量审查修复）。工件取件与客户合同
+ *  下载把 html、svg 以内联方式同源返回，此前不带任何限制——文件里的脚本就在
+ *  引擎的源上运行，持密码的页面能调的 API 它都能调。两条头：
+ *  · nosniff 对所有类型都加：浏览器不得脱离声明的 Content-Type 去猜类型。
+ *  · CSP sandbox 只加在浏览器会当「可执行文档」渲染的类型上（html /
+ *    xhtml / svg / xml——xml 文档里能嵌 xhtml 命名空间的脚本，同样会执行；
+ *    R1 复审补）。PDF、图片、Office 文档、JSON、纯文本不加——它们不是脚本
+ *    执行面，加了反而影响 iPhone QuickLook 与浏览器的直接预览。
+ *    sandbox 之内：脚本一律不许（default-src 'none' 挡掉 script-src）；放行
+ *    内联样式与内嵌图片（style-src 'unsafe-inline' + img-src data:/blob:）
+ *    ——样式不是脚本入口，全挡会让直接打开的工件没了样式。不放开网络加载
+ *    （外链图片、字体、样式表），页面不替工件对外发请求。
+ *  contentType 传完整 Content-Type（带 charset 参数也行），类型判断只看主类型。
+ *  与 inlineDisposition 同样的收口：artifacts.ts 与 customers.ts 两处同用。 */
+const SCRIPTED_MEDIA_TYPES: ReadonlySet<string> = new Set([
+  'text/html', 'application/xhtml+xml', 'image/svg+xml', 'application/xml', 'text/xml',
+]);
+
+export const inlineContentSecurityHeaders = (contentType: string): Record<string, string> => {
+  const mediaType = contentType.split(';')[0]?.trim().toLowerCase() ?? '';
+  return {
+    'x-content-type-options': 'nosniff',
+    ...(SCRIPTED_MEDIA_TYPES.has(mediaType)
+      ? { 'content-security-policy': "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:" }
+      : {}),
+  };
 };
 
 /** 工件分享链接签名（HMAC(服务密码, id|exp)）：收件人免密取件、限时失效，
@@ -74,3 +120,71 @@ export const makeShareAuth = (rt: {
   };
   return { shareTtlSec: SHARE_TTL_SEC, shareSign: sign, shareVerify: verify };
 };
+
+// ---- 写面租户闸与租户事件查询（2026-11-11 R&F R1）--------------------------------
+
+/** 建单入参闸依赖的最小结构（Runtime 的投影——helpers 不 import runtime）。 */
+export interface CreateGateDeps {
+  readonly tenants: {
+    readonly byFeedbackSource: Readonly<Record<string, string>>;
+    readonly bySession: Readonly<Record<string, string>>;
+  };
+  readonly store: { readonly getWorkflow: (id: string) => { readonly tenant: string } | null };
+}
+
+/** 表查值：只认自有键、只认字符串（A-P2-4）。 */
+const ownTenant = (t: Readonly<Record<string, string>>, key: string): string | undefined => {
+  if (key === '' || !Object.hasOwn(t, key)) return undefined;
+  const v: unknown = t[key];
+  return typeof v === 'string' ? v : undefined;
+};
+
+/** body 里钉的会话名（改派/重试补丁/追加节点/建单/补料 patch 的落点）是否越租户。
+ * one 身份只能钉本租户会话：不拦的话「往他租户终端发文本」能借本租户单子绕回来——把
+ * 自己的单改派到别家会话，任务卡照样打进别家终端。未声明的会话与他租户会话
+ * 同文拒绝（不泄露会话在否）。返回错误文案，'' = 放行。
+ * 钉会话键扫三处两键（NEW-1，2026-11-11 R2）：body 顶层（override/assign/retry）、
+ * body.input（nodes/tasks/pipelines——步 input 的 session 与 resolved_session 都
+ * 是派发落点，steps.ts 重派跟随 resolved_session）、body.patch（amend 的补丁全量
+ * 写进步 input，human.ts setStepInput 不挑键）——R1 只查了前两处的 session，
+ * amend 的 patch.session 实测 200 落库重派，patch/resolved_session 三处同等对待。 */
+export const foreignSessionError = (c: Context<AppEnv>, deps: CreateGateDeps, body: JsonRecord): string => {
+  const scope = tenantScopeOf(c);
+  if (scope.kind === 'all') return '';
+  const sessionKeysOf = (obj: unknown): readonly unknown[] => {
+    if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) return [];
+    const r = obj as JsonRecord;
+    return [r['session'], r['resolved_session']];
+  };
+  for (const raw of [body['session'], ...sessionKeysOf(body['input']), ...sessionKeysOf(body['patch'])]) {
+    const name = typeof raw === 'string' ? raw.trim() : '';
+    if (name === '') continue;
+    if (ownTenant(deps.tenants.bySession, name) !== scope.tenant) {
+      return `会话 "${name}" 不属于本租户——单租户身份只能派到本租户的会话`;
+    }
+  }
+  return '';
+};
+
+/** one 身份建单的入参闸：请求租户当显式租户。显式 tenant 必须是本租户；source
+ * （反馈来源信号，判定优先级高于显式）不许指向他租户；relates_to 必须是本租户
+ * 的单子——挂靠会继承原单的会话与反馈锚，他租户的单不能当来源（不存在同文
+ * 拒绝，不泄露在否）。返回补上 tenant 的 input。调用方以 throw 把文案带成 400。 */
+export const pinTenantCreateInput = (tenant: string, deps: CreateGateDeps, input: JsonRecord): JsonRecord => {
+  const str = (k: string): string => (typeof input[k] === 'string' ? (input[k]).trim() : '');
+  const exp = str('tenant');
+  if (exp !== '' && exp !== tenant) {
+    throw new Error(`单租户身份只能给本租户开单（请求租户 ${tenant}，显式租户 ${exp}）`);
+  }
+  const srcOwner = ownTenant(deps.tenants.byFeedbackSource, str('source'));
+  if (srcOwner !== undefined && srcOwner !== tenant) {
+    throw new Error('单租户身份只能给本租户开单（入参带有指向其他租户的进件信号）');
+  }
+  const rel = str('relates_to');
+  if (rel !== '' && deps.store.getWorkflow(rel)?.tenant !== tenant) {
+    throw new Error('关联单不存在或不可见——单租户身份只能关联本租户的单子');
+  }
+  return { ...input, tenant };
+};
+
+

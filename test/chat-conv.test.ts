@@ -4,7 +4,7 @@
 // 动机=「幽灵消息」事故：单线程下任何客户端（含诊断注入）的回合出现在所有端。
 
 import { describe, expect, it } from 'vitest';
-import { ok } from '@juli-os/artifacts';
+import { ok } from '../src/platform/shared/result.ts';
 import { type ChatLlmPort } from '@juli-os/agents';
 import { createChatIntakeRegistry, sanitizeConv } from '../src/business/intake/chatIntakeRegistry.ts';
 import { createChatHub } from '../src/platform/ws/chathub.ts';

@@ -10,7 +10,7 @@ import { registerLifecycleRoutes } from '../src/http/routes/lifecycle.ts';
 import { makeClock, seqIds } from './helpers.ts';
 import type { Runtime } from '../src/runtime.ts';
 import type { AppEnv } from '../src/http/helpers.ts';
-import type { JsonRecord } from '@juli-os/artifacts';
+import { type JsonRecord } from '../src/platform/shared/json.ts';
 
 const mkApp = (): { app: Hono<AppEnv>; store: ReturnType<typeof createLedgerStore>; started: { title: string; input: Record<string, unknown> }[] } => {
   const store = createLedgerStore(':memory:', { clock: makeClock().clock, ids: seqIds() });

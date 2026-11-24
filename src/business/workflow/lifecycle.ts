@@ -2,9 +2,9 @@
 // 与收口族（settle 人工结算/closeWorkflow 尸体收编/forceClose 活单中止/
 // cancelStep 单步取消）。
 
-import { rfc3339 } from '@juli-os/artifacts';
+import { rfc3339 } from '../../platform/shared/clock.ts';
 import { asString, truncate } from '../../platform/shared/json.ts'
-import type { JsonRecord, JsonValue } from '@juli-os/artifacts'
+import type { JsonRecord, JsonValue } from '../../platform/shared/json.ts'
 import type { Logger } from '../../platform/events/bus.ts';
 import type { LifecycleStore } from '@juli-os/ledger';
 import { type Step, type StepKind, type Workflow } from '@juli-os/ledger';
@@ -13,6 +13,7 @@ import { isActiveStepStatus, isActiveWorkflowStatus, isLiveNodeStatus } from '..
 import { carryStepConfig, type Template } from '../templates/template.ts';
 import { envelopeTo, isSendGateDecision, seedSendFromGate } from '../send/sendSeed.ts';
 import type { EngineDeps } from './engine.ts';
+import { resolveTenantOf, type TenantResolution } from './tenantResolve.ts';
 import type { Journal } from './journal.ts';
 import type { Queue } from './queue.ts';
 import type { Zombie } from './zombie.ts';
@@ -135,6 +136,14 @@ export const makeLifecycle = (o: {
       }
     }
     copySendMeta(input, meta);
+    // 显式租户打戳（2026-11-11 A-P2-8）：one 身份起流时 HTTP 边界把请求租户放进
+    // input.tenant——模板流此前完全不打戳（列缺省 internal，起流人在自己视角
+    // 自查 404）。只认显式档：没有显式租户的起流保持不 stamp（11-09 有意决定
+    // 「模板流与裸建单保持默认」，all 身份行为不变）；显式值不在可落集合时
+    // resolveTenant 落到别的档，那种情况同样不 stamp。
+    const flowStamp = resolveTenantOf(deps.tenantSignals, { explicit: asString(input['tenant']) });
+    const flowTenant = flowStamp !== null && flowStamp.basis === 'explicit' ? flowStamp.tenant : undefined;
+    if (flowTenant !== undefined) meta['tenant_basis'] = 'explicit';
     // nodes 模式:阶梯不预建——节点由动作(claim/deliver/send…)追加,
     // 模板只是词汇表;workflow 在显式 settle 前保持 running。
     if (tpl.mode === 'nodes') {
@@ -143,6 +152,7 @@ export const makeLifecycle = (o: {
         title: truncate(t, 120),
         parentId,
         status: 'queued',
+        ...(flowTenant !== undefined ? { tenant: flowTenant } : {}),
         meta: { ...meta, mode: 'nodes' },
       });
       store.appendEvent('workflow', wn.id, 'flow_started', { template: tpl.key, hash: tpl.hash, mode: 'nodes' });
@@ -155,6 +165,7 @@ export const makeLifecycle = (o: {
       title: truncate(t, 120),
       parentId,
       status: 'queued',
+      ...(flowTenant !== undefined ? { tenant: flowTenant } : {}),
       meta,
     });
     store.appendEvent('workflow', w.id, 'flow_started', { template: tpl.key, hash: tpl.hash, steps: ladder.map((s) => s.id) });
@@ -273,7 +284,22 @@ export const makeLifecycle = (o: {
         tierEvent = { kind: 'model_tier_unavailable', payload: { requested: 'high' } };
       }
     }
-    const w = store.createWorkflow({ kind: 'adhoc', title: truncate(t, 120), parentId, status: 'queued', meta });
+    // 写侧打标记（A3）：startTask 是 feedback 镜像与 chat 开单的共用正门，
+    // 进件信号取 input 已知值：feedback source（镜像记录来源键）/ 显式租户
+    // （chat 确认卡，HTTP 边界校验过才进来）/ 建单时刻已知会话（显式点名或
+    // relates_to 继承）。信号与建单同一次写入，无双写窗口。表未接 = 不 stamp
+    // （store 缺省 internal，行为与 A3 之前一致）。
+    const sessRaw = asString(input['session']).trim();
+    const stamp: TenantResolution | null = resolveTenantOf(deps.tenantSignals, {
+      feedbackSource: asString(input['source']),
+      explicit: asString(input['tenant']),
+      session: sessRaw !== '' ? sessRaw : inheritTo,
+    });
+    const w = store.createWorkflow({
+      kind: 'adhoc', title: truncate(t, 120), parentId, status: 'queued',
+      ...(stamp !== null ? { tenant: stamp.tenant } : {}),
+      meta: stamp !== null ? { ...meta, tenant_basis: stamp.basis } : meta,
+    });
     store.appendEvent('workflow', w.id, 'task_started', { title: t, relates_to: rel });
     store.appendEvent('workflow', w.id, 'task_queued', { via: 'startTask' });
     // 发单即接手（wf_505578377218 停摆事故）：空 nodes 单对 advance 是「等
@@ -442,7 +468,12 @@ export const makeLifecycle = (o: {
   /** 人工中止（running/queued 单的取消出口，2026-09-13 用户诉求"前端取消重开"；
    * 0920 收单台 review F2：queued 纳入——排队单的合法干预就是移出队列）：
    * 在跑步/等待闸门/排队未派的步骤全部 cancelled，审计全留——与 close 的
-   * 区别：close 只收 failed 尸体，force 是活单的中止（用户明确说不做了）。 */
+   * 区别：close 只收 failed 尸体，force 是活单的中止（用户明确说不做了）。
+   * 不持工作流锁（2026-11-23 全量审查）：派发路径持锁等 agent 就绪时（忙时
+   * 约 20 秒，冷启动最长 240 秒），持锁的中止要等它返回才响应。所以这里不
+   * 加锁，中止接口立刻返回。「正在派发中」的步骤靠这里写下的 cancelled 当
+   * 标记，由派发返回处收尾（steps.ts runAgentStep：不记 step_dispatched、
+   * 不续心跳、留痕并尽量打断 agent）。 */
   const forceClose = async (workflowId: string, note: string, by: string): Promise<void> => {
     const w = store.getWorkflow(workflowId);
     if (!w) throw new Error(`workflow ${workflowId} not found`);

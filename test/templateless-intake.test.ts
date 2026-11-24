@@ -4,11 +4,24 @@
 // 本文件锁定：**注册表为空也照常进件**——manifest 配置错误从根上无米可炊。
 
 import { describe, expect, it } from 'vitest';
-import { createLedgerStore } from '@juli-os/ledger';
-import { createEngine, type EngineDeps } from '../src/business/workflow/engine.ts';
-import { ok, type JsonRecord } from '@juli-os/artifacts';
+import { createLedgerStore, type LifecycleStore } from '@juli-os/ledger';
+import { createEngine, type Engine, type EngineDeps } from '../src/business/workflow/engine.ts';
+import { ok } from '../src/platform/shared/result.ts';
+import type { JsonRecord } from '../src/platform/shared/json.ts';
 import { makeClock, makeEmail, seqIds, until } from './helpers.ts';
 import type { MailerPort, PusherPort } from '../src/contracts/ports.ts';
+
+/** 第一回合收工：先等首步的任务卡确认送达（step_dispatched 落账），再收工。
+ *  2026-11-23 起收工回调只结算「卡已确认送达」的步（agentSettle 核对步骤上的
+ *  凭据）。进件入队即返，紧接着就收工的话卡还没确认送达，回调会被拦下——以前
+ *  能过是因为结算会排队等派发那把锁。 */
+const settleFirstTurn = async (
+  w: { readonly engine: Engine; readonly store: LifecycleStore }, wfId: string, output: string,
+): Promise<void> => {
+  const first = w.store.stepsForWorkflow(wfId)[0]!;
+  await until(() => w.store.entityEvents('step', first.id, 'step_dispatched').length > 0);
+  await w.engine.onAgentStopped('juli-reply', 'done', output);
+};
 
 const makeEngineEmpty = (over: Partial<EngineDeps> = {}) => {
   const { clock, advance } = makeClock();
@@ -20,7 +33,6 @@ const makeEngineEmpty = (over: Partial<EngineDeps> = {}) => {
     model: 't',
     routing: { defaultSession: 'juli-reply', defaultProject: 'p' },
     dispatch: { async dispatch(_s, session, text) { dispatched.push({ session, text }); return ok(undefined); } },
-    syncDispatch: null,
     pusher: { async gateWaiting() {}, async workflowDone() {}, async workflowFailed() {} } satisfies PusherPort,
     mailer: { async send() { return ok({ messageId: '<x@j>' }); } } satisfies MailerPort,
     captureOutput: async () => null,
@@ -52,14 +64,15 @@ describe('动态进件（无模板/无 trigger）', () => {
     expect(w.dispatched[0]!.text).toContain('请把上月的销量数据整理成表格发我。'); // 原文直读
     expect(w.dispatched[0]!.text).toContain('boss@example.com');
     // 理解回合落定 → 流水保持 running 等动作追加（不秒完成）。
-    await w.engine.onAgentStopped('juli-reply', 'done', '结构化理解完成');
+    await settleFirstTurn(w, wf.id, '结构化理解完成');
     expect(w.store.getWorkflow(wf.id)!.status).toBe('running');
+    expect(w.store.getStep(steps[0]!.id)!.status).toBe('completed'); // 回合确实结算了
   });
 
   it('startTask 免模板起单：relates_to 留链 + brief 进 template_input + 首节点即派发', async () => {
     const w = makeEngineEmpty();
     const parent = await w.engine.startEmailWorkflow(makeEmail());
-    await w.engine.onAgentStopped('juli-reply', 'done', '理解');
+    await settleFirstTurn(w, parent.id, '理解');
     // 父单终态让出 juli-reply（2026-10-13 裁定后：挂靠继承忙时等待/改道，
     // 单 agent 世界=等父单收口；旧=直接挤进闸门等待中的父会话）。
     await w.engine.forceClose(parent.id, 'test', 'test');
@@ -115,7 +128,7 @@ describe('批准回流（批准=触发下一个）', () => {
     });
     // 动态进件 → 理解 → agent 开闸门 → 批准
     const wf = await w.engine.startEmailWorkflow(makeEmail());
-    await w.engine.onAgentStopped('juli-reply', 'done', '理解完成，开对齐闸门');
+    await settleFirstTurn(w, wf.id, '理解完成，开对齐闸门');
     await w.engine.appendNode(wf.id, { kind: 'gate', title: '对齐闸门' });
     const gate = w.store.stepsForWorkflow(wf.id).find((x) => x.kind === 'gate')!;
     await w.engine.approve(gate.id, '按计划做', 'boss');
@@ -135,7 +148,7 @@ describe('批准回流（批准=触发下一个）', () => {
       sendToSession: async (session, text) => { relays.push({ session, text }); return { delivered: true, reason: '' }; },
     });
     const wf = await w.engine.startEmailWorkflow(makeEmail());
-    await w.engine.onAgentStopped('juli-reply', 'done', '理解完成');
+    await settleFirstTurn(w, wf.id, '理解完成');
     await w.engine.appendNode(wf.id, {
       kind: 'gate', title: '确认闸门',
       input: { delivery: 'apply', envelope: { feedback_refs: ['v4h6fq87019dm5y'] } },
@@ -152,7 +165,7 @@ describe('批准回流（批准=触发下一个）', () => {
       sendToSession: async (session, text) => { relays.push({ session, text }); return { delivered: true, reason: '' }; },
     });
     const wf2 = await w2.engine.startEmailWorkflow(makeEmail());
-    await w2.engine.onAgentStopped('juli-reply', 'done', '理解完成');
+    await settleFirstTurn(w2, wf2.id, '理解完成');
     await w2.engine.appendNode(wf2.id, { kind: 'gate', title: '对齐闸门' });
     const gate2 = w2.store.stepsForWorkflow(wf2.id).find((x) => x.kind === 'gate')!;
     await w2.engine.approve(gate2.id, '', 'boss');
@@ -173,7 +186,6 @@ describe('回流外发箱（批准=触发下一个，欠款必还）', () => {
       llm: null, model: 't',
       routing: { defaultSession: 'juli-reply', defaultProject: 'p' },
       dispatch: { async dispatch() { return ok(undefined); } },
-      syncDispatch: null,
       pusher: {
         async gateWaiting(_w, st, summary) { relays.push({ session: 'PUSH:' + st.title, text: summary }); },
         async workflowDone() {},
@@ -201,7 +213,7 @@ describe('回流外发箱（批准=触发下一个，欠款必还）', () => {
 
   const setupGate = async (w: ReturnType<typeof makeRelayWorld>) => {
     const wf = await w.engine.startEmailWorkflow(makeEmail());
-    await w.engine.onAgentStopped('juli-reply', 'done', '理解完成');
+    await settleFirstTurn(w, wf.id, '理解完成');
     await w.engine.appendNode(wf.id, { kind: 'gate', title: '对齐闸门' });
     const gate = w.store.stepsForWorkflow(wf.id).find((x) => x.kind === 'gate')!;
     return { wf, gate };
@@ -263,7 +275,7 @@ describe('forceClose（running 单的人工中止）', () => {
   it('在跑步+等待闸门全 cancelled，审计留痕；非 running 拒绝', async () => {
     const w = makeEngineEmpty();
     const wf = await w.engine.startEmailWorkflow(makeEmail());
-    await w.engine.onAgentStopped('juli-reply', 'done', '理解完成');
+    await settleFirstTurn(w, wf.id, '理解完成');
     await w.engine.appendNode(wf.id, { kind: 'gate', title: '对齐闸门' });
     // 此时：agent completed + gate waiting_human
     await w.engine.forceClose(wf.id, '用户重开', 'web');
@@ -289,7 +301,7 @@ describe('rework 空 feedback 守卫', () => {
   it('空/空白驳回拒绝且流水不动；带意见正常进入 round 2', async () => {
     const w = makeEngineEmpty();
     const wf = await w.engine.startEmailWorkflow(makeEmail());
-    await w.engine.onAgentStopped('juli-reply', 'done', '理解完成');
+    await settleFirstTurn(w, wf.id, '理解完成');
     await w.engine.appendNode(wf.id, { kind: 'gate', title: '对齐闸门' });
     const gate = w.store.stepsForWorkflow(wf.id).find((x) => x.kind === 'gate')!;
     await expect(w.engine.rework(gate.id, '', 'boss')).rejects.toThrow(/修改意见/);
@@ -315,7 +327,6 @@ describe('发送附件契约（宣称=实物）', () => {
       llm: null, model: 't',
       routing: { defaultSession: 'juli-reply', defaultProject: 'p' },
       dispatch: { async dispatch() { return ok(undefined); } },
-      syncDispatch: null,
       pusher: { async gateWaiting() {}, async workflowDone() {}, async workflowFailed() {} } satisfies PusherPort,
       mailer: {
         async send(cmd) { sent.push({ to: cmd.to, subject: cmd.subject, attachments: (cmd.attachments ?? []).map((a) => ({ name: a.name })) }); return ok({ messageId: '<att@j>' }); },
